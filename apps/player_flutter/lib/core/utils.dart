@@ -1,6 +1,7 @@
-﻿part of 'package:player_flutter/main.dart';
+part of 'package:player_flutter/main.dart';
 
-bool isVideoName(String value) => videoExtensions.contains(p.extension(value).toLowerCase());
+bool isVideoName(String value) =>
+    videoExtensions.contains(p.extension(value).toLowerCase());
 
 String newId() => DateTime.now().microsecondsSinceEpoch.toString();
 
@@ -14,10 +15,21 @@ String normalizeRemoteDir(String value) {
 
 String parentPath(String value) {
   final normalized = normalizeRemoteDir(value);
-  final trimmed = normalized.length > 1 ? normalized.substring(0, normalized.length - 1) : normalized;
+  final trimmed = normalized.length > 1
+      ? normalized.substring(0, normalized.length - 1)
+      : normalized;
   final index = trimmed.lastIndexOf('/');
   if (index <= 0) return '/';
   return '${trimmed.substring(0, index)}/';
+}
+
+String mediaFolderKey(MediaItem item) {
+  if (item.type == SourceType.local) {
+    return '${item.sourceId}:local:${p.dirname(item.uri)}';
+  }
+  final uri = Uri.tryParse(item.uri);
+  final path = uri == null ? item.uri : Uri.decodeComponent(uri.path);
+  return '${item.sourceId}:webdav:${parentPath(path)}';
 }
 
 String formatDuration(Duration value) {
@@ -25,7 +37,9 @@ String formatDuration(Duration value) {
   final h = total ~/ 3600;
   final m = (total % 3600) ~/ 60;
   final s = total % 60;
-  if (h > 0) return '$h:${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+  if (h > 0) {
+    return '$h:${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+  }
   return '$m:${s.toString().padLeft(2, '0')}';
 }
 
@@ -41,7 +55,8 @@ String readableBytes(int? value) {
   return '${size.toStringAsFixed(size >= 10 ? 0 : 1)} ${units[unit]}';
 }
 
-Future<bool> ensureLocalStorageAccess(BuildContext context, {bool showDeniedMessage = true}) async {
+Future<bool> ensureLocalStorageAccess(BuildContext context,
+    {bool showDeniedMessage = true}) async {
   if (!Platform.isAndroid) return true;
 
   final videos = await Permission.videos.request();

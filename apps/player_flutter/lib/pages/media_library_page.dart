@@ -1,4 +1,4 @@
-﻿part of 'package:player_flutter/main.dart';
+part of 'package:player_flutter/main.dart';
 
 class MediaLibraryPage extends StatelessWidget {
   const MediaLibraryPage({required this.store, super.key});
@@ -7,6 +7,11 @@ class MediaLibraryPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final recentItems = store.items
+        .where((item) => store.lastPlayedAt.containsKey(item.id))
+        .toList()
+      ..sort((a, b) => (store.lastPlayedAt[b.id] ?? 0)
+          .compareTo(store.lastPlayedAt[a.id] ?? 0));
     return SafeArea(
       bottom: false,
       child: CustomScrollView(
@@ -18,13 +23,17 @@ class MediaLibraryPage extends StatelessWidget {
                 children: [
                   const AppBrand(),
                   const Spacer(),
-                  IconButton(tooltip: '刷新', onPressed: store.rescanAll, icon: const Icon(Icons.refresh, size: 30)),
+                  IconButton(
+                      tooltip: '刷新',
+                      onPressed: store.rescanAll,
+                      icon: const Icon(Icons.refresh, size: 30)),
                 ],
               ),
             ),
           ),
           if (!store.loaded)
-            const SliverFillRemaining(child: Center(child: CircularProgressIndicator()))
+            const SliverFillRemaining(
+                child: Center(child: CircularProgressIndicator()))
           else if (store.items.isEmpty)
             SliverFillRemaining(
               child: EmptyState(
@@ -39,7 +48,35 @@ class MediaLibraryPage extends StatelessWidget {
               ),
             )
           else ...[
-            SliverToBoxAdapter(child: SectionHeader(title: '海报墙', count: store.items.length)),
+            if (recentItems.isNotEmpty) ...[
+              SliverToBoxAdapter(
+                  child:
+                      SectionHeader(title: '最近播放', count: recentItems.length)),
+              SliverToBoxAdapter(
+                child: SizedBox(
+                  height: 176,
+                  child: ListView.separated(
+                    padding: const EdgeInsets.symmetric(horizontal: 22),
+                    scrollDirection: Axis.horizontal,
+                    itemCount: math.min(recentItems.length, 12),
+                    separatorBuilder: (_, __) => const SizedBox(width: 14),
+                    itemBuilder: (context, index) {
+                      final item = recentItems[index];
+                      return SizedBox(
+                        width: 240,
+                        child: RecentMediaTile(
+                          item: item,
+                          progressMs: store.progress[item.id] ?? 0,
+                          durationMs: store.durations[item.id] ?? 0,
+                          onTap: () => openPlayer(context, store, item),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+              const SliverToBoxAdapter(child: SizedBox(height: 20)),
+            ],
             SliverPadding(
               padding: const EdgeInsets.symmetric(horizontal: 22),
               sliver: SliverGrid.builder(
@@ -54,7 +91,7 @@ class MediaLibraryPage extends StatelessWidget {
                   final item = store.items[index];
                   return MediaTile(
                     item: item,
-                    progressMs: store.progress[item.id] ?? 0,
+                    progressMs: 0,
                     onTap: () => openPlayer(context, store, item),
                   );
                 },

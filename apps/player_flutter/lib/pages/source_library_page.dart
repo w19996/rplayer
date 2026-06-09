@@ -1,22 +1,24 @@
-﻿part of 'package:player_flutter/main.dart';
+part of 'package:player_flutter/main.dart';
 
 class SourceLibraryPage extends StatelessWidget {
   const SourceLibraryPage({required this.store, super.key});
 
   final AppStore store;
 
-  List<MediaSourceConfig> _sourcesOf(SourceType type) => store.sources.where((source) => source.type == type).toList();
+  List<MediaSourceConfig> _sourcesOf(SourceType type) =>
+      store.sources.where((source) => source.type == type).toList();
 
   Widget _sourceCard(BuildContext context, MediaSourceConfig source) {
-    final count = store.items.where((item) => item.sourceId == source.id).length;
+    final count =
+        store.items.where((item) => item.sourceId == source.id).length;
     return Padding(
       padding: const EdgeInsets.fromLTRB(22, 0, 22, 8),
       child: SourceCard(
         source: source,
         count: count,
         onOpen: () => Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => source.type == SourceType.webdav
+          appSlideRoute(
+            (_) => source.type == SourceType.webdav
                 ? WebdavBrowserPage(store: store, source: source)
                 : LocalBrowserPage(store: store, source: source),
           ),
@@ -26,7 +28,8 @@ class SourceLibraryPage extends StatelessWidget {
     );
   }
 
-  List<Widget> _sourceSection(BuildContext context, String title, List<MediaSourceConfig> sources) {
+  List<Widget> _sourceSection(
+      BuildContext context, String title, List<MediaSourceConfig> sources) {
     if (sources.isEmpty) return const [];
     return [
       Padding(
@@ -54,7 +57,9 @@ class SourceLibraryPage extends StatelessWidget {
                 child: Row(
                   children: [
                     const Spacer(),
-                    const Text('资源库', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
+                    const Text('资源库',
+                        style: TextStyle(
+                            fontSize: 22, fontWeight: FontWeight.w700)),
                     const Spacer(),
                     IconButton(
                       tooltip: '添加源',
