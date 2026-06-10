@@ -72,6 +72,14 @@ class WebdavClient {
     }
   }
 
+  Future<void> putBytes(String path, List<int> bytes) async {
+    final response = await http.put(source.resolve(path),
+        headers: source.headers, body: bytes);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception('WebDAV ${response.statusCode}: ${response.body}');
+    }
+  }
+
   Future<void> ensureParentCollections(String filePath) async {
     final normalized = filePath.startsWith('/') ? filePath : '/$filePath';
     final parts =
@@ -99,6 +107,15 @@ class WebdavClient {
       throw Exception('WebDAV ${response.statusCode}: ${response.body}');
     }
     return response.body;
+  }
+
+  Future<List<int>> getBytes(String path) async {
+    final response =
+        await http.get(source.resolve(path), headers: source.headers);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw Exception('WebDAV ${response.statusCode}: ${response.body}');
+    }
+    return response.bodyBytes;
   }
 }
 

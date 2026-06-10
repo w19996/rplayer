@@ -261,8 +261,10 @@ class TmdbMetadataService {
       itemId: item.id,
       tmdbId: (json['id'] as num).toInt(),
       mediaType: 'movie',
-      title: json['title'] as String? ?? item.title,
-      originalTitle: json['original_title'] as String?,
+      title: json['original_title'] as String? ??
+          json['title'] as String? ??
+          item.title,
+      originalTitle: json['title'] as String?,
       overview: json['overview'] as String?,
       posterPath: json['poster_path'] as String?,
       backdropPath: json['backdrop_path'] as String?,
@@ -298,8 +300,10 @@ class TmdbMetadataService {
       itemId: item.id,
       tmdbId: (json['id'] as num).toInt(),
       mediaType: 'tv',
-      title: json['name'] as String? ?? item.title,
-      originalTitle: json['original_name'] as String?,
+      title: json['original_name'] as String? ??
+          json['name'] as String? ??
+          item.title,
+      originalTitle: json['name'] as String?,
       overview: episode?['overview'] as String? ?? json['overview'] as String?,
       posterPath: json['poster_path'] as String?,
       backdropPath: json['backdrop_path'] as String?,

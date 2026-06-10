@@ -1,5 +1,6 @@
 pub mod danmu;
 pub mod media;
+pub mod metadata_cache;
 pub mod scanner;
 pub mod tmdb;
 pub mod webdav;
@@ -9,6 +10,7 @@ use std::os::raw::c_char;
 
 pub use danmu::{DanmuClient, DanmuEvent, DanmuMatchRequest};
 pub use media::{parse_media_identity, MediaIdentity, MediaKind};
+pub use metadata_cache::{get_all_metadata_json, put_metadata_json, replace_all_metadata_json};
 pub use scanner::{
     list_local_directory, list_local_directory_json, scan_local_videos, scan_local_videos_json,
     LocalDirectoryEntry, ScannedVideo,
@@ -87,6 +89,42 @@ pub extern "C" fn player_core_tmdb_get_json(
             let client = builder.build()?;
             tmdb_get_json_once(&client, &url, access_token.trim()).await
         })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn player_core_metadata_put_json(
+    db_path: *const c_char,
+    item_id: *const c_char,
+    metadata_json: *const c_char,
+) -> *mut c_char {
+    ffi_result(|| {
+        let db_path = read_c_string(db_path)?;
+        let item_id = read_c_string(item_id)?;
+        let metadata_json = read_c_string(metadata_json)?;
+        put_metadata_json(&db_path, &item_id, &metadata_json)?;
+        Ok("{}".to_string())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn player_core_metadata_get_all_json(db_path: *const c_char) -> *mut c_char {
+    ffi_result(|| {
+        let db_path = read_c_string(db_path)?;
+        get_all_metadata_json(&db_path)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn player_core_metadata_replace_all_json(
+    db_path: *const c_char,
+    metadata_map_json: *const c_char,
+) -> *mut c_char {
+    ffi_result(|| {
+        let db_path = read_c_string(db_path)?;
+        let metadata_map_json = read_c_string(metadata_map_json)?;
+        replace_all_metadata_json(&db_path, &metadata_map_json)?;
+        Ok("{}".to_string())
     })
 }
 

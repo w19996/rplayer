@@ -511,12 +511,18 @@ class SyncConfig {
     required this.username,
     required this.password,
     required this.configPath,
+    this.databasePath = '/Player/metadata.sqlite',
+    this.syncConfigFile = true,
+    this.syncDatabase = true,
   });
 
   final String baseUrl;
   final String username;
   final String password;
   final String configPath;
+  final String databasePath;
+  final bool syncConfigFile;
+  final bool syncDatabase;
 
   MediaSourceConfig asSource() => MediaSourceConfig.webdav(
         id: 'sync',
@@ -532,6 +538,10 @@ class SyncConfig {
         username: json['username'] as String? ?? '',
         password: json['password'] as String? ?? '',
         configPath: json['configPath'] as String? ?? '/Player/config.json',
+        databasePath:
+            json['databasePath'] as String? ?? '/Player/metadata.sqlite',
+        syncConfigFile: json['syncConfigFile'] as bool? ?? true,
+        syncDatabase: json['syncDatabase'] as bool? ?? true,
       );
 
   Map<String, dynamic> toJson() => {
@@ -539,6 +549,9 @@ class SyncConfig {
         'username': username,
         'password': password,
         'configPath': configPath,
+        'databasePath': databasePath,
+        'syncConfigFile': syncConfigFile,
+        'syncDatabase': syncDatabase,
       };
 }
 

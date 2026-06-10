@@ -27,6 +27,9 @@ class RustCoreService {
   _RustStringDart? _listLocalDirectoryJson;
   _RustTwoStringDart? _parseMediaIdentityJson;
   _RustThreeStringDart? _tmdbGetJson;
+  _RustThreeStringDart? _metadataPutJson;
+  _RustStringDart? _metadataGetAllJson;
+  _RustTwoStringDart? _metadataReplaceAllJson;
   _RustFourStringDart? _parseWebdavEntriesJson;
   _RustFreeDart? _freeString;
   Object? _loadError;
@@ -38,6 +41,9 @@ class RustCoreService {
       _listLocalDirectoryJson != null &&
       _parseMediaIdentityJson != null &&
       _tmdbGetJson != null &&
+      _metadataPutJson != null &&
+      _metadataGetAllJson != null &&
+      _metadataReplaceAllJson != null &&
       _parseWebdavEntriesJson != null &&
       _freeString != null;
 
@@ -91,6 +97,63 @@ class RustCoreService {
       String url, String accessToken, String proxyUrl) {
     final args = [url, accessToken, proxyUrl];
     return Isolate.run(() => _rustTmdbGetJsonWorker(args));
+  }
+
+  void metadataPut(String dbPath, String itemId, String metadataJson) {
+    _ensureAvailable();
+    _callThreeString(_metadataPutJson, dbPath, itemId, metadataJson);
+  }
+
+  Future<void> metadataPutAsync(
+      String dbPath, String itemId, String metadataJson) {
+    final args = [dbPath, itemId, metadataJson];
+    return Isolate.run(() => _rustMetadataPutWorker(args));
+  }
+
+  Map<String, MediaMetadata> metadataGetAll(String dbPath) {
+    _ensureAvailable();
+    final text = _callString(_metadataGetAllJson, [dbPath]);
+    final data = jsonDecode(text) as Map<String, dynamic>;
+    return data.map(
+      (key, value) => MapEntry(
+        key,
+        MediaMetadata.fromJson(value as Map<String, dynamic>),
+      ),
+    );
+  }
+
+  Future<Map<String, MediaMetadata>> metadataGetAllAsync(String dbPath) {
+    final args = [dbPath];
+    return Isolate.run(() => _rustMetadataGetAllJsonWorker(args)).then(
+      (text) {
+        final data = jsonDecode(text) as Map<String, dynamic>;
+        return data.map(
+          (key, value) => MapEntry(
+            key,
+            MediaMetadata.fromJson(value as Map<String, dynamic>),
+          ),
+        );
+      },
+    );
+  }
+
+  void metadataReplaceAll(String dbPath, Map<String, MediaMetadata> values) {
+    _ensureAvailable();
+    final text = jsonEncode(values.map((key, value) => MapEntry(
+          key,
+          value.toJson(),
+        )));
+    _callTwoString(_metadataReplaceAllJson, dbPath, text);
+  }
+
+  Future<void> metadataReplaceAllAsync(
+      String dbPath, Map<String, MediaMetadata> values) {
+    final text = jsonEncode(values.map((key, value) => MapEntry(
+          key,
+          value.toJson(),
+        )));
+    final args = [dbPath, text];
+    return Isolate.run(() => _rustMetadataReplaceAllWorker(args));
   }
 
   List<WebdavEntry> parseWebdavEntries({
@@ -147,6 +210,15 @@ class RustCoreService {
       _tmdbGetJson = _library!
           .lookupFunction<_RustThreeStringFn, _RustThreeStringDart>(
               'player_core_tmdb_get_json');
+      _metadataPutJson = _library!
+          .lookupFunction<_RustThreeStringFn, _RustThreeStringDart>(
+              'player_core_metadata_put_json');
+      _metadataGetAllJson = _library!
+          .lookupFunction<_RustStringFn, _RustStringDart>(
+              'player_core_metadata_get_all_json');
+      _metadataReplaceAllJson = _library!
+          .lookupFunction<_RustTwoStringFn, _RustTwoStringDart>(
+              'player_core_metadata_replace_all_json');
       _parseWebdavEntriesJson = _library!
           .lookupFunction<_RustFourStringFn, _RustFourStringDart>(
               'player_core_parse_webdav_entries_json');
@@ -266,6 +338,27 @@ List<LocalEntry> _rustListLocalDirectoryWorker(List<String> args) {
 
 String _rustTmdbGetJsonWorker(List<String> args) {
   return RustCoreService._().tmdbGetJson(args[0], args[1], args[2]);
+}
+
+void _rustMetadataPutWorker(List<String> args) {
+  RustCoreService._().metadataPut(args[0], args[1], args[2]);
+}
+
+String _rustMetadataGetAllJsonWorker(List<String> args) {
+  final service = RustCoreService._();
+  service._ensureAvailable();
+  return service._callString(service._metadataGetAllJson, [args[0]]);
+}
+
+void _rustMetadataReplaceAllWorker(List<String> args) {
+  final data = jsonDecode(args[1]) as Map<String, dynamic>;
+  final values = data.map(
+    (key, value) => MapEntry(
+      key,
+      MediaMetadata.fromJson(value as Map<String, dynamic>),
+    ),
+  );
+  RustCoreService._().metadataReplaceAll(args[0], values);
 }
 
 class RustScannedVideo {

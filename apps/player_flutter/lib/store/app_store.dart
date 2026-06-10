@@ -18,7 +18,7 @@ class AppStore extends ChangeNotifier {
   String tmdbLastStatus = '';
   final List<String> diagnosticLogs = [];
 
-  Future<File> get configFile async {
+  Future<Directory> get appFilesDirectory async {
     var path = Directory.systemTemp.path;
     try {
       path = await appChannel.invokeMethod<String>('appFilesDir') ?? path;
@@ -27,7 +27,17 @@ class AppStore extends ChangeNotifier {
     }
     final dir = Directory(path);
     if (!await dir.exists()) await dir.create(recursive: true);
+    return dir;
+  }
+
+  Future<File> get configFile async {
+    final dir = await appFilesDirectory;
     return File(p.join(dir.path, 'player_config.json'));
+  }
+
+  Future<File> get metadataDatabaseFile async {
+    final dir = await appFilesDirectory;
+    return File(p.join(dir.path, 'metadata.sqlite'));
   }
 
   Future<void> load() async {
@@ -37,8 +47,9 @@ class AppStore extends ChangeNotifier {
         ? await file.readAsString()
         : prefs.getString('app_state');
     if (text != null && text.isNotEmpty) {
-      importState(text, persist: false);
+      await importState(text, persist: false);
     }
+    await loadMetadataDatabase();
     loaded = true;
     notifyListeners();
     unawaited(refreshMissingMetadata());
@@ -49,6 +60,45 @@ class AppStore extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('app_state', text);
     await (await configFile).writeAsString(text);
+  }
+
+  Future<void> loadMetadataDatabase() async {
+    try {
+      final db = await metadataDatabaseFile;
+      final values =
+          await RustCoreService.instance.metadataGetAllAsync(db.path);
+      if (values.isNotEmpty) {
+        metadata
+          ..clear()
+          ..addAll(values);
+      } else if (metadata.isNotEmpty) {
+        await RustCoreService.instance.metadataReplaceAllAsync(
+          db.path,
+          metadata,
+        );
+      }
+    } catch (error) {
+      addDiagnosticLog('metadata database load failed: $error');
+    }
+  }
+
+  Future<void> saveMetadataToDatabase(
+      String itemId, MediaMetadata value) async {
+    try {
+      final db = await metadataDatabaseFile;
+      await RustCoreService.instance.metadataPutAsync(
+        db.path,
+        itemId,
+        jsonEncode(value.toJson()),
+      );
+    } catch (error) {
+      addDiagnosticLog('metadata database write failed: $error');
+    }
+  }
+
+  Future<void> replaceMetadataDatabase() async {
+    final db = await metadataDatabaseFile;
+    await RustCoreService.instance.metadataReplaceAllAsync(db.path, metadata);
   }
 
   String exportState() {
@@ -119,6 +169,9 @@ class AppStore extends ChangeNotifier {
       ..clear()
       ..addAll((json['diagnosticLogs'] as List<dynamic>? ?? const [])
           .whereType<String>());
+    if (metadata.isNotEmpty) {
+      unawaited(replaceMetadataDatabase());
+    }
     if (persist) await save();
     notifyListeners();
   }
@@ -306,6 +359,7 @@ class AppStore extends ChangeNotifier {
       var matched = 0;
       var failed = 0;
       var skipped = 0;
+      final targets = <MediaItem>[];
       for (final item in List<MediaItem>.from(items)) {
         addDiagnosticLog('TMDB item: ${describeMediaItem(item)}');
         final cached = metadata[item.id];
@@ -316,30 +370,47 @@ class AppStore extends ChangeNotifier {
           addDiagnosticLog('TMDB skip cached: ${describeMediaItem(item)}');
           continue;
         }
-        MediaMetadata? value;
-        try {
-          value = await service.lookup(item);
-        } catch (error) {
-          failed++;
-          tmdbLastStatus = 'TMDB error: ${describeMediaItem(item)} - $error';
-          addDiagnosticLog(tmdbLastStatus);
-          notifyListeners();
-          continue;
-        }
-        if (value != null) {
-          metadata[item.id] = value;
-          matched++;
-          addDiagnosticLog(
-              'TMDB matched item=${describeMediaItem(item)} tmdb=${value.tmdbId} type=${value.mediaType} poster=${value.posterPath} still=${value.stillPath}');
-          await save();
-          notifyListeners();
-        } else {
-          failed++;
-          tmdbLastStatus = 'TMDB no match: ${describeMediaItem(item)}';
-          addDiagnosticLog(tmdbLastStatus);
-          notifyListeners();
+        targets.add(item);
+      }
+
+      var cursor = 0;
+      Future<void> worker() async {
+        while (true) {
+          if (cursor >= targets.length) return;
+          final item = targets[cursor++];
+          if (!metadataRefreshing) return;
+          addDiagnosticLog('TMDB worker item: ${describeMediaItem(item)}');
+          MediaMetadata? value;
+          try {
+            value = await service.lookup(item);
+          } catch (error) {
+            failed++;
+            tmdbLastStatus = 'TMDB error: ${describeMediaItem(item)} - $error';
+            addDiagnosticLog(tmdbLastStatus);
+            notifyListeners();
+            continue;
+          }
+          if (value != null) {
+            metadata[item.id] = value;
+            matched++;
+            addDiagnosticLog(
+                'TMDB matched item=${describeMediaItem(item)} tmdb=${value.tmdbId} type=${value.mediaType} poster=${value.posterPath} still=${value.stillPath}');
+            await saveMetadataToDatabase(item.id, value);
+            notifyListeners();
+          } else {
+            failed++;
+            tmdbLastStatus = 'TMDB no match: ${describeMediaItem(item)}';
+            addDiagnosticLog(tmdbLastStatus);
+            notifyListeners();
+          }
         }
       }
+
+      final workerCount = math.min(4, math.max(1, targets.length));
+      await Future.wait([
+        for (var i = 0; i < workerCount; i++) worker(),
+      ]);
+      await save();
       tmdbLastStatus =
           'TMDB refresh done: $matched matched, $failed failed, $skipped skipped';
       addDiagnosticLog(tmdbLastStatus);
