@@ -1280,20 +1280,23 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
             ],
         )?;
 
-        let mut selected_paths: Vec<String> = source
+        let selected_paths: Vec<String> = source
             .get("selectedPaths")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
             .filter_map(Value::as_str)
-            .map(normalize_folder_path)
+            .map(str::to_string)
             .collect();
-        if selected_paths.is_empty() && !root_path.is_empty() {
-            selected_paths.push(normalize_folder_path(root_path));
-        }
         for path in selected_paths {
-            upsert_source_folder(conn, source_id, &path, None, now)?;
-            live_folder_keys.insert(format!("{source_id}\n{path}"));
+            let normalized = normalize_resource_path(&path);
+            let (folder_path, search_hint) = if is_video_resource_path(&normalized) {
+                (parent_path(&normalized), file_stem(&normalized))
+            } else {
+                (normalize_folder_path(&normalized), None)
+            };
+            upsert_source_folder(conn, source_id, &folder_path, search_hint.as_deref(), now)?;
+            live_folder_keys.insert(format!("{source_id}\n{folder_path}"));
         }
     }
 
@@ -1418,6 +1421,7 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
             conn.execute("delete from sources where id=?1", params![source_id])?;
         }
     }
+    cleanup_orphan_resources(conn)?;
     cleanup_orphan_tmdb(conn)?;
     Ok(())
 }
@@ -1860,6 +1864,27 @@ fn upsert_people_and_credits(
     Ok(())
 }
 
+fn cleanup_orphan_resources(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "delete from media_files
+         where not exists (
+           select 1 from sources s where s.id=media_files.source_id
+         )
+           or not exists (
+             select 1 from source_folders sf where sf.id=media_files.folder_id
+           )",
+        [],
+    )?;
+    conn.execute(
+        "delete from source_folders
+         where not exists (
+           select 1 from sources s where s.id=source_folders.source_id
+         )",
+        [],
+    )?;
+    Ok(())
+}
+
 fn cleanup_orphan_tmdb(conn: &Connection) -> Result<()> {
     conn.execute(
         "delete from source_folder_matches
@@ -2035,6 +2060,16 @@ fn file_ext(path: &str) -> Option<String> {
         .rsplit_once('.')
         .map(|(_, ext)| ext.to_ascii_lowercase())
         .filter(|ext| !ext.is_empty())
+}
+
+fn is_video_resource_path(path: &str) -> bool {
+    const VIDEO_EXTENSIONS: &[&str] = &[
+        "mp4", "mkv", "mov", "avi", "flv", "wmv", "webm", "m4v", "ts", "m2ts", "mts", "mpg",
+        "mpeg", "3gp", "rm", "rmvb", "vob", "ogv", "asf",
+    ];
+    file_ext(path)
+        .map(|ext| VIDEO_EXTENSIONS.contains(&ext.as_str()))
+        .unwrap_or(false)
 }
 
 fn guess_quality(path: &str) -> Option<String> {
@@ -2358,6 +2393,68 @@ mod tests {
         assert_eq!(count_rows(&conn, "tmdb_people_cache"), 0);
         assert_eq!(count_rows(&conn, "tmdb_images"), 0);
         assert_eq!(count_rows(&conn, "image_cache"), 0);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn selected_video_file_uses_parent_folder_and_source_delete_prunes_it() {
+        let db_path = std::env::temp_dir().join(format!(
+            "player_core_selected_file_folder_{}.sqlite",
+            now_ms()
+        ));
+        let state = r#"{
+          "version": 1,
+          "sources": [
+            {
+              "id": "source-1",
+              "name": "My WebDAV",
+              "type": "webdav",
+              "directory": "/dav/",
+              "baseUrl": "https://example.com/dav",
+              "selectedPaths": ["/dav/Show/01.mp4"]
+            }
+          ],
+          "items": [
+            {
+              "id": "source-1:/Show/01.mp4",
+              "sourceId": "source-1",
+              "sourceName": "My WebDAV",
+              "type": "webdav",
+              "title": "01",
+              "uri": "https://example.com/dav/Show/01.mp4",
+              "folderTitle": "Show",
+              "matchTitle": "Show",
+              "season": 1,
+              "episode": 1,
+              "mediaKind": "TV",
+              "size": 1234
+            }
+          ]
+        }"#;
+
+        put_app_state_json(db_path.to_str().unwrap(), state).unwrap();
+        let conn = open(db_path.to_str().unwrap()).unwrap();
+        let (path, search_hint): (String, Option<String>) = conn
+            .query_row(
+                "select path, search_hint from source_folders where source_id='source-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(path, "/Show/");
+        assert_eq!(search_hint.as_deref(), Some("Show"));
+
+        let empty_state = r#"{
+          "version": 1,
+          "sources": [],
+          "items": []
+        }"#;
+        put_app_state_json(db_path.to_str().unwrap(), empty_state).unwrap();
+        let conn = open(db_path.to_str().unwrap()).unwrap();
+        assert_eq!(count_rows(&conn, "sources"), 0);
+        assert_eq!(count_rows(&conn, "source_folders"), 0);
+        assert_eq!(count_rows(&conn, "media_files"), 0);
 
         let _ = std::fs::remove_file(db_path);
     }
