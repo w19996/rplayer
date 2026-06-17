@@ -2,7 +2,7 @@ use anyhow::Result;
 use base64::{engine::general_purpose, Engine as _};
 use rusqlite::{params, Connection};
 use serde_json::{Map, Value};
-use std::collections::HashSet;
+use std::{collections::HashSet, fs, path::Path};
 use url::Url;
 
 pub fn put_metadata_json(
@@ -12,61 +12,146 @@ pub fn put_metadata_json(
     metadata_json: &str,
 ) -> Result<()> {
     let value: Value = serde_json::from_str(metadata_json)?;
-    let tmdb_id = value.get("tmdbId").and_then(Value::as_i64);
-    let media_type = value.get("mediaType").and_then(Value::as_str);
-    let updated_at = value.get("updatedAt").and_then(Value::as_i64);
-    let title_json = title_json(&value).to_string();
-    let episode_json = episode_json(&value).to_string();
     let conn = open(db_path)?;
-    conn.execute(
-        "insert into metadata_titles(title_key, tmdb_id, media_type, json, updated_at)
-         values (?1, ?2, ?3, ?4, ?5)
-         on conflict(title_key) do update set
-           tmdb_id=excluded.tmdb_id,
-           media_type=excluded.media_type,
-           json=excluded.json,
-           updated_at=excluded.updated_at",
-        params![title_key, tmdb_id, media_type, title_json, updated_at],
-    )?;
-    conn.execute(
-        "insert into metadata_episodes(item_id, title_key, json, updated_at)
-         values (?1, ?2, ?3, ?4)
-         on conflict(item_id) do update set
-           title_key=excluded.title_key,
-           json=excluded.json,
-           updated_at=excluded.updated_at",
-        params![item_id, title_key, episode_json, updated_at],
-    )?;
     upsert_tmdb_metadata(&conn, title_key, item_id, &value)?;
     Ok(())
 }
 
 pub fn get_all_metadata_json(db_path: &str) -> Result<String> {
     let conn = open(db_path)?;
-    migrate_legacy_metadata(&conn)?;
     let mut stmt = conn.prepare(
-        "select e.item_id, t.json, e.json
-         from metadata_episodes e
-         join metadata_titles t on t.title_key = e.title_key
-         order by e.item_id",
+        "select
+           mf.item_id,
+           s.id,
+           s.tmdb_id,
+           s.name,
+           s.original_name,
+           s.overview,
+           s.poster_path,
+           s.backdrop_path,
+           s.logo_path,
+           s.vote_average,
+           s.first_air_date,
+           s.number_of_seasons,
+           s.number_of_episodes,
+           se.tmdb_id,
+           se.name,
+           se.overview,
+           se.air_date,
+           se.episode_count,
+           se.poster_path,
+           e.name,
+           e.tmdb_id,
+           e.overview,
+           e.air_date,
+           e.runtime,
+           e.still_path,
+           e.episode_type,
+           e.vote_average,
+           e.vote_count,
+           coalesce(e.last_synced_at, s.last_synced_at)
+         from media_file_matches mfm
+         join media_files mf on mf.id = mfm.file_id and mf.scan_status = 'active'
+         join tmdb_tv_shows s on s.id = mfm.show_id
+         left join tmdb_tv_seasons se on se.id = mfm.season_id
+         left join tmdb_tv_episodes e on e.id = mfm.episode_id
+         order by mf.item_id",
     )?;
-    let rows = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-        ))
-    })?;
-
+    let mut rows = stmt.query([])?;
     let mut map = Map::new();
-    for row in rows {
-        let (item_id, title_json, episode_json) = row?;
-        let mut value: Value = serde_json::from_str(&title_json)?;
-        merge_json(&mut value, serde_json::from_str(&episode_json)?);
-        if let Value::Object(object) = &mut value {
-            object.insert("itemId".to_string(), Value::String(item_id.clone()));
-        }
-        map.insert(item_id, value);
+    while let Some(row) = rows.next()? {
+        let item_id = row.get::<_, String>(0)?;
+        let show_id = row.get::<_, i64>(1)?;
+        let mut object = Map::new();
+        object.insert("itemId".to_string(), Value::String(item_id.clone()));
+        object.insert("tmdbId".to_string(), Value::from(row.get::<_, i64>(2)?));
+        object.insert("mediaType".to_string(), Value::String("tv".to_string()));
+        object.insert("title".to_string(), Value::String(row.get::<_, String>(3)?));
+        insert_optional_string(
+            &mut object,
+            "originalTitle",
+            row.get::<_, Option<String>>(4)?,
+        );
+        insert_optional_string(&mut object, "overview", row.get::<_, Option<String>>(5)?);
+        insert_optional_string(&mut object, "posterPath", row.get::<_, Option<String>>(6)?);
+        insert_optional_string(
+            &mut object,
+            "backdropPath",
+            row.get::<_, Option<String>>(7)?,
+        );
+        insert_optional_string(&mut object, "logoPath", row.get::<_, Option<String>>(8)?);
+        object.insert(
+            "profilePaths".to_string(),
+            query_profile_paths(&conn, show_id)?,
+        );
+        object.insert("castNames".to_string(), query_cast_names(&conn, show_id)?);
+        object.insert("genres".to_string(), query_show_genres(&conn, show_id)?);
+        insert_optional_string(
+            &mut object,
+            "releaseDate",
+            row.get::<_, Option<String>>(22)?
+                .or_else(|| row.get::<_, Option<String>>(10).ok().flatten()),
+        );
+        insert_optional_f64(
+            &mut object,
+            "voteAverage",
+            row.get::<_, Option<f64>>(26)?
+                .or_else(|| row.get::<_, Option<f64>>(9).ok().flatten()),
+        );
+        insert_optional_i64(&mut object, "totalSeasons", row.get::<_, Option<i64>>(11)?);
+        insert_optional_i64(&mut object, "totalEpisodes", row.get::<_, Option<i64>>(12)?);
+        insert_optional_i64(&mut object, "seasonTmdbId", row.get::<_, Option<i64>>(13)?);
+        insert_optional_string(&mut object, "seasonName", row.get::<_, Option<String>>(14)?);
+        insert_optional_string(
+            &mut object,
+            "seasonOverview",
+            row.get::<_, Option<String>>(15)?,
+        );
+        insert_optional_string(
+            &mut object,
+            "seasonAirDate",
+            row.get::<_, Option<String>>(16)?,
+        );
+        insert_optional_i64(
+            &mut object,
+            "seasonEpisodeCount",
+            row.get::<_, Option<i64>>(17)?,
+        );
+        insert_optional_string(
+            &mut object,
+            "seasonPosterPath",
+            row.get::<_, Option<String>>(18)?,
+        );
+        insert_optional_string(
+            &mut object,
+            "episodeName",
+            row.get::<_, Option<String>>(19)?,
+        );
+        insert_optional_i64(&mut object, "episodeTmdbId", row.get::<_, Option<i64>>(20)?);
+        insert_optional_string(
+            &mut object,
+            "episodeOverview",
+            row.get::<_, Option<String>>(21)?,
+        );
+        insert_optional_i64(
+            &mut object,
+            "episodeRuntime",
+            row.get::<_, Option<i64>>(23)?,
+        );
+        insert_optional_string(&mut object, "stillPath", row.get::<_, Option<String>>(24)?);
+        insert_optional_string(
+            &mut object,
+            "episodeType",
+            row.get::<_, Option<String>>(25)?,
+        );
+        insert_optional_i64(
+            &mut object,
+            "episodeVoteCount",
+            row.get::<_, Option<i64>>(27)?,
+        );
+        insert_optional_i64(&mut object, "updatedAt", row.get::<_, Option<i64>>(28)?);
+        object.insert("schemaVersion".to_string(), Value::from(6));
+        map.insert(item_id, Value::Object(object));
     }
     Ok(Value::Object(map).to_string())
 }
@@ -74,7 +159,6 @@ pub fn get_all_metadata_json(db_path: &str) -> Result<String> {
 pub fn put_app_state_json(db_path: &str, state_json: &str) -> Result<()> {
     let conn = open(db_path)?;
     sync_library_from_state_json(&conn, state_json)?;
-    conn.execute("delete from app_state where key='media_state'", [])?;
     Ok(())
 }
 
@@ -87,9 +171,8 @@ pub fn get_cached_image_json(db_path: &str, path: &str, size: &str) -> Result<St
     let conn = open(db_path)?;
     let image_key = format!("{size}:{path}");
     let value = conn.query_row(
-        "select content_type, bytes from image_cache where cache_key=?1 and bytes is not null
-         union all
-         select content_type, bytes from metadata_images where image_key=?1
+        "select content_type, bytes from image_cache
+         where cache_key=?1 and bytes is not null
          limit 1",
         params![image_key],
         |row| {
@@ -256,7 +339,7 @@ pub fn query_show_detail_json(db_path: &str, folder_key: &str) -> Result<String>
     let mut stmt = conn.prepare(
         "select
            mf.id,
-           mf.legacy_item_id,
+           mf.item_id,
            mf.relative_path,
            mf.filename,
            mf.size,
@@ -300,10 +383,7 @@ pub fn query_show_detail_json(db_path: &str, folder_key: &str) -> Result<String>
     let rows = stmt.query_map(params![source_id, group_path, like], |row| {
         let mut object = Map::new();
         object.insert("fileId".to_string(), Value::from(row.get::<_, i64>(0)?));
-        object.insert(
-            "legacyItemId".to_string(),
-            Value::from(row.get::<_, String>(1)?),
-        );
+        object.insert("itemId".to_string(), Value::from(row.get::<_, String>(1)?));
         object.insert(
             "relativePath".to_string(),
             Value::from(row.get::<_, String>(2)?),
@@ -395,7 +475,7 @@ pub fn query_recent_json(db_path: &str) -> Result<String> {
     let mut stmt = conn.prepare(
         "select
            mf.id,
-           mf.legacy_item_id,
+           mf.item_id,
            mf.relative_path,
            mf.filename,
            mf.size,
@@ -420,10 +500,7 @@ pub fn query_recent_json(db_path: &str) -> Result<String> {
     let rows = stmt.query_map([], |row| {
         let mut object = Map::new();
         object.insert("fileId".to_string(), Value::from(row.get::<_, i64>(0)?));
-        object.insert(
-            "legacyItemId".to_string(),
-            Value::from(row.get::<_, String>(1)?),
-        );
+        object.insert("itemId".to_string(), Value::from(row.get::<_, String>(1)?));
         object.insert(
             "relativePath".to_string(),
             Value::from(row.get::<_, String>(2)?),
@@ -463,119 +540,76 @@ pub fn query_recent_json(db_path: &str) -> Result<String> {
 pub fn replace_all_metadata_json(db_path: &str, metadata_map_json: &str) -> Result<()> {
     let value: Value = serde_json::from_str(metadata_map_json)?;
     let object = value.as_object().cloned().unwrap_or_default();
-    let mut conn = open(db_path)?;
-    let tx = conn.transaction()?;
-    tx.execute("delete from metadata_titles", [])?;
-    tx.execute("delete from metadata_episodes", [])?;
+    let conn = open(db_path)?;
+    conn.execute("delete from media_file_matches", [])?;
+    conn.execute("delete from source_folder_matches", [])?;
+    conn.execute("delete from tmdb_credits", [])?;
+    conn.execute("delete from tmdb_people_cache", [])?;
+    conn.execute("delete from tmdb_images", [])?;
+    conn.execute("delete from tmdb_tv_episodes", [])?;
+    conn.execute("delete from tmdb_tv_seasons", [])?;
+    conn.execute("delete from tmdb_tv_shows", [])?;
     for (item_id, value) in object {
-        let title_key = item_id.clone();
-        let tmdb_id = value.get("tmdbId").and_then(Value::as_i64);
-        let media_type = value.get("mediaType").and_then(Value::as_str);
-        let updated_at = value.get("updatedAt").and_then(Value::as_i64);
-        tx.execute(
-            "insert into metadata_titles(title_key, tmdb_id, media_type, json, updated_at)
-             values (?1, ?2, ?3, ?4, ?5)",
-            params![
-                title_key,
-                tmdb_id,
-                media_type,
-                title_json(&value).to_string(),
-                updated_at
-            ],
-        )?;
-        tx.execute(
-            "insert into metadata_episodes(item_id, title_key, json, updated_at)
-             values (?1, ?2, ?3, ?4)",
-            params![
-                item_id,
-                item_id,
-                episode_json(&value).to_string(),
-                updated_at
-            ],
-        )?;
+        upsert_tmdb_metadata(&conn, &item_id, &item_id, &value)?;
     }
-    tx.commit()?;
+    cleanup_orphan_tmdb(&conn)?;
     Ok(())
 }
 
 pub fn prune_metadata_json(
     db_path: &str,
     live_item_ids_json: &str,
-    live_title_keys_json: &str,
+    _live_title_keys_json: &str,
 ) -> Result<()> {
     let live_item_ids = string_set_from_json(live_item_ids_json)?;
-    let live_title_keys = string_set_from_json(live_title_keys_json)?;
     let conn = open(db_path)?;
-    migrate_legacy_metadata(&conn)?;
-
-    let episode_ids = query_string_column(&conn, "select item_id from metadata_episodes")?;
-    for item_id in episode_ids {
+    let item_ids = query_string_column(&conn, "select item_id from media_files")?;
+    for item_id in item_ids {
         if !live_item_ids.contains(&item_id) {
-            conn.execute(
-                "delete from metadata_episodes where item_id=?1",
-                params![item_id],
-            )?;
+            conn.execute("delete from media_files where item_id=?1", params![item_id])?;
         }
     }
-
-    let legacy_ids = query_string_column(&conn, "select item_id from metadata")?;
-    for item_id in legacy_ids {
-        if !live_item_ids.contains(&item_id) {
-            conn.execute("delete from metadata where item_id=?1", params![item_id])?;
-        }
-    }
-
-    let title_keys = query_string_column(&conn, "select title_key from metadata_titles")?;
-    for title_key in title_keys {
-        let has_episode: bool = conn.query_row(
-            "select exists(select 1 from metadata_episodes where title_key=?1)",
-            params![title_key],
-            |row| row.get(0),
-        )?;
-        if !has_episode || !live_title_keys.contains(&title_key) {
-            conn.execute(
-                "delete from metadata_titles where title_key=?1",
-                params![title_key],
-            )?;
-        }
-    }
-
-    prune_unreferenced_images(&conn)?;
+    cleanup_orphan_tmdb(&conn)?;
     Ok(())
 }
 
-pub async fn cache_images_json(db_path: &str, metadata_json: &str, proxy_url: &str) -> Result<()> {
+pub async fn cache_images_json(
+    db_path: &str,
+    metadata_json: &str,
+    image_base_url: &str,
+) -> Result<()> {
     let value: Value = serde_json::from_str(metadata_json)?;
     let images = image_specs(&value);
     if images.is_empty() {
         return Ok(());
     }
-    let mut builder = reqwest::Client::builder()
+    let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(12))
-        .user_agent("player_flutter/0.1");
-    if !proxy_url.trim().is_empty() {
-        builder = builder.proxy(reqwest::Proxy::all(proxy_url.trim())?);
-    }
-    let client = builder.build()?;
+        .user_agent("player_flutter/0.1")
+        .build()?;
+    let image_base_url = image_base_url.trim().trim_end_matches('/');
+    let image_base_url = if image_base_url.is_empty() {
+        "https://image.tmdb.org/t/p"
+    } else {
+        image_base_url
+    };
     let conn = open(db_path)?;
     for (path, size) in images {
         let key = format!("{size}:{path}");
         let exists: bool = conn.query_row(
-            "select exists(select 1 from metadata_images where image_key=?1)",
+            "select exists(select 1 from image_cache where cache_key=?1)",
             params![key],
             |row| row.get(0),
         )?;
         if exists {
             continue;
         }
-        let url = format!(
-            "https://image.tmdb.org/t/p/{size}{}",
-            if path.starts_with('/') {
-                path.clone()
-            } else {
-                format!("/{path}")
-            }
-        );
+        let normalized_path = if path.starts_with('/') {
+            path.clone()
+        } else {
+            format!("/{path}")
+        };
+        let url = format!("{image_base_url}/{size}{normalized_path}");
         let response = client.get(&url).send().await?;
         let status = response.status();
         if !status.is_success() {
@@ -587,19 +621,6 @@ pub async fn cache_images_json(db_path: &str, metadata_json: &str, proxy_url: &s
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
         let bytes = response.bytes().await?;
-        conn.execute(
-            "insert or replace into metadata_images(image_key, path, size, url, content_type, bytes, updated_at)
-             values (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                key,
-                path,
-                size,
-                url,
-                content_type,
-                bytes.as_ref(),
-                now_ms()
-            ],
-        )?;
         conn.execute(
             "insert or replace into image_cache(
                cache_key, provider, file_path, size, url, content_type, bytes,
@@ -622,43 +643,15 @@ pub async fn cache_images_json(db_path: &str, metadata_json: &str, proxy_url: &s
 }
 
 fn open(db_path: &str) -> Result<Connection> {
+    if let Some(parent) = Path::new(db_path).parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)?;
+        }
+    }
     let conn = Connection::open(db_path)?;
+    reset_incompatible_legacy_schema(&conn)?;
     conn.execute_batch(
-        "create table if not exists metadata(
-           item_id text primary key,
-           tmdb_id integer,
-           media_type text,
-           json text not null,
-           updated_at integer
-         );
-         create table if not exists metadata_titles(
-           title_key text primary key,
-           tmdb_id integer,
-           media_type text,
-           json text not null,
-           updated_at integer
-         );
-         create table if not exists metadata_episodes(
-           item_id text primary key,
-           title_key text not null,
-           json text not null,
-           updated_at integer
-         );
-         create table if not exists metadata_images(
-           image_key text primary key,
-           path text not null,
-           size text not null,
-           url text not null,
-           content_type text,
-           bytes blob not null,
-           updated_at integer
-         );
-         create table if not exists app_state(
-           key text primary key,
-           json text not null,
-           updated_at integer
-         );
-         create table if not exists sources(
+        "create table if not exists sources(
            id text primary key,
            name text not null,
            type text not null,
@@ -684,7 +677,7 @@ fn open(db_path: &str) -> Result<Connection> {
          );
          create table if not exists media_files(
            id integer primary key autoincrement,
-           legacy_item_id text not null unique,
+           item_id text not null unique,
            source_id text not null,
            folder_id integer,
            relative_path text not null,
@@ -930,9 +923,6 @@ fn open(db_path: &str) -> Result<Connection> {
            error_message text,
            unique(provider, entity_type, entity_id, language)
          );
-         create index if not exists idx_metadata_tmdb on metadata(tmdb_id, media_type);
-         create index if not exists idx_metadata_titles_tmdb on metadata_titles(tmdb_id, media_type);
-         create index if not exists idx_metadata_episodes_title on metadata_episodes(title_key);
          create index if not exists idx_source_folders_source on source_folders(source_id);
          create index if not exists idx_media_files_folder on media_files(folder_id);
          create index if not exists idx_media_files_source_path on media_files(source_id, relative_path);
@@ -948,6 +938,52 @@ fn open(db_path: &str) -> Result<Connection> {
     add_column_if_missing(&conn, "sources", "password", "text")?;
     conn.execute_batch("pragma foreign_keys = on;")?;
     Ok(conn)
+}
+
+fn reset_incompatible_legacy_schema(conn: &Connection) -> Result<()> {
+    let has_legacy_metadata = [
+        "metadata",
+        "metadata_titles",
+        "metadata_episodes",
+        "metadata_images",
+        "app_state",
+    ]
+    .iter()
+    .any(|table| table_exists(conn, table).unwrap_or(false));
+    let has_legacy_media_files =
+        table_exists(conn, "media_files")? && column_exists(conn, "media_files", "legacy_item_id")?;
+    if !has_legacy_metadata && !has_legacy_media_files {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "pragma foreign_keys = off;
+         drop table if exists metadata_sync_state;
+         drop table if exists api_cache;
+         drop table if exists tmdb_credits;
+         drop table if exists tmdb_people_cache;
+         drop table if exists image_cache;
+         drop table if exists tmdb_images;
+         drop table if exists media_file_matches;
+         drop table if exists source_folder_matches;
+         drop table if exists match_candidates;
+         drop table if exists match_tasks;
+         drop table if exists folder_preferences;
+         drop table if exists playback_progress;
+         drop table if exists tmdb_tv_episodes;
+         drop table if exists tmdb_tv_seasons;
+         drop table if exists tmdb_tv_shows;
+         drop table if exists media_files;
+         drop table if exists source_folders;
+         drop table if exists sources;
+         drop table if exists metadata_images;
+         drop table if exists metadata_episodes;
+         drop table if exists metadata_titles;
+         drop table if exists metadata;
+         drop table if exists app_state;
+         pragma foreign_keys = on;",
+    )?;
+    Ok(())
 }
 
 fn add_column_if_missing(
@@ -967,6 +1003,25 @@ fn add_column_if_missing(
         "alter table {table} add column {column} {definition};"
     ))?;
     Ok(())
+}
+
+fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "select exists(select 1 from sqlite_master where type='table' and name=?1)",
+        params![table],
+        |row| row.get(0),
+    )?)
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut stmt = conn.prepare(&format!("pragma table_info({table})"))?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for row in rows {
+        if row? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn export_library_state_json(conn: &Connection) -> Result<String> {
@@ -1008,7 +1063,7 @@ fn export_library_state_json(conn: &Connection) -> Result<String> {
 
     let mut items = Vec::new();
     let mut stmt = conn.prepare(
-        "select mf.legacy_item_id, mf.source_id, s.name, s.type,
+        "select mf.item_id, mf.source_id, s.name, s.type,
                 coalesce(s.base_url, ''), mf.relative_path, mf.filename,
                 coalesce(mf.guess_title, ''), mf.guess_season, mf.guess_episode,
                 coalesce(mf.media_kind_hint, 'Unknown'), mf.size
@@ -1079,7 +1134,7 @@ fn export_library_state_json(conn: &Connection) -> Result<String> {
     let mut durations = Map::new();
     let mut last_played_at = Map::new();
     let mut stmt = conn.prepare(
-        "select mf.legacy_item_id, p.position_ms, p.duration_ms, p.last_played_at
+        "select mf.item_id, p.position_ms, p.duration_ms, p.last_played_at
          from playback_progress p
          join media_files mf on mf.id = p.file_id",
     )?;
@@ -1152,44 +1207,6 @@ fn query_selected_paths(conn: &Connection, source_id: &str) -> Result<Vec<String
         values.push(row?);
     }
     Ok(values)
-}
-
-fn migrate_legacy_metadata(conn: &Connection) -> Result<()> {
-    let has_titles: bool = conn.query_row(
-        "select exists(select 1 from metadata_titles limit 1)",
-        [],
-        |row| row.get(0),
-    )?;
-    if has_titles {
-        return Ok(());
-    }
-    let mut stmt = conn.prepare("select item_id, json from metadata")?;
-    let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
-    for row in rows {
-        let (item_id, json) = row?;
-        let value: Value = serde_json::from_str(&json)?;
-        let tmdb_id = value.get("tmdbId").and_then(Value::as_i64);
-        let media_type = value.get("mediaType").and_then(Value::as_str);
-        let updated_at = value.get("updatedAt").and_then(Value::as_i64);
-        conn.execute(
-            "insert or ignore into metadata_titles(title_key, tmdb_id, media_type, json, updated_at)
-             values (?1, ?2, ?3, ?4, ?5)",
-            params![item_id, tmdb_id, media_type, title_json(&value).to_string(), updated_at],
-        )?;
-        conn.execute(
-            "insert or ignore into metadata_episodes(item_id, title_key, json, updated_at)
-             values (?1, ?2, ?3, ?4)",
-            params![
-                item_id,
-                item_id,
-                episode_json(&value).to_string(),
-                updated_at
-            ],
-        )?;
-    }
-    Ok(())
 }
 
 fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<()> {
@@ -1322,12 +1339,12 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
         live_item_ids.insert(item_id.to_string());
         conn.execute(
             "insert into media_files(
-               legacy_item_id, source_id, folder_id, relative_path, filename, file_ext,
+               item_id, source_id, folder_id, relative_path, filename, file_ext,
                size, guess_title, guess_season, guess_episode, guess_quality,
                media_kind_hint, scan_status, created_at, updated_at
              )
              values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'active', ?13, ?13)
-             on conflict(legacy_item_id) do update set
+             on conflict(item_id) do update set
                source_id=excluded.source_id,
                folder_id=excluded.folder_id,
                relative_path=excluded.relative_path,
@@ -1386,7 +1403,7 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
         let Some(orientation) = value.as_str() else {
             continue;
         };
-        if let Some((source_id, path)) = legacy_folder_key_parts(&folder_key) {
+        if let Some((source_id, path)) = folder_preference_key_parts(&folder_key) {
             let folder_id = upsert_source_folder(conn, &source_id, &path, None, now)?;
             live_folder_keys.insert(format!("{source_id}\n{path}"));
             conn.execute(
@@ -1400,12 +1417,9 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
         }
     }
 
-    for legacy_item_id in query_string_column(conn, "select legacy_item_id from media_files")? {
-        if !live_item_ids.contains(&legacy_item_id) {
-            conn.execute(
-                "delete from media_files where legacy_item_id=?1",
-                params![legacy_item_id],
-            )?;
+    for item_id in query_string_column(conn, "select item_id from media_files")? {
+        if !live_item_ids.contains(&item_id) {
+            conn.execute("delete from media_files where item_id=?1", params![item_id])?;
         }
     }
     for (source_id, path) in query_source_folders(conn)? {
@@ -1512,7 +1526,7 @@ fn upsert_tmdb_metadata(
                folder_id, show_id, match_status, search_query, selected_tmdb_id,
                matched_by, created_at, updated_at
              )
-             values (?1, ?2, 'auto', ?3, ?4, 'metadata-cache', ?5, ?5)
+             values (?1, ?2, 'auto', ?3, ?4, 'tmdb-api', ?5, ?5)
              on conflict(folder_id, provider) do update set
                show_id=excluded.show_id,
                match_status=excluded.match_status,
@@ -1527,13 +1541,34 @@ fn upsert_tmdb_metadata(
     let season_number = season.unwrap_or(1);
     conn.execute(
         "insert into tmdb_tv_seasons(
-           show_id, season_number, fetched_language, last_synced_at, created_at, updated_at
+           show_id, tmdb_id, season_number, name, overview, air_date,
+           episode_count, poster_path, fetched_language, raw_json,
+           last_synced_at, created_at, updated_at
          )
-         values (?1, ?2, 'unknown', ?3, ?3, ?3)
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'tmdb', ?9, ?10, ?10, ?10)
          on conflict(show_id, season_number) do update set
+           tmdb_id=coalesce(excluded.tmdb_id, tmdb_tv_seasons.tmdb_id),
+           name=coalesce(excluded.name, tmdb_tv_seasons.name),
+           overview=coalesce(excluded.overview, tmdb_tv_seasons.overview),
+           air_date=coalesce(excluded.air_date, tmdb_tv_seasons.air_date),
+           episode_count=coalesce(excluded.episode_count, tmdb_tv_seasons.episode_count),
+           poster_path=coalesce(excluded.poster_path, tmdb_tv_seasons.poster_path),
+           fetched_language=excluded.fetched_language,
+           raw_json=coalesce(excluded.raw_json, tmdb_tv_seasons.raw_json),
            last_synced_at=excluded.last_synced_at,
            updated_at=excluded.updated_at",
-        params![show_id, season_number, now],
+        params![
+            show_id,
+            value.get("seasonTmdbId").and_then(Value::as_i64),
+            season_number,
+            value.get("seasonName").and_then(Value::as_str),
+            value.get("seasonOverview").and_then(Value::as_str),
+            value.get("seasonAirDate").and_then(Value::as_str),
+            value.get("seasonEpisodeCount").and_then(Value::as_i64),
+            value.get("seasonPosterPath").and_then(Value::as_str),
+            season_json(value).to_string(),
+            now
+        ],
     )?;
     let season_id: i64 = conn.query_row(
         "select id from tmdb_tv_seasons where show_id=?1 and season_number=?2",
@@ -1543,29 +1578,41 @@ fn upsert_tmdb_metadata(
     let episode_id = if let Some(episode_number) = episode {
         conn.execute(
             "insert into tmdb_tv_episodes(
-               show_id, season_id, season_number, episode_number, name, air_date,
-               still_path, vote_average, fetched_language, raw_json,
+               show_id, season_id, tmdb_id, season_number, episode_number,
+               name, overview, air_date, runtime, still_path, episode_type,
+               vote_average, vote_count, fetched_language, raw_json,
                last_synced_at, created_at, updated_at
              )
-             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'unknown', ?9, ?10, ?10, ?10)
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'tmdb', ?14, ?15, ?15, ?15)
              on conflict(show_id, season_number, episode_number) do update set
                season_id=excluded.season_id,
+               tmdb_id=coalesce(excluded.tmdb_id, tmdb_tv_episodes.tmdb_id),
                name=excluded.name,
+               overview=coalesce(excluded.overview, tmdb_tv_episodes.overview),
                air_date=excluded.air_date,
+               runtime=coalesce(excluded.runtime, tmdb_tv_episodes.runtime),
                still_path=excluded.still_path,
+               episode_type=coalesce(excluded.episode_type, tmdb_tv_episodes.episode_type),
                vote_average=excluded.vote_average,
+               vote_count=coalesce(excluded.vote_count, tmdb_tv_episodes.vote_count),
+               fetched_language=excluded.fetched_language,
                raw_json=excluded.raw_json,
                last_synced_at=excluded.last_synced_at,
                updated_at=excluded.updated_at",
             params![
                 show_id,
                 season_id,
+                value.get("episodeTmdbId").and_then(Value::as_i64),
                 season_number,
                 episode_number,
                 value.get("episodeName").and_then(Value::as_str),
+                value.get("episodeOverview").and_then(Value::as_str),
                 value.get("releaseDate").and_then(Value::as_str),
+                value.get("episodeRuntime").and_then(Value::as_i64),
                 value.get("stillPath").and_then(Value::as_str),
+                value.get("episodeType").and_then(Value::as_str),
                 value.get("voteAverage").and_then(Value::as_f64),
+                value.get("episodeVoteCount").and_then(Value::as_i64),
                 episode_json(value).to_string(),
                 now
             ],
@@ -1583,7 +1630,7 @@ fn upsert_tmdb_metadata(
            file_id, show_id, season_id, episode_id, match_status, match_score,
            search_query, selected_tmdb_id, matched_by, created_at, updated_at
          )
-         values (?1, ?2, ?3, ?4, ?5, 1.0, ?6, ?7, 'metadata-cache', ?8, ?8)
+         values (?1, ?2, ?3, ?4, ?5, 1.0, ?6, ?7, 'tmdb-api', ?8, ?8)
          on conflict(file_id) do update set
            show_id=excluded.show_id,
            season_id=excluded.season_id,
@@ -1626,10 +1673,15 @@ fn episode_json(value: &Value) -> Value {
     let mut object = Map::new();
     for key in [
         "itemId",
+        "episodeTmdbId",
         "stillPath",
         "episodeName",
+        "episodeOverview",
         "releaseDate",
+        "episodeRuntime",
+        "episodeType",
         "voteAverage",
+        "episodeVoteCount",
         "updatedAt",
         "schemaVersion",
     ] {
@@ -1640,13 +1692,23 @@ fn episode_json(value: &Value) -> Value {
     Value::Object(object)
 }
 
-fn merge_json(base: &mut Value, overlay: Value) {
-    let (Value::Object(base), Value::Object(overlay)) = (base, overlay) else {
-        return;
-    };
-    for (key, value) in overlay {
-        base.insert(key, value);
+fn season_json(value: &Value) -> Value {
+    let mut object = Map::new();
+    for key in [
+        "seasonTmdbId",
+        "seasonName",
+        "seasonOverview",
+        "seasonAirDate",
+        "seasonEpisodeCount",
+        "seasonPosterPath",
+        "updatedAt",
+        "schemaVersion",
+    ] {
+        if let Some(value) = value.get(key) {
+            object.insert(key.to_string(), value.clone());
+        }
     }
+    Value::Object(object)
 }
 
 fn image_specs(value: &Value) -> Vec<(String, String)> {
@@ -1692,36 +1754,6 @@ fn query_string_column(conn: &Connection, sql: &str) -> Result<Vec<String>> {
     Ok(values)
 }
 
-fn prune_unreferenced_images(conn: &Connection) -> Result<()> {
-    let mut referenced = HashSet::new();
-    for sql in [
-        "select json from metadata_titles",
-        "select json from metadata_episodes",
-        "select json from metadata",
-    ] {
-        let mut stmt = conn.prepare(sql)?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-        for row in rows {
-            let json = row?;
-            let value: Value = serde_json::from_str(&json)?;
-            for (path, size) in image_specs(&value) {
-                referenced.insert(format!("{size}:{path}"));
-            }
-        }
-    }
-
-    let image_keys = query_string_column(conn, "select image_key from metadata_images")?;
-    for image_key in image_keys {
-        if !referenced.contains(&image_key) {
-            conn.execute(
-                "delete from metadata_images where image_key=?1",
-                params![image_key],
-            )?;
-        }
-    }
-    Ok(())
-}
-
 fn upsert_source_folder(
     conn: &Connection,
     source_id: &str,
@@ -1745,10 +1777,10 @@ fn upsert_source_folder(
     )?)
 }
 
-fn media_file_id(conn: &Connection, legacy_item_id: &str) -> Result<i64> {
+fn media_file_id(conn: &Connection, item_id: &str) -> Result<i64> {
     Ok(conn.query_row(
-        "select id from media_files where legacy_item_id=?1",
-        params![legacy_item_id],
+        "select id from media_files where item_id=?1",
+        params![item_id],
         |row| row.get(0),
     )?)
 }
@@ -1908,27 +1940,6 @@ fn cleanup_orphan_tmdb(conn: &Connection) -> Result<()> {
         [],
     )?;
     conn.execute(
-        "delete from metadata_episodes
-         where not exists (
-           select 1 from media_files mf where mf.legacy_item_id=metadata_episodes.item_id
-         )",
-        [],
-    )?;
-    conn.execute(
-        "delete from metadata_titles
-         where not exists (
-           select 1 from metadata_episodes me where me.title_key=metadata_titles.title_key
-         )",
-        [],
-    )?;
-    conn.execute(
-        "delete from metadata
-         where not exists (
-           select 1 from media_files mf where mf.legacy_item_id=metadata.item_id
-         )",
-        [],
-    )?;
-    conn.execute(
         "delete from tmdb_tv_episodes
          where not exists (
            select 1 from media_file_matches mfm where mfm.episode_id=tmdb_tv_episodes.id
@@ -2003,7 +2014,6 @@ fn cleanup_orphan_tmdb(conn: &Connection) -> Result<()> {
            )",
         [],
     )?;
-    prune_unreferenced_images(conn)?;
     Ok(())
 }
 
@@ -2143,7 +2153,7 @@ fn percent_decode(value: &str) -> String {
     String::from_utf8_lossy(&output).to_string()
 }
 
-fn legacy_folder_key_parts(value: &str) -> Option<(String, String)> {
+fn folder_preference_key_parts(value: &str) -> Option<(String, String)> {
     let (source_id, rest) = value.split_once(':')?;
     let path = rest
         .split_once(':')
@@ -2285,10 +2295,7 @@ mod tests {
         );
 
         let conn = open(db_path.to_str().unwrap()).unwrap();
-        let old_json_count: i64 = conn
-            .query_row("select count(*) from app_state", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(old_json_count, 0);
+        assert!(!table_exists(&conn, "app_state"));
         let _ = std::fs::remove_file(db_path);
     }
 
@@ -2384,8 +2391,6 @@ mod tests {
         assert_eq!(count_rows(&conn, "folder_preferences"), 0);
         assert_eq!(count_rows(&conn, "source_folder_matches"), 0);
         assert_eq!(count_rows(&conn, "media_file_matches"), 0);
-        assert_eq!(count_rows(&conn, "metadata_titles"), 0);
-        assert_eq!(count_rows(&conn, "metadata_episodes"), 0);
         assert_eq!(count_rows(&conn, "tmdb_tv_shows"), 0);
         assert_eq!(count_rows(&conn, "tmdb_tv_seasons"), 0);
         assert_eq!(count_rows(&conn, "tmdb_tv_episodes"), 0);
@@ -2459,10 +2464,56 @@ mod tests {
         let _ = std::fs::remove_file(db_path);
     }
 
+    #[test]
+    fn legacy_schema_is_reset_without_migration() {
+        let db_path =
+            std::env::temp_dir().join(format!("player_core_legacy_reset_{}.sqlite", now_ms()));
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "create table metadata_titles(title_key text primary key, json text not null);
+             create table metadata_episodes(item_id text primary key, title_key text not null, json text not null);
+             create table media_files(
+               id integer primary key autoincrement,
+               legacy_item_id text not null unique
+             );",
+        )
+        .unwrap();
+        drop(conn);
+
+        let conn = open(db_path.to_str().unwrap()).unwrap();
+        assert!(!table_exists(&conn, "metadata_titles"));
+        assert!(!table_exists(&conn, "metadata_episodes"));
+        assert!(column_exists(&conn, "media_files", "item_id").unwrap());
+        assert!(!column_exists(&conn, "media_files", "legacy_item_id").unwrap());
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn open_creates_missing_database_parent_directory() {
+        let db_dir = std::env::temp_dir().join(format!("player_core_missing_parent_{}", now_ms()));
+        let db_path = db_dir.join("nested").join("metadata.sqlite");
+        let state = r#"{"version":1,"sources":[],"items":[]}"#;
+
+        put_app_state_json(db_path.to_str().unwrap(), state).unwrap();
+
+        assert!(db_path.exists());
+        let _ = std::fs::remove_dir_all(db_dir);
+    }
+
     fn count_rows(conn: &Connection, table: &str) -> i64 {
         conn.query_row(&format!("select count(*) from {table}"), [], |row| {
             row.get(0)
         })
+        .unwrap()
+    }
+
+    fn table_exists(conn: &Connection, table: &str) -> bool {
+        conn.query_row(
+            "select exists(select 1 from sqlite_master where type='table' and name=?1)",
+            params![table],
+            |row| row.get(0),
+        )
         .unwrap()
     }
 }

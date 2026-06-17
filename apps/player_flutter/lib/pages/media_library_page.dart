@@ -82,7 +82,7 @@ class MediaLibraryPage extends StatelessWidget {
                         separatorBuilder: (_, __) => const SizedBox(width: 14),
                         itemBuilder: (context, index) {
                           final recent = data.recent[index];
-                          final item = store.itemById(recent.legacyItemId);
+                          final item = store.itemById(recent.itemId);
                           return SizedBox(
                             width: 252,
                             child: _RecentDbTile(
@@ -419,7 +419,10 @@ class _MediaGroupPageState extends State<MediaGroupPage> {
 
   void _storeChanged() {
     if (!mounted) return;
-    if (revision == widget.store.metadataRevision) return;
+    if (revision == widget.store.metadataRevision) {
+      setState(() {});
+      return;
+    }
     setState(() {
       revision = widget.store.metadataRevision;
       future = widget.store.loadLibraryShowDetail(widget.groupKey);
@@ -512,7 +515,7 @@ class _MediaGroupPageState extends State<MediaGroupPage> {
                 SafeArea(
                   bottom: false,
                   child: Padding(
-                    padding: const EdgeInsets.fromLTRB(22, 8, 22, 34),
+                    padding: const EdgeInsets.fromLTRB(22, 8, 22, 64),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -543,7 +546,7 @@ class _MediaGroupPageState extends State<MediaGroupPage> {
                             ),
                           ],
                         ),
-                        const SizedBox(height: 14),
+                        const SizedBox(height: 44),
                         Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
@@ -617,7 +620,7 @@ class _MediaGroupPageState extends State<MediaGroupPage> {
                             ),
                           ],
                         ),
-                        const SizedBox(height: 28),
+                        const SizedBox(height: 48),
                       ],
                     ),
                   ),
@@ -643,7 +646,7 @@ class _MediaGroupPageState extends State<MediaGroupPage> {
                         openPlayer(context, store, currentPlayable),
                     icon: const Icon(Icons.play_arrow, size: 22),
                     label: Text(
-                      playButtonLabel(currentEpisode, currentProgressMs),
+                      dbPlayButtonLabel(current, currentProgressMs),
                       style: const TextStyle(
                         fontSize: 15,
                         fontWeight: FontWeight.w800,
@@ -791,13 +794,14 @@ class _MediaGroupDbBody extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final head = detail.representative!;
-    final current = detail.currentFile ?? head;
-    final currentItem = store.itemById(current.legacyItemId);
+    final current = currentLibraryFile(detail, store);
+    final currentItem = store.itemById(current.itemId);
     final title =
         head.showTitle?.isNotEmpty == true ? head.showTitle! : current.filename;
-    final currentEpisode = current.displayEpisode ?? 1;
-    final currentProgressMs = current.positionMs ?? 0;
-    final currentDurationMs = current.durationMs ?? 0;
+    final currentProgressMs =
+        store.progress[current.itemId] ?? current.positionMs ?? 0;
+    final currentDurationMs =
+        store.durations[current.itemId] ?? current.durationMs ?? 0;
     return Scaffold(
       backgroundColor: const Color(0xFF090B08),
       body: CustomScrollView(
@@ -966,7 +970,7 @@ class _MediaGroupDbBody extends StatelessWidget {
                         : () => openPlayer(context, store, currentItem),
                     icon: const Icon(Icons.play_arrow, size: 22),
                     label: Text(
-                      playButtonLabel(currentEpisode, currentProgressMs),
+                      dbPlayButtonLabel(current, currentProgressMs),
                       style: const TextStyle(
                         fontSize: 15,
                         fontWeight: FontWeight.w800,
@@ -978,10 +982,10 @@ class _MediaGroupDbBody extends StatelessWidget {
                 Row(
                   children: [
                     Text(
-                      '第 ${current.displaySeason ?? 1} 季',
+                      dbSeasonLabel(current),
                       style: const TextStyle(
                         color: Colors.white,
-                        fontSize: 23,
+                        fontSize: 18,
                         fontWeight: FontWeight.w900,
                       ),
                     ),
@@ -1005,7 +1009,7 @@ class _MediaGroupDbBody extends StatelessWidget {
                     separatorBuilder: (_, __) => const SizedBox(width: 12),
                     itemBuilder: (context, index) {
                       final file = detail.files[index];
-                      final item = store.itemById(file.legacyItemId);
+                      final item = store.itemById(file.itemId);
                       return SizedBox(
                         width: 176,
                         child: _EpisodeDbCard(
@@ -1063,7 +1067,7 @@ class _MediaGroupDbBody extends StatelessWidget {
                 const Divider(color: Color(0x22FFFFFF)),
                 const SizedBox(height: 16),
                 Text(
-                  current.filename,
+                  dbPlaybackTitle(current, fallback: current.filename),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
@@ -1162,6 +1166,70 @@ class _ActorAvatar extends StatelessWidget {
   }
 }
 
+LibraryFileEntry currentLibraryFile(LibraryShowDetail detail, AppStore store) {
+  final withHistory = detail.files
+      .where((file) => (store.lastPlayedAt[file.itemId] ?? 0) > 0)
+      .toList();
+  if (withHistory.isNotEmpty) {
+    return withHistory.reduce((a, b) => (store.lastPlayedAt[a.itemId] ?? 0) >=
+            (store.lastPlayedAt[b.itemId] ?? 0)
+        ? a
+        : b);
+  }
+  final withProgress = detail.files
+      .where(
+          (file) => (store.progress[file.itemId] ?? file.positionMs ?? 0) > 0)
+      .toList();
+  if (withProgress.isNotEmpty) {
+    return withProgress.reduce((a, b) =>
+        (store.progress[a.itemId] ?? a.positionMs ?? 0) >=
+                (store.progress[b.itemId] ?? b.positionMs ?? 0)
+            ? a
+            : b);
+  }
+  return detail.currentFile ?? detail.files.first;
+}
+
+String dbSeasonLabel(LibraryFileEntry file) {
+  final season = file.seasonNumber;
+  return season == null ? '剧集' : '第 $season 季';
+}
+
+String dbEpisodeLabel(LibraryFileEntry file) {
+  final episode = file.episodeNumber;
+  return episode == null ? file.displayTitle : '第 $episode 集';
+}
+
+String dbEpisodeTitle(LibraryFileEntry file, {String? fallback}) {
+  final title = file.episodeName?.trim();
+  if (title != null && title.isNotEmpty) return title;
+  final value = fallback ?? file.displayTitle;
+  return value.trim().isEmpty ? file.filename : value;
+}
+
+String dbPlaybackTitle(LibraryFileEntry file, {required String fallback}) {
+  final values = <String>[];
+  final showTitle = file.showTitle?.trim();
+  if (showTitle != null && showTitle.isNotEmpty) values.add(showTitle);
+  if (file.seasonNumber != null && file.episodeNumber != null) {
+    values.add('S${file.seasonNumber}E${file.episodeNumber}');
+  } else if (file.episodeNumber != null) {
+    values.add('第 ${file.episodeNumber} 集');
+  }
+  final episodeTitle = file.episodeName?.trim();
+  if (episodeTitle != null && episodeTitle.isNotEmpty) {
+    values.add(episodeTitle);
+  }
+  if (values.isEmpty) return fallback;
+  return values.join(' · ');
+}
+
+String dbPlayButtonLabel(LibraryFileEntry file, int progressMs) {
+  final prefix = dbEpisodeLabel(file);
+  if (progressMs <= 0) return prefix;
+  return '$prefix ${formatDuration(Duration(milliseconds: progressMs))}';
+}
+
 MediaItem currentGroupItem(MediaFolderGroup group, AppStore store) {
   final withHistory = group.items
       .where((item) => (store.lastPlayedAt[item.id] ?? 0) > 0)
@@ -1228,9 +1296,9 @@ class _EpisodeDbCard extends StatelessWidget {
   final VoidCallback? onTap;
 
   double get progressValue {
-    final progress = file.positionMs ?? 0;
+    final progress = store.progress[file.itemId] ?? file.positionMs ?? 0;
     if (progress <= 0) return 0;
-    final duration = file.durationMs ?? 0;
+    final duration = store.durations[file.itemId] ?? file.durationMs ?? 0;
     if (duration <= 0) return 0.06;
     return (progress / duration).clamp(0.0, 1.0);
   }
@@ -1238,13 +1306,12 @@ class _EpisodeDbCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final imagePath = file.stillPath ?? file.backdropPath;
-    final progress = file.positionMs ?? 0;
-    final duration = file.durationMs ?? 0;
+    final progress = store.progress[file.itemId] ?? file.positionMs ?? 0;
+    final duration = store.durations[file.itemId] ?? file.durationMs ?? 0;
     final hasTime = progress > 0 || duration > 0;
     final timeText = duration > 0
         ? '${formatDuration(Duration(milliseconds: progress))}/${formatDuration(Duration(milliseconds: duration))}'
         : formatDuration(Duration(milliseconds: progress));
-    final episode = file.displayEpisode;
     return InkWell(
       borderRadius: BorderRadius.circular(8),
       onTap: onTap,
@@ -1316,9 +1383,9 @@ class _EpisodeDbCard extends StatelessWidget {
           ),
           const SizedBox(height: 7),
           Text(
-            episode == null
-                ? file.displayTitle
-                : '$episode. ${file.displayTitle}',
+            file.episodeNumber == null
+                ? dbEpisodeTitle(file)
+                : '${file.episodeNumber}. ${dbEpisodeTitle(file)}',
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
             style: const TextStyle(

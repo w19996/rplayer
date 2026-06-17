@@ -56,11 +56,23 @@ class ProfilePage extends StatelessWidget {
                   icon: Icons.image_search_outlined,
                   title: 'TMDB 与媒体信息',
                   subtitle: tmdb.enabled
-                      ? '${tmdb.language} / ${tmdb.region} / ${Uri.parse(tmdb.apiBaseUrl).host}'
-                      : 'API、海报、简介、演员和诊断日志',
+                      ? '${tmdb.language} / ${tmdb.region} / ${tmdbEndpointLabel(tmdb.apiBaseUrl)} / ${tmdbEndpointHost(tmdb.apiBaseUrl)}'
+                      : 'API、海报、简介和演员信息',
                   actionText: '进入',
                   onTap: () => Navigator.of(context).push(
                     appSlideRoute((_) => TmdbSettingsPage(store: store)),
+                  ),
+                ),
+                ProfileActionCard(
+                  icon: Icons.bug_report_outlined,
+                  title: '诊断日志',
+                  subtitle: store.diagnosticLoggingEnabled
+                      ? '已开启，记录数据库、扫描、匹配、缓存、同步和播放事件'
+                      : '已关闭，不记录新的诊断日志',
+                  actionText: '进入',
+                  onTap: () => Navigator.of(context).push(
+                    appSlideRoute(
+                        (_) => DiagnosticLogSettingsPage(store: store)),
                   ),
                 ),
                 ProfileActionCard(
@@ -108,7 +120,7 @@ class TmdbSettingsPage extends StatelessWidget {
                 icon: Icons.image_search_outlined,
                 title: 'TMDB API',
                 subtitle: tmdb.enabled
-                    ? '${tmdb.language} / ${tmdb.region} / ${Uri.parse(tmdb.apiBaseUrl).host}'
+                    ? '${tmdb.language} / ${tmdb.region} / ${tmdbEndpointLabel(tmdb.apiBaseUrl)} / ${tmdbEndpointHost(tmdb.apiBaseUrl)}'
                     : '获取影片信息、竖版海报和剧集封面',
                 actionText: tmdb.enabled ? '编辑' : '设置',
                 onTap: () => showTmdbConfigDialog(context, store),
@@ -126,13 +138,37 @@ class TmdbSettingsPage extends StatelessWidget {
                   unawaited(store.refreshMissingMetadata(force: true));
                 },
               ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class DiagnosticLogSettingsPage extends StatelessWidget {
+  const DiagnosticLogSettingsPage({required this.store, super.key});
+
+  final AppStore store;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('诊断日志')),
+      body: AnimatedBuilder(
+        animation: store,
+        builder: (context, _) {
+          final latest = store.diagnosticLogs.reversed.take(8).toList();
+          return ListView(
+            padding: const EdgeInsets.all(22),
+            children: [
               SwitchListTile(
                 contentPadding: const EdgeInsets.symmetric(horizontal: 4),
                 secondary: const Icon(Icons.bug_report_outlined),
-                title: const Text('诊断日志'),
+                title: const Text('记录诊断日志'),
                 subtitle: Text(store.diagnosticLoggingEnabled
-                    ? '已开启，记录扫描、同步、TMDB、缓存和数据库事件'
-                    : '已关闭，不记录新的诊断日志'),
+                    ? '记录数据库读写、扫描、匹配、TMDB、图片缓存、同步和播放事件'
+                    : '关闭后不会继续追加新的诊断日志'),
                 value: store.diagnosticLoggingEnabled,
                 onChanged: (value) =>
                     unawaited(store.setDiagnosticLoggingEnabled(value)),
@@ -140,7 +176,7 @@ class TmdbSettingsPage extends StatelessWidget {
               ProfileActionCard(
                 icon: Icons.file_download_outlined,
                 title: '导出诊断日志',
-                subtitle: '导出最近 ${store.diagnosticLogs.length} 条诊断日志为 txt 文件',
+                subtitle: '导出日志文件，共 ${store.diagnosticLogCount} 条记录',
                 actionText: '导出',
                 onTap: () async {
                   final path = await store.exportDiagnosticLogFile();
@@ -150,13 +186,43 @@ class TmdbSettingsPage extends StatelessWidget {
               ProfileActionCard(
                 icon: Icons.delete_sweep_outlined,
                 title: '清空诊断日志',
-                subtitle: '清空当前内存中的调试日志',
+                subtitle: '清空本地诊断日志文件',
                 actionText: '清空',
                 onTap: () async {
                   await store.clearDiagnosticLogs();
                   if (context.mounted) showSnack(context, '诊断日志已清空');
                 },
               ),
+              if (latest.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    '最近记录',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF5F6F8),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Text(
+                      latest.join('\n'),
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                        height: 1.45,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ],
           );
         },
@@ -233,15 +299,16 @@ Future<void> showTmdbConfigDialog(BuildContext context, AppStore store) async {
   final token = TextEditingController(text: current.accessToken);
   final language = TextEditingController(text: current.language);
   final region = TextEditingController(text: current.region);
-  final proxyUrl = TextEditingController(text: current.proxyUrl);
-  var apiBaseUrl = selectedTmdbApiBaseUrl(current.apiBaseUrl);
+  final customApiBaseUrl =
+      TextEditingController(text: tmdbProxyDisplayBaseUrl(current.apiBaseUrl));
+  var endpointValue = selectedTmdbEndpointValue(current.apiBaseUrl);
 
   await showDialog<void>(
     context: context,
     builder: (context) => StatefulBuilder(
       builder: (context, setDialogState) {
         final selected = tmdbApiEndpoints
-            .firstWhere((endpoint) => endpoint.url == apiBaseUrl);
+            .firstWhere((endpoint) => endpoint.url == endpointValue);
         return AlertDialog(
           title: const Text('TMDB API'),
           content: SingleChildScrollView(
@@ -267,10 +334,12 @@ Future<void> showTmdbConfigDialog(BuildContext context, AppStore store) async {
                 ),
                 DropdownButtonFormField<String>(
                   isExpanded: true,
-                  initialValue: apiBaseUrl,
+                  initialValue: endpointValue,
                   decoration: InputDecoration(
                     labelText: 'TMDB API 地址',
-                    helperText: selected.url,
+                    helperText: selected.custom
+                        ? '兼容 w19996/tmdb：API 使用 /3，图片使用 /t/p'
+                        : selected.url,
                   ),
                   selectedItemBuilder: (context) => [
                     for (final endpoint in tmdbApiEndpoints)
@@ -292,7 +361,7 @@ Future<void> showTmdbConfigDialog(BuildContext context, AppStore store) async {
                           children: [
                             Text(endpoint.label),
                             Text(
-                              endpoint.url,
+                              endpoint.custom ? '输入你部署的代理域名' : endpoint.url,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
                                 color: Colors.grey,
@@ -305,16 +374,17 @@ Future<void> showTmdbConfigDialog(BuildContext context, AppStore store) async {
                   ],
                   onChanged: (value) {
                     if (value == null) return;
-                    setDialogState(() => apiBaseUrl = value);
+                    setDialogState(() => endpointValue = value);
                   },
                 ),
-                TextField(
-                  controller: proxyUrl,
-                  decoration: const InputDecoration(
-                    labelText: 'HTTP 代理',
-                    helperText: '可选，例如 http://192.168.1.10:7890',
+                if (endpointValue == tmdbProxyEndpointValue)
+                  TextField(
+                    controller: customApiBaseUrl,
+                    decoration: const InputDecoration(
+                      labelText: '自建 tmdb-proxy 域名',
+                      helperText: '例如 https://tmdb.example.com',
+                    ),
                   ),
-                ),
               ],
             ),
           ),
@@ -325,6 +395,11 @@ Future<void> showTmdbConfigDialog(BuildContext context, AppStore store) async {
             ),
             FilledButton(
               onPressed: () async {
+                final apiBaseUrl = endpointValue == tmdbProxyEndpointValue
+                    ? customApiBaseUrl.text.trim()
+                    : endpointValue;
+                final normalizedApiBaseUrl =
+                    normalizeTmdbApiBaseUrl(apiBaseUrl);
                 await store.setTmdbConfig(
                   TmdbConfig(
                     accessToken: token.text.trim(),
@@ -333,8 +408,7 @@ Future<void> showTmdbConfigDialog(BuildContext context, AppStore store) async {
                         : language.text.trim(),
                     region:
                         region.text.trim().isEmpty ? 'CN' : region.text.trim(),
-                    apiBaseUrl: apiBaseUrl,
-                    proxyUrl: proxyUrl.text.trim(),
+                    apiBaseUrl: normalizedApiBaseUrl,
                   ),
                 );
                 if (context.mounted) Navigator.pop(context);

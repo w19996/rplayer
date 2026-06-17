@@ -37,10 +37,14 @@ String remoteParentName(String value) {
   return parent.split('/').where((part) => part.isNotEmpty).lastOrNull ?? '';
 }
 
-String? tmdbImageUrl(String? path, String size) {
+String? tmdbImageUrl(
+  String? path,
+  String size, {
+  String imageBaseUrl = 'https://image.tmdb.org/t/p',
+}) {
   if (path == null || path.isEmpty) return null;
   final normalized = path.startsWith('/') ? path : '/$path';
-  return 'https://image.tmdb.org/t/p/$size$normalized';
+  return '${imageBaseUrl.trim().replaceAll(RegExp(r'/+$'), '')}/$size$normalized';
 }
 
 String normalizeMatchText(String value) {

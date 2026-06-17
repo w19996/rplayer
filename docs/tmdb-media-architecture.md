@@ -339,18 +339,16 @@ where pp.last_played_at is not null
 order by pp.last_played_at desc;
 ```
 
-## 旧库迁移计划
+## 全新库规则
 
-当前旧结构里 `app_state.media_state` 保存了 `sources/items/progress/durations/lastPlayedAt/folderOrientations`，`metadata_titles/metadata_episodes` 保存了按文件拆分的 TMDB 快照。迁移时按下面顺序：
+当前实现按全新 App 数据库处理，不再兼容或导入旧缓存：
 
-1. 从 `app_state.media_state.sources` 迁移到 `sources` 和 `source_folders`。
-2. 从 `items` 迁移到 `media_files`，保留 legacy `item.id -> media_files.id` 映射。
-3. 从 `progress/durations/lastPlayedAt` 迁移到 `playback_progress`。
-4. 从 `folderOrientations` 迁移到 `folder_preferences`。
-5. 从 `metadata_titles` 迁移 `tmdb_tv_shows`，但只保留有 `tmdbId` 的记录。
-6. 从 `metadata_episodes` 只能迁移临时 episode 快照；如果没有 TMDB episode id，应在首次在线时按 show/season 重新拉取季详情并补全 `tmdb_tv_episodes`。
-7. 从 `metadata_images` 迁移到 `image_cache`。
-8. 迁移后保留 legacy 表只读一版，确认无问题后再删除或忽略。
+1. 不创建、读取或迁移 `metadata`、`metadata_titles`、`metadata_episodes`、`metadata_images`。
+2. 不从 `app_state.media_state` 自动导入旧媒体状态；启动时只读取当前 `player_config.json` 和结构化 SQLite 表。
+3. `media_files` 使用当前业务标识 `item_id`，不再保留 legacy 映射字段。
+4. TMDB 数据只通过当前在线匹配流程写入 `tmdb_tv_shows`、`tmdb_tv_seasons`、`tmdb_tv_episodes`、`tmdb_images` 和匹配表。
+5. 图片缓存只使用 `image_cache`；旧 `metadata_images` 不再作为回退来源。
+6. 如果已有旧库或旧配置，需要用户主动重新扫描和重新匹配，系统不做自动迁移。
 
 ## 实现边界
 

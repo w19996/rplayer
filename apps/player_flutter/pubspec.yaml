@@ -14,7 +14,6 @@ dependencies:
   ffi: ^2.1.4
   http: ^1.6.0
   path: ^1.9.1
-  shared_preferences: ^2.5.4
   xml: ^6.6.1
   media_kit: ^1.2.6
   media_kit_video: ^2.0.1

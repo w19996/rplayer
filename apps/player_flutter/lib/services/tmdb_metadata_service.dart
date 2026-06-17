@@ -12,9 +12,7 @@ class TmdbMetadataService {
   final Map<String, Map<String, dynamic>> _jsonCache = {};
 
   String get _baseUrl {
-    final value = config.apiBaseUrl.trim();
-    if (value.isEmpty) return defaultTmdbApiBaseUrl;
-    return _normalizeBaseUrl(value);
+    return normalizeTmdbApiBaseUrl(config.apiBaseUrl);
   }
 
   Future<MediaMetadata?> lookup(MediaItem item) async {
@@ -90,6 +88,7 @@ class TmdbMetadataService {
         item.id: _tvMetadataFromCachedTitle(
           item,
           cachedTitle,
+          seasons[inferredSeasonNumber(item)],
           _episodeFromSeason(
             seasons[inferredSeasonNumber(item)],
             inferredEpisodeNumber(item),
@@ -422,8 +421,8 @@ class TmdbMetadataService {
     return fallback;
   }
 
-  MediaMetadata _tvMetadataFromCachedTitle(
-      MediaItem item, MediaMetadata title, Map<String, dynamic>? episodeJson) {
+  MediaMetadata _tvMetadataFromCachedTitle(MediaItem item, MediaMetadata title,
+      Map<String, dynamic>? seasonJson, Map<String, dynamic>? episodeJson) {
     final episode = episodeJson?.isEmpty == true ? null : episodeJson;
     return MediaMetadata(
       itemId: item.id,
@@ -444,7 +443,18 @@ class TmdbMetadataService {
           (episode?['vote_average'] as num?)?.toDouble() ?? title.voteAverage,
       totalSeasons: title.totalSeasons,
       totalEpisodes: title.totalEpisodes,
+      seasonTmdbId: (seasonJson?['id'] as num?)?.toInt(),
+      seasonName: seasonJson?['name'] as String?,
+      seasonOverview: seasonJson?['overview'] as String?,
+      seasonAirDate: seasonJson?['air_date'] as String?,
+      seasonEpisodeCount: (seasonJson?['episodes'] as List<dynamic>?)?.length,
+      seasonPosterPath: seasonJson?['poster_path'] as String?,
+      episodeTmdbId: (episode?['id'] as num?)?.toInt(),
       episodeName: episode?['name'] as String?,
+      episodeOverview: episode?['overview'] as String?,
+      episodeRuntime: (episode?['runtime'] as num?)?.toInt(),
+      episodeType: episode?['episode_type'] as String?,
+      episodeVoteCount: (episode?['vote_count'] as num?)?.toInt(),
       updatedAt: DateTime.now().millisecondsSinceEpoch,
       schemaVersion: currentMetadataSchemaVersion,
     );
@@ -477,7 +487,18 @@ class TmdbMetadataService {
           (json['vote_average'] as num?)?.toDouble(),
       totalSeasons: (json['number_of_seasons'] as num?)?.toInt(),
       totalEpisodes: (json['number_of_episodes'] as num?)?.toInt(),
+      seasonTmdbId: (seasonJson?['id'] as num?)?.toInt(),
+      seasonName: seasonJson?['name'] as String?,
+      seasonOverview: seasonJson?['overview'] as String?,
+      seasonAirDate: seasonJson?['air_date'] as String?,
+      seasonEpisodeCount: (seasonJson?['episodes'] as List<dynamic>?)?.length,
+      seasonPosterPath: seasonJson?['poster_path'] as String?,
+      episodeTmdbId: (episode?['id'] as num?)?.toInt(),
       episodeName: episode?['name'] as String?,
+      episodeOverview: episode?['overview'] as String?,
+      episodeRuntime: (episode?['runtime'] as num?)?.toInt(),
+      episodeType: episode?['episode_type'] as String?,
+      episodeVoteCount: (episode?['vote_count'] as num?)?.toInt(),
       updatedAt: DateTime.now().millisecondsSinceEpoch,
       schemaVersion: currentMetadataSchemaVersion,
     );
@@ -565,14 +586,10 @@ class TmdbMetadataService {
         'headers accept=application/json Authorization=Bearer ${_maskedToken()}');
     _log(
         'curl equivalent: curl --request GET --url "$uri" --header "Authorization: Bearer ${_maskedToken()}" --header "accept: application/json"');
-    if (config.proxyUrl.trim().isNotEmpty) {
-      _log('proxy configured: ${config.proxyUrl.trim()}');
-    }
     _log('Rust reqwest request on worker isolate host=${uri.host}');
     final body = await RustCoreService.instance.tmdbGetJsonAsync(
       uri.toString(),
       config.accessToken.trim(),
-      config.proxyUrl.trim(),
     );
     final decoded = jsonDecode(body) as Map<String, dynamic>;
     _jsonCache[cacheKey] = decoded;
@@ -587,9 +604,5 @@ class TmdbMetadataService {
     final token = config.accessToken.trim();
     if (token.length <= 10) return '***';
     return '${token.substring(0, 6)}...${token.substring(token.length - 4)}';
-  }
-
-  String _normalizeBaseUrl(String value) {
-    return value.endsWith('/') ? value.substring(0, value.length - 1) : value;
   }
 }

@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:player_flutter/main.dart';
 
@@ -79,10 +78,29 @@ void main() {
     expect(normalizeMatchText('Low.IQ-Crime S01E01'), 'low iq crime s01e01');
   });
 
+  test('normalizes self-hosted tmdb proxy endpoints', () {
+    expect(
+      normalizeTmdbApiBaseUrl('tmdb.ansky.top'),
+      'https://tmdb.ansky.top/3',
+    );
+    expect(
+      normalizeTmdbApiBaseUrl('https://tmdb.ansky.top/'),
+      'https://tmdb.ansky.top/3',
+    );
+    expect(
+      tmdbImageBaseUrlForApiBaseUrl('https://tmdb.ansky.top'),
+      'https://tmdb.ansky.top/t/p',
+    );
+    expect(
+      const TmdbConfig(apiBaseUrl: 'https://tmdb.ansky.top')
+          .toJson()['apiBaseUrl'],
+      'https://tmdb.ansky.top/3',
+    );
+  });
+
   testWidgets(
       'resource library starts empty and add page only offers supported source types',
       (WidgetTester tester) async {
-    SharedPreferences.setMockInitialValues({});
     final store = AppStore()..loaded = true;
 
     await tester.pumpWidget(

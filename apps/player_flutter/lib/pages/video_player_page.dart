@@ -53,6 +53,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   String network = 'NET';
   String networkSpeed = '0 KB/s';
   bool charging = false;
+  LibraryShowDetail? libraryDetail;
   Object? error;
 
   Player get player => _player ??= Player(
@@ -69,9 +70,23 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     super.initState();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     startStatusTimer();
+    unawaited(loadCurrentLibraryDetail());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) init();
     });
+  }
+
+  Future<void> loadCurrentLibraryDetail() async {
+    final groupKey = mediaFolderKey(currentItem);
+    try {
+      final detail = await widget.store.loadLibraryShowDetail(groupKey);
+      if (!mounted || mediaFolderKey(currentItem) != groupKey) return;
+      setState(() => libraryDetail = detail);
+    } catch (_) {
+      if (mounted && mediaFolderKey(currentItem) == groupKey) {
+        setState(() => libraryDetail = null);
+      }
+    }
   }
 
   void attachStreams() {
@@ -626,9 +641,48 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
             item.sourceId == currentItem.sourceId &&
             mediaFolderKey(item) == folderKey)
         .toList();
-    items
-        .sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+    items.sort((a, b) {
+      final left = dbFileForItem(a);
+      final right = dbFileForItem(b);
+      final leftEpisode = left?.episodeNumber ?? inferredEpisodeNumber(a);
+      final rightEpisode = right?.episodeNumber ?? inferredEpisodeNumber(b);
+      if (leftEpisode != null && rightEpisode != null) {
+        return leftEpisode.compareTo(rightEpisode);
+      }
+      return a.title.toLowerCase().compareTo(b.title.toLowerCase());
+    });
     return items;
+  }
+
+  LibraryFileEntry? dbFileForItem(MediaItem item) {
+    final detail = libraryDetail;
+    if (detail == null) return null;
+    for (final file in detail.files) {
+      if (file.itemId == item.id) return file;
+    }
+    return null;
+  }
+
+  LibraryFileEntry? get currentDbFile => dbFileForItem(currentItem);
+
+  String playbackTitleFor(MediaItem item) {
+    final file = dbFileForItem(item);
+    if (file == null) return item.title;
+    return dbPlaybackTitle(file, fallback: item.title);
+  }
+
+  String episodePanelTitle(MediaItem item) {
+    final file = dbFileForItem(item);
+    if (file == null) return item.title;
+    final title = dbEpisodeTitle(file, fallback: item.title);
+    final episode = file.episodeNumber;
+    return episode == null ? title : '$episode. $title';
+  }
+
+  String get episodePanelSeasonLabel {
+    final file = currentDbFile ?? libraryDetail?.representative;
+    if (file == null) return '剧集';
+    return dbSeasonLabel(file);
   }
 
   Future<void> playEpisode(MediaItem item) async {
@@ -653,6 +707,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
       selectedTrack = const Track();
       availableTracks = const Tracks();
     });
+    unawaited(loadCurrentLibraryDetail());
     await init();
   }
 
@@ -800,9 +855,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
 
   Widget buildTitleOverlay(BuildContext context, bool isLandscape) {
     return Positioned(
-      left: isLandscape ? 44 : 4,
+      left: isLandscape ? 32 : 4,
       right: isLandscape ? 24 : 92,
-      top: isLandscape ? 36 : 28,
+      top: isLandscape ? 28 : 28,
       child: Row(
         children: [
           IconButton(
@@ -811,16 +866,16 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
             icon: shadowIcon(Icons.chevron_left, size: isLandscape ? 30 : 24),
             padding: EdgeInsets.zero,
             constraints: BoxConstraints.tightFor(
-                width: isLandscape ? 42 : 36, height: isLandscape ? 42 : 36),
+                width: isLandscape ? 36 : 36, height: isLandscape ? 36 : 36),
           ),
           Expanded(
             child: Text(
-              currentItem.title,
+              playbackTitleFor(currentItem),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
                   color: Colors.white,
-                  fontSize: isLandscape ? 18 : 14,
+                  fontSize: isLandscape ? 16 : 14,
                   fontWeight: FontWeight.w700,
                   shadows: controlShadows),
             ),
@@ -886,7 +941,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
               width: panelWidth,
               height: double.infinity,
               padding: EdgeInsets.fromLTRB(
-                  isLandscape ? 18 : 14, 16, isLandscape ? 24 : 14, 18),
+                  isLandscape ? 14 : 14, 12, isLandscape ? 18 : 14, 14),
               decoration: const BoxDecoration(
                 color: Color(0xE81F1F24),
                 border: Border(left: BorderSide(color: Color(0x55FFFFFF))),
@@ -896,11 +951,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('第 1 季（共 ${items.length} 集）',
+                    Text('$episodePanelSeasonLabel（共 ${items.length} 集）',
                         style: TextStyle(
                             color: Colors.white70,
                             fontSize: isLandscape ? 14 : 12)),
-                    SizedBox(height: isLandscape ? 22 : 14),
+                    SizedBox(height: isLandscape ? 14 : 12),
                     Expanded(
                       child: ListView.separated(
                         itemCount: items.length,
@@ -915,7 +970,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                             child: Container(
                               padding: EdgeInsets.symmetric(
                                   horizontal: isLandscape ? 14 : 10,
-                                  vertical: isLandscape ? 12 : 9),
+                                  vertical: isLandscape ? 10 : 9),
                               decoration: BoxDecoration(
                                 color: selected
                                     ? const Color(0x22FFFFFF)
@@ -938,7 +993,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                                   const SizedBox(width: 10),
                                   Expanded(
                                     child: Text(
-                                      '${index + 1}. ${item.title}',
+                                      episodePanelTitle(item),
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
                                       style: TextStyle(

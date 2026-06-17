@@ -97,12 +97,13 @@ Future<void> uploadState(BuildContext context, AppStore store) async {
   final config = store.syncConfig;
   if (config == null) return showSnack(context, '请先设置同步 WebDAV');
   try {
-    store.addDiagnosticLog('sync upload started');
+    store.addDiagnosticLog('sync upload started', category: 'sync');
     final client = WebdavClient.fromSync(config);
     if (config.syncConfigFile) {
       await client.ensureParentCollections(config.configPath);
       await client.putText(config.configPath, store.exportSettings());
-      store.addDiagnosticLog('sync uploaded settings: ${config.configPath}');
+      store.addDiagnosticLog('sync uploaded settings: ${config.configPath}',
+          category: 'sync');
     }
     if (config.syncDatabase) {
       await store.saveMediaStateDatabase();
@@ -111,13 +112,13 @@ Future<void> uploadState(BuildContext context, AppStore store) async {
       if (await db.exists()) {
         await client.ensureParentCollections(config.databasePath);
         await client.putBytes(config.databasePath, await db.readAsBytes());
-        store
-            .addDiagnosticLog('sync uploaded database: ${config.databasePath}');
+        store.addDiagnosticLog('sync uploaded database: ${config.databasePath}',
+            category: 'sync');
       }
     }
     if (context.mounted) showSnack(context, '同步已上传');
   } catch (e) {
-    store.addDiagnosticLog('sync upload failed: $e');
+    store.addDiagnosticLog('sync upload failed: $e', category: 'sync');
     if (context.mounted) showSnack(context, '上传失败：$e');
   }
 }
@@ -126,24 +127,25 @@ Future<void> downloadState(BuildContext context, AppStore store) async {
   final config = store.syncConfig;
   if (config == null) return showSnack(context, '请先设置同步 WebDAV');
   try {
-    store.addDiagnosticLog('sync download started');
+    store.addDiagnosticLog('sync download started', category: 'sync');
     final client = WebdavClient.fromSync(config);
     if (config.syncConfigFile) {
       final text = await client.getText(config.configPath);
       await store.importState(text);
-      store.addDiagnosticLog('sync downloaded settings: ${config.configPath}');
+      store.addDiagnosticLog('sync downloaded settings: ${config.configPath}',
+          category: 'sync');
     }
     if (config.syncDatabase) {
       final bytes = await client.getBytes(config.databasePath);
       final db = await store.metadataDatabaseFile;
       await db.writeAsBytes(bytes, flush: true);
       await store.reloadDatabaseBackedState();
-      store
-          .addDiagnosticLog('sync downloaded database: ${config.databasePath}');
+      store.addDiagnosticLog('sync downloaded database: ${config.databasePath}',
+          category: 'sync');
     }
     if (context.mounted) showSnack(context, '同步已恢复');
   } catch (e) {
-    store.addDiagnosticLog('sync download failed: $e');
+    store.addDiagnosticLog('sync download failed: $e', category: 'sync');
     if (context.mounted) showSnack(context, '下载失败：$e');
   }
 }

@@ -74,23 +74,18 @@ pub extern "C" fn player_core_parse_webdav_entries_json(
 pub extern "C" fn player_core_tmdb_get_json(
     url: *const c_char,
     access_token: *const c_char,
-    proxy_url: *const c_char,
 ) -> *mut c_char {
     ffi_result(|| {
         let url = read_c_string(url)?;
         let access_token = read_c_string(access_token)?;
-        let proxy_url = read_c_string(proxy_url)?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
         runtime.block_on(async move {
-            let mut builder = reqwest::Client::builder()
+            let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(8))
-                .user_agent("player_flutter/0.1");
-            if !proxy_url.trim().is_empty() {
-                builder = builder.proxy(reqwest::Proxy::all(proxy_url.trim())?);
-            }
-            let client = builder.build()?;
+                .user_agent("player_flutter/0.1")
+                .build()?;
             tmdb_get_json_once(&client, &url, access_token.trim()).await
         })
     })
@@ -117,16 +112,16 @@ pub extern "C" fn player_core_metadata_put_json(
 pub extern "C" fn player_core_metadata_cache_images_json(
     db_path: *const c_char,
     metadata_json: *const c_char,
-    proxy_url: *const c_char,
+    image_base_url: *const c_char,
 ) -> *mut c_char {
     ffi_result(|| {
         let db_path = read_c_string(db_path)?;
         let metadata_json = read_c_string(metadata_json)?;
-        let proxy_url = read_c_string(proxy_url)?;
+        let image_base_url = read_c_string(image_base_url)?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        runtime.block_on(cache_images_json(&db_path, &metadata_json, &proxy_url))?;
+        runtime.block_on(cache_images_json(&db_path, &metadata_json, &image_base_url))?;
         Ok("{}".to_string())
     })
 }

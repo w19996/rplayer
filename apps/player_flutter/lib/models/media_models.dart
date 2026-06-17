@@ -311,13 +311,19 @@ class MediaFolderGroup {
 }
 
 class TmdbApiEndpoint {
-  const TmdbApiEndpoint({required this.label, required this.url});
+  const TmdbApiEndpoint({
+    required this.label,
+    required this.url,
+    this.custom = false,
+  });
 
   final String label;
   final String url;
+  final bool custom;
 }
 
 const defaultTmdbApiBaseUrl = 'https://api.tmdb.org/3';
+const tmdbProxyEndpointValue = 'custom:tmdb-proxy';
 
 const tmdbApiEndpoints = [
   TmdbApiEndpoint(label: 'api.tmdb.org', url: defaultTmdbApiBaseUrl),
@@ -325,22 +331,94 @@ const tmdbApiEndpoints = [
     label: 'api.themoviedb.org',
     url: 'https://api.themoviedb.org/3',
   ),
+  TmdbApiEndpoint(
+    label: '自建 tmdb-proxy',
+    url: tmdbProxyEndpointValue,
+    custom: true,
+  ),
 ];
 
 String normalizeTmdbApiBaseUrl(String value) {
   final trimmed = value.trim();
-  final normalized = trimmed.endsWith('/')
+  var normalized = trimmed.endsWith('/')
       ? trimmed.substring(0, trimmed.length - 1)
       : trimmed;
   if (normalized.isEmpty) return defaultTmdbApiBaseUrl;
-  return normalized;
+  if (!normalized.startsWith('http://') && !normalized.startsWith('https://')) {
+    normalized = 'https://$normalized';
+  }
+  final official = tmdbApiEndpoints
+      .where((endpoint) => !endpoint.custom)
+      .map((endpoint) => endpoint.url)
+      .contains(normalized);
+  if (official) return normalized;
+  final uri = Uri.tryParse(normalized);
+  if (uri == null || uri.host.isEmpty) return defaultTmdbApiBaseUrl;
+  final path = uri.path.endsWith('/')
+      ? uri.path.substring(0, uri.path.length - 1)
+      : uri.path;
+  if (path.isEmpty) {
+    return _tmdbUriWithPath(uri, '/3');
+  }
+  return _tmdbUriWithPath(uri, path);
+}
+
+bool isOfficialTmdbApiBaseUrl(String value) {
+  final normalized = normalizeTmdbApiBaseUrl(value);
+  return tmdbApiEndpoints
+      .where((endpoint) => !endpoint.custom)
+      .any((endpoint) => endpoint.url == normalized);
+}
+
+String selectedTmdbEndpointValue(String value) {
+  final normalized = normalizeTmdbApiBaseUrl(value);
+  return isOfficialTmdbApiBaseUrl(normalized)
+      ? normalized
+      : tmdbProxyEndpointValue;
+}
+
+String tmdbProxyDisplayBaseUrl(String value) {
+  final normalized = normalizeTmdbApiBaseUrl(value);
+  if (isOfficialTmdbApiBaseUrl(normalized)) return '';
+  return normalized.endsWith('/3')
+      ? normalized.substring(0, normalized.length - 2)
+      : normalized;
+}
+
+String tmdbImageBaseUrlForApiBaseUrl(String value) {
+  final normalized = normalizeTmdbApiBaseUrl(value);
+  if (isOfficialTmdbApiBaseUrl(normalized)) {
+    return 'https://image.tmdb.org/t/p';
+  }
+  final uri = Uri.parse(normalized);
+  return _tmdbUriWithPath(uri, '/t/p');
+}
+
+String _tmdbUriWithPath(Uri uri, String path) {
+  return Uri(
+    scheme: uri.scheme,
+    userInfo: uri.userInfo,
+    host: uri.host,
+    port: uri.hasPort ? uri.port : null,
+    path: path,
+  ).toString();
+}
+
+String tmdbEndpointLabel(String value) {
+  final selected = selectedTmdbEndpointValue(value);
+  return tmdbApiEndpoints
+      .firstWhere((endpoint) => endpoint.url == selected)
+      .label;
+}
+
+String tmdbEndpointHost(String value) {
+  final normalized = normalizeTmdbApiBaseUrl(value);
+  return Uri.parse(normalized).host;
 }
 
 String selectedTmdbApiBaseUrl(String value) {
   final normalized = normalizeTmdbApiBaseUrl(value);
-  return tmdbApiEndpoints.any((endpoint) => endpoint.url == normalized)
-      ? normalized
-      : defaultTmdbApiBaseUrl;
+  return normalized;
 }
 
 class TmdbConfig {
@@ -349,30 +427,29 @@ class TmdbConfig {
     this.language = 'zh-CN',
     this.region = 'CN',
     this.apiBaseUrl = defaultTmdbApiBaseUrl,
-    this.proxyUrl = '',
   });
 
   final String accessToken;
   final String language;
   final String region;
   final String apiBaseUrl;
-  final String proxyUrl;
 
   bool get enabled => accessToken.trim().isNotEmpty;
+  String get normalizedApiBaseUrl => normalizeTmdbApiBaseUrl(apiBaseUrl);
+  String get imageBaseUrl =>
+      tmdbImageBaseUrlForApiBaseUrl(normalizedApiBaseUrl);
 
   TmdbConfig copyWith({
     String? accessToken,
     String? language,
     String? region,
     String? apiBaseUrl,
-    String? proxyUrl,
   }) {
     return TmdbConfig(
       accessToken: accessToken ?? this.accessToken,
       language: language ?? this.language,
       region: region ?? this.region,
-      apiBaseUrl: apiBaseUrl ?? this.apiBaseUrl,
-      proxyUrl: proxyUrl ?? this.proxyUrl,
+      apiBaseUrl: normalizeTmdbApiBaseUrl(apiBaseUrl ?? this.apiBaseUrl),
     );
   }
 
@@ -381,15 +458,13 @@ class TmdbConfig {
         language: json['language'] as String? ?? 'zh-CN',
         region: json['region'] as String? ?? 'CN',
         apiBaseUrl: selectedTmdbApiBaseUrl(json['apiBaseUrl'] as String? ?? ''),
-        proxyUrl: json['proxyUrl'] as String? ?? '',
       );
 
   Map<String, dynamic> toJson() => {
         'accessToken': accessToken,
         'language': language,
         'region': region,
-        'apiBaseUrl': apiBaseUrl,
-        'proxyUrl': proxyUrl,
+        'apiBaseUrl': normalizedApiBaseUrl,
       };
 }
 
@@ -412,7 +487,18 @@ class MediaMetadata {
     this.voteAverage,
     this.totalSeasons,
     this.totalEpisodes,
+    this.seasonTmdbId,
+    this.seasonName,
+    this.seasonOverview,
+    this.seasonAirDate,
+    this.seasonEpisodeCount,
+    this.seasonPosterPath,
+    this.episodeTmdbId,
     this.episodeName,
+    this.episodeOverview,
+    this.episodeRuntime,
+    this.episodeType,
+    this.episodeVoteCount,
     this.updatedAt,
     this.schemaVersion = 0,
   });
@@ -434,7 +520,18 @@ class MediaMetadata {
   final double? voteAverage;
   final int? totalSeasons;
   final int? totalEpisodes;
+  final int? seasonTmdbId;
+  final String? seasonName;
+  final String? seasonOverview;
+  final String? seasonAirDate;
+  final int? seasonEpisodeCount;
+  final String? seasonPosterPath;
+  final int? episodeTmdbId;
   final String? episodeName;
+  final String? episodeOverview;
+  final int? episodeRuntime;
+  final String? episodeType;
+  final int? episodeVoteCount;
   final int? updatedAt;
   final int schemaVersion;
 
@@ -469,7 +566,18 @@ class MediaMetadata {
         voteAverage: (json['voteAverage'] as num?)?.toDouble(),
         totalSeasons: (json['totalSeasons'] as num?)?.toInt(),
         totalEpisodes: (json['totalEpisodes'] as num?)?.toInt(),
+        seasonTmdbId: (json['seasonTmdbId'] as num?)?.toInt(),
+        seasonName: json['seasonName'] as String?,
+        seasonOverview: json['seasonOverview'] as String?,
+        seasonAirDate: json['seasonAirDate'] as String?,
+        seasonEpisodeCount: (json['seasonEpisodeCount'] as num?)?.toInt(),
+        seasonPosterPath: json['seasonPosterPath'] as String?,
+        episodeTmdbId: (json['episodeTmdbId'] as num?)?.toInt(),
         episodeName: json['episodeName'] as String?,
+        episodeOverview: json['episodeOverview'] as String?,
+        episodeRuntime: (json['episodeRuntime'] as num?)?.toInt(),
+        episodeType: json['episodeType'] as String?,
+        episodeVoteCount: (json['episodeVoteCount'] as num?)?.toInt(),
         updatedAt: (json['updatedAt'] as num?)?.toInt(),
         schemaVersion: (json['schemaVersion'] as num?)?.toInt() ?? 0,
       );
@@ -492,7 +600,18 @@ class MediaMetadata {
         'voteAverage': voteAverage,
         'totalSeasons': totalSeasons,
         'totalEpisodes': totalEpisodes,
+        'seasonTmdbId': seasonTmdbId,
+        'seasonName': seasonName,
+        'seasonOverview': seasonOverview,
+        'seasonAirDate': seasonAirDate,
+        'seasonEpisodeCount': seasonEpisodeCount,
+        'seasonPosterPath': seasonPosterPath,
+        'episodeTmdbId': episodeTmdbId,
         'episodeName': episodeName,
+        'episodeOverview': episodeOverview,
+        'episodeRuntime': episodeRuntime,
+        'episodeType': episodeType,
+        'episodeVoteCount': episodeVoteCount,
         'updatedAt': updatedAt,
         'schemaVersion': schemaVersion,
       };
@@ -606,7 +725,7 @@ class LibraryShowDetail {
 class LibraryFileEntry {
   const LibraryFileEntry({
     required this.fileId,
-    required this.legacyItemId,
+    required this.itemId,
     required this.relativePath,
     required this.filename,
     this.size,
@@ -638,7 +757,7 @@ class LibraryFileEntry {
   });
 
   final int fileId;
-  final String legacyItemId;
+  final String itemId;
   final String relativePath;
   final String filename;
   final int? size;
@@ -671,7 +790,7 @@ class LibraryFileEntry {
   factory LibraryFileEntry.fromJson(Map<String, dynamic> json) {
     return LibraryFileEntry(
       fileId: (json['fileId'] as num?)?.toInt() ?? 0,
-      legacyItemId: json['legacyItemId'] as String? ?? '',
+      itemId: json['itemId'] as String? ?? '',
       relativePath: json['relativePath'] as String? ?? '',
       filename: json['filename'] as String? ?? '',
       size: (json['size'] as num?)?.toInt(),
@@ -715,7 +834,7 @@ class LibraryFileEntry {
 class LibraryRecentEntry {
   const LibraryRecentEntry({
     required this.fileId,
-    required this.legacyItemId,
+    required this.itemId,
     required this.relativePath,
     required this.filename,
     this.size,
@@ -732,7 +851,7 @@ class LibraryRecentEntry {
   });
 
   final int fileId;
-  final String legacyItemId;
+  final String itemId;
   final String relativePath;
   final String filename;
   final int? size;
@@ -750,7 +869,7 @@ class LibraryRecentEntry {
   factory LibraryRecentEntry.fromJson(Map<String, dynamic> json) {
     return LibraryRecentEntry(
       fileId: (json['fileId'] as num?)?.toInt() ?? 0,
-      legacyItemId: json['legacyItemId'] as String? ?? '',
+      itemId: json['itemId'] as String? ?? '',
       relativePath: json['relativePath'] as String? ?? '',
       filename: json['filename'] as String? ?? '',
       size: (json['size'] as num?)?.toInt(),

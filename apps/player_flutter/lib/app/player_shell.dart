@@ -1,4 +1,4 @@
-﻿part of 'package:player_flutter/main.dart';
+part of 'package:player_flutter/main.dart';
 
 class PlayerShell extends StatefulWidget {
   const PlayerShell({required this.store, super.key});
@@ -27,9 +27,18 @@ class _PlayerShellState extends State<PlayerShell> {
         indicatorColor: Colors.transparent,
         onDestinationSelected: (value) => setState(() => index = value),
         destinations: const [
-          NavigationDestination(icon: Icon(Icons.play_circle_outline), selectedIcon: Icon(Icons.play_circle), label: '媒体库'),
-          NavigationDestination(icon: Icon(Icons.folder_outlined), selectedIcon: Icon(Icons.folder), label: '资源库'),
-          NavigationDestination(icon: Icon(Icons.person_outline), selectedIcon: Icon(Icons.person), label: '我的'),
+          NavigationDestination(
+              icon: Icon(Icons.play_circle_outline),
+              selectedIcon: Icon(Icons.play_circle),
+              label: '媒体库'),
+          NavigationDestination(
+              icon: Icon(Icons.folder_outlined),
+              selectedIcon: Icon(Icons.folder),
+              label: '资源库'),
+          NavigationDestination(
+              icon: Icon(Icons.person_outline),
+              selectedIcon: Icon(Icons.person),
+              label: '我的'),
         ],
       ),
     );

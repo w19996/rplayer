@@ -26,7 +26,7 @@ class RustCoreService {
   _RustStringDart? _scanLocalVideosJson;
   _RustStringDart? _listLocalDirectoryJson;
   _RustTwoStringDart? _parseMediaIdentityJson;
-  _RustThreeStringDart? _tmdbGetJson;
+  _RustTwoStringDart? _tmdbGetJson;
   _RustFourStringDart? _metadataPutJson;
   _RustThreeStringDart? _metadataCacheImagesJson;
   _RustStringDart? _metadataGetAllJson;
@@ -106,14 +106,13 @@ class RustCoreService {
     return RustMediaIdentity.fromJson(jsonDecode(text) as Map<String, dynamic>);
   }
 
-  String tmdbGetJson(String url, String accessToken, String proxyUrl) {
+  String tmdbGetJson(String url, String accessToken) {
     _ensureAvailable();
-    return _callThreeString(_tmdbGetJson, url, accessToken, proxyUrl);
+    return _callTwoString(_tmdbGetJson, url, accessToken);
   }
 
-  Future<String> tmdbGetJsonAsync(
-      String url, String accessToken, String proxyUrl) {
-    final args = [url, accessToken, proxyUrl];
+  Future<String> tmdbGetJsonAsync(String url, String accessToken) {
+    final args = [url, accessToken];
     return Isolate.run(() => _rustTmdbGetJsonWorker(args));
   }
 
@@ -130,14 +129,15 @@ class RustCoreService {
   }
 
   void metadataCacheImages(
-      String dbPath, String metadataJson, String proxyUrl) {
+      String dbPath, String metadataJson, String imageBaseUrl) {
     _ensureAvailable();
-    _callThreeString(_metadataCacheImagesJson, dbPath, metadataJson, proxyUrl);
+    _callThreeString(
+        _metadataCacheImagesJson, dbPath, metadataJson, imageBaseUrl);
   }
 
   Future<void> metadataCacheImagesAsync(
-      String dbPath, String metadataJson, String proxyUrl) {
-    final args = [dbPath, metadataJson, proxyUrl];
+      String dbPath, String metadataJson, String imageBaseUrl) {
+    final args = [dbPath, metadataJson, imageBaseUrl];
     return Isolate.run(() => _rustMetadataCacheImagesWorker(args));
   }
 
@@ -365,7 +365,7 @@ class RustCoreService {
           .lookupFunction<_RustTwoStringFn, _RustTwoStringDart>(
               'player_core_parse_media_identity_json');
       _tmdbGetJson = _library!
-          .lookupFunction<_RustThreeStringFn, _RustThreeStringDart>(
+          .lookupFunction<_RustTwoStringFn, _RustTwoStringDart>(
               'player_core_tmdb_get_json');
       _metadataPutJson = _library!
           .lookupFunction<_RustFourStringFn, _RustFourStringDart>(
@@ -521,7 +521,7 @@ List<LocalEntry> _rustListLocalDirectoryWorker(List<String> args) {
 }
 
 String _rustTmdbGetJsonWorker(List<String> args) {
-  return RustCoreService._().tmdbGetJson(args[0], args[1], args[2]);
+  return RustCoreService._().tmdbGetJson(args[0], args[1]);
 }
 
 void _rustMetadataPutWorker(List<String> args) {
