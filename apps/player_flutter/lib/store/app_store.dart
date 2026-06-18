@@ -12,6 +12,7 @@ class AppStore extends ChangeNotifier {
   final Map<String, String> folderOrientations = {};
   final Map<String, MediaMetadata> metadata = {};
   TmdbConfig tmdbConfig = const TmdbConfig();
+  DanmuConfig danmuConfig = const DanmuConfig();
   SyncConfig? syncConfig;
   bool loaded = false;
   bool metadataRefreshing = false;
@@ -261,6 +262,7 @@ class AppStore extends ChangeNotifier {
     return const JsonEncoder.withIndent('  ').convert({
       'version': 2,
       'tmdbConfig': tmdbConfig.toJson(),
+      'danmuConfig': danmuConfig.toJson(),
       'syncConfig': syncConfig?.toJson(),
       'diagnosticLoggingEnabled': diagnosticLoggingEnabled,
     });
@@ -283,6 +285,10 @@ class AppStore extends ChangeNotifier {
     tmdbConfig = tmdb == null
         ? const TmdbConfig()
         : TmdbConfig.fromJson(tmdb as Map<String, dynamic>);
+    final danmu = json['danmuConfig'];
+    danmuConfig = danmu == null
+        ? const DanmuConfig()
+        : DanmuConfig.fromJson(danmu as Map<String, dynamic>);
     final sync = json['syncConfig'];
     syncConfig =
         sync == null ? null : SyncConfig.fromJson(sync as Map<String, dynamic>);
@@ -320,8 +326,9 @@ class AppStore extends ChangeNotifier {
           .map((key, value) => MapEntry(key, value as int)));
     folderOrientations
       ..clear()
-      ..addAll((json['folderOrientations'] as Map<String, dynamic>? ?? {})
-          .map((key, value) => MapEntry(key, value as String)));
+      ..addAll((json['folderOrientations'] as Map<String, dynamic>? ?? {}).map(
+          (key, value) =>
+              MapEntry(normalizeMediaFolderKey(key), value as String)));
   }
 
   Future<void> importState(String text, {bool persist = true}) async {
@@ -545,6 +552,19 @@ class AppStore extends ChangeNotifier {
     await saveSettings();
     notifyListeners();
     unawaited(refreshMissingMetadata(force: true));
+  }
+
+  Future<void> setDanmuConfig(DanmuConfig config) async {
+    danmuConfig = config.copyWith(
+      apiBaseUrl: config.normalizedApiBaseUrl,
+      apiToken: config.normalizedApiToken,
+    );
+    addDiagnosticLog(
+      'danmu config updated: enabled=${danmuConfig.enabled}, api=${danmuConfig.requestBaseUrl}',
+      category: 'danmu',
+    );
+    await saveSettings();
+    notifyListeners();
   }
 
   Future<void> setDiagnosticLoggingEnabled(bool value) async {
@@ -974,10 +994,11 @@ class AppStore extends ChangeNotifier {
   }
 
   Future<void> rememberFolderOrientation(MediaItem item, bool landscape) async {
-    folderOrientations[mediaFolderKey(item)] =
-        landscape ? 'landscape' : 'portrait';
+    final key = mediaFolderKey(item);
+    final orientation = landscape ? 'landscape' : 'portrait';
+    folderOrientations[key] = orientation;
     addDiagnosticLog(
-      'folder orientation remembered: key=${mediaFolderKey(item)} orientation=${landscape ? 'landscape' : 'portrait'}',
+      'folder orientation remembered: key=$key orientation=$orientation',
       category: 'ui',
     );
     await save();

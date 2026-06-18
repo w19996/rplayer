@@ -468,6 +468,171 @@ class TmdbConfig {
       };
 }
 
+class DanmuConfig {
+  const DanmuConfig({
+    this.enabled = false,
+    this.apiBaseUrl = '',
+    this.apiToken = '',
+    this.visible = true,
+    this.fontSize = 18,
+    this.opacity = 0.92,
+    this.speed = 1,
+    this.offsetMs = 0,
+  });
+
+  final bool enabled;
+  final String apiBaseUrl;
+  final String apiToken;
+  final bool visible;
+  final double fontSize;
+  final double opacity;
+  final double speed;
+  final int offsetMs;
+
+  String get normalizedApiBaseUrl => normalizeDanmuApiBaseUrl(apiBaseUrl);
+  String get normalizedApiToken => normalizeDanmuApiToken(apiToken);
+  String get requestBaseUrl =>
+      buildDanmuRequestBaseUrl(normalizedApiBaseUrl, normalizedApiToken);
+  bool get available => enabled && requestBaseUrl.isNotEmpty;
+
+  DanmuConfig copyWith({
+    bool? enabled,
+    String? apiBaseUrl,
+    String? apiToken,
+    bool? visible,
+    double? fontSize,
+    double? opacity,
+    double? speed,
+    int? offsetMs,
+  }) {
+    final endpoint = _normalizeDanmuEndpointParts(
+      apiBaseUrl ?? this.apiBaseUrl,
+      apiToken ?? this.apiToken,
+    );
+    return DanmuConfig(
+      enabled: enabled ?? this.enabled,
+      apiBaseUrl: endpoint.apiBaseUrl,
+      apiToken: endpoint.apiToken,
+      visible: visible ?? this.visible,
+      fontSize: fontSize ?? this.fontSize,
+      opacity: opacity ?? this.opacity,
+      speed: speed ?? this.speed,
+      offsetMs: offsetMs ?? this.offsetMs,
+    );
+  }
+
+  factory DanmuConfig.fromJson(Map<String, dynamic> json) {
+    final endpoint = _normalizeDanmuEndpointParts(
+      json['apiBaseUrl'] as String? ?? '',
+      json['apiToken'] as String? ?? '',
+    );
+    return DanmuConfig(
+      enabled: json['enabled'] as bool? ?? false,
+      apiBaseUrl: endpoint.apiBaseUrl,
+      apiToken: endpoint.apiToken,
+      visible: json['visible'] as bool? ?? true,
+      fontSize: (json['fontSize'] as num?)?.toDouble() ?? 18,
+      opacity: (json['opacity'] as num?)?.toDouble() ?? 0.92,
+      speed: (json['speed'] as num?)?.toDouble() ?? 1,
+      offsetMs: (json['offsetMs'] as num?)?.toInt() ?? 0,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'enabled': enabled,
+        'apiBaseUrl': normalizedApiBaseUrl,
+        'apiToken': normalizedApiToken,
+        'visible': visible,
+        'fontSize': fontSize,
+        'opacity': opacity,
+        'speed': speed,
+        'offsetMs': offsetMs,
+      };
+}
+
+String normalizeDanmuApiBaseUrl(String value) =>
+    _normalizeDanmuEndpointParts(value, '').apiBaseUrl;
+
+String normalizeDanmuApiToken(String value) => value.trim().replaceAll('/', '');
+
+String buildDanmuRequestBaseUrl(String apiBaseUrl, String apiToken) {
+  final base = normalizeDanmuApiBaseUrl(apiBaseUrl);
+  if (base.isEmpty) return '';
+  final token = normalizeDanmuApiToken(apiToken);
+  if (token.isEmpty) return base;
+  final uri = Uri.tryParse(base);
+  if (uri == null) return base;
+  final segments = uri.pathSegments.where((part) => part.isNotEmpty).toList();
+  if (segments.isNotEmpty && segments.last == token) return base;
+  return Uri(
+    scheme: uri.scheme,
+    userInfo: uri.userInfo,
+    host: uri.host,
+    port: uri.hasPort ? uri.port : null,
+    pathSegments: [...segments, token],
+  ).toString().replaceFirst(RegExp(r'/$'), '');
+}
+
+_DanmuEndpointParts _normalizeDanmuEndpointParts(
+  String apiBaseUrl,
+  String apiToken,
+) {
+  var normalized = apiBaseUrl.trim();
+  while (normalized.endsWith('/')) {
+    normalized = normalized.substring(0, normalized.length - 1);
+  }
+  final tokenFromField = normalizeDanmuApiToken(apiToken);
+  if (normalized.isEmpty) {
+    return _DanmuEndpointParts('', tokenFromField);
+  }
+  if (!normalized.startsWith('http://') && !normalized.startsWith('https://')) {
+    normalized = 'https://$normalized';
+  }
+  final uri = Uri.tryParse(normalized);
+  if (uri == null || uri.host.isEmpty) {
+    return _DanmuEndpointParts('', tokenFromField);
+  }
+  final segments = uri.pathSegments.where((part) => part.isNotEmpty).toList();
+  if (segments.length >= 2 &&
+      segments[segments.length - 2] == 'api' &&
+      segments.last == 'v2') {
+    segments.removeLast();
+    segments.removeLast();
+  }
+  var token = tokenFromField;
+  if (segments.isNotEmpty &&
+      (token.isEmpty || segments.last == token) &&
+      !_danmuKnownPathSegments.contains(segments.last)) {
+    token = segments.removeLast();
+  }
+  final baseUrl = Uri(
+    scheme: uri.scheme,
+    userInfo: uri.userInfo,
+    host: uri.host,
+    port: uri.hasPort ? uri.port : null,
+    pathSegments: segments,
+  ).toString().replaceFirst(RegExp(r'/$'), '');
+  return _DanmuEndpointParts(baseUrl, token);
+}
+
+const _danmuKnownPathSegments = {
+  'api',
+  'v1',
+  'v2',
+  'search',
+  'match',
+  'bangumi',
+  'comment',
+  'danmaku',
+};
+
+class _DanmuEndpointParts {
+  const _DanmuEndpointParts(this.apiBaseUrl, this.apiToken);
+
+  final String apiBaseUrl;
+  final String apiToken;
+}
+
 class MediaMetadata {
   const MediaMetadata({
     required this.itemId,

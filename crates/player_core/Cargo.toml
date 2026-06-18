@@ -9,7 +9,7 @@ crate-type = ["rlib", "cdylib"]
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "brotli", "deflate"] }
 percent-encoding = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 roxmltree = "0.20"

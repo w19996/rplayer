@@ -37,6 +37,35 @@ String remoteParentName(String value) {
   return parent.split('/').where((part) => part.isNotEmpty).lastOrNull ?? '';
 }
 
+String normalizeMediaResourcePath(String value) {
+  var path = value.replaceAll('\\', '/').trim();
+  if (path.isEmpty) return '/';
+  while (path.contains('//')) {
+    path = path.replaceAll('//', '/');
+  }
+  if (path == '/dav') return '/';
+  if (path.startsWith('/dav/')) {
+    path = '/${path.substring('/dav/'.length)}';
+  }
+  while (path.length > 1 &&
+      path.endsWith('/') &&
+      !RegExp(r'^[A-Za-z]:/$').hasMatch(path)) {
+    path = path.substring(0, path.length - 1);
+  }
+  return path;
+}
+
+String normalizeMediaFolderKey(String value) {
+  final sourceSeparator = value.indexOf(':');
+  if (sourceSeparator < 0) return value;
+  final typeSeparator = value.indexOf(':', sourceSeparator + 1);
+  if (typeSeparator < 0) return value;
+  final sourceId = value.substring(0, sourceSeparator);
+  final sourceType = value.substring(sourceSeparator + 1, typeSeparator);
+  final path = normalizeMediaResourcePath(value.substring(typeSeparator + 1));
+  return '$sourceId:$sourceType:$path';
+}
+
 String? tmdbImageUrl(
   String? path,
   String size, {
@@ -133,7 +162,7 @@ String mediaFolderKey(MediaItem item) {
     final dir = p.dirname(item.uri);
     final folder = p.basename(dir);
     final groupDir = looksLikeSeasonFolderName(folder) ? p.dirname(dir) : dir;
-    return '${item.sourceId}:local:$groupDir';
+    return normalizeMediaFolderKey('${item.sourceId}:local:$groupDir');
   }
   final uri = Uri.tryParse(item.uri);
   final path = uri == null ? item.uri : Uri.decodeComponent(uri.path);
@@ -142,7 +171,7 @@ String mediaFolderKey(MediaItem item) {
   final groupPath = looksLikeSeasonFolderName(folder)
       ? parentPath(parent.substring(0, parent.length - 1))
       : parent;
-  return '${item.sourceId}:webdav:$groupPath';
+  return normalizeMediaFolderKey('${item.sourceId}:webdav:$groupPath');
 }
 
 String mediaFolderTitle(MediaItem item) {

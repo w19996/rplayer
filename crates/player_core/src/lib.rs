@@ -8,7 +8,10 @@ pub mod webdav;
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
 
-pub use danmu::{DanmuClient, DanmuEvent, DanmuMatchRequest};
+pub use danmu::{
+    clear_danmu_session_json, load_danmu_session_json, visible_danmu_json, DanmuClient, DanmuEvent,
+    DanmuMatchRequest,
+};
 pub use media::{parse_media_identity, MediaIdentity, MediaKind};
 pub use metadata_cache::{
     cache_images_json, get_all_metadata_json, get_app_state_json, get_cached_image_json,
@@ -88,6 +91,30 @@ pub extern "C" fn player_core_tmdb_get_json(
                 .build()?;
             tmdb_get_json_once(&client, &url, access_token.trim()).await
         })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn player_core_danmu_load_json(input_json: *const c_char) -> *mut c_char {
+    ffi_result(|| {
+        let input_json = read_c_string(input_json)?;
+        load_danmu_session_json(&input_json)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn player_core_danmu_visible_json(input_json: *const c_char) -> *mut c_char {
+    ffi_result(|| {
+        let input_json = read_c_string(input_json)?;
+        visible_danmu_json(&input_json)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn player_core_danmu_clear_json(session_id_json: *const c_char) -> *mut c_char {
+    ffi_result(|| {
+        let session_id_json = read_c_string(session_id_json)?;
+        clear_danmu_session_json(&session_id_json)
     })
 }
 

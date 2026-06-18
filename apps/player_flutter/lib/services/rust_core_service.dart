@@ -27,6 +27,9 @@ class RustCoreService {
   _RustStringDart? _listLocalDirectoryJson;
   _RustTwoStringDart? _parseMediaIdentityJson;
   _RustTwoStringDart? _tmdbGetJson;
+  _RustStringDart? _danmuLoadJson;
+  _RustStringDart? _danmuVisibleJson;
+  _RustStringDart? _danmuClearJson;
   _RustFourStringDart? _metadataPutJson;
   _RustThreeStringDart? _metadataCacheImagesJson;
   _RustStringDart? _metadataGetAllJson;
@@ -114,6 +117,42 @@ class RustCoreService {
   Future<String> tmdbGetJsonAsync(String url, String accessToken) {
     final args = [url, accessToken];
     return Isolate.run(() => _rustTmdbGetJsonWorker(args));
+  }
+
+  RustDanmuLoadResult danmuLoad(Map<String, dynamic> input) {
+    _ensureAvailable();
+    if (_danmuLoadJson == null) {
+      throw StateError('Rust danmu is not available: missing load symbol');
+    }
+    final text = _callString(_danmuLoadJson, [jsonEncode(input)]);
+    return RustDanmuLoadResult.fromJson(
+        jsonDecode(text) as Map<String, dynamic>);
+  }
+
+  Future<RustDanmuLoadResult> danmuLoadAsync(Map<String, dynamic> input) {
+    final args = [jsonEncode(input)];
+    return Isolate.run(() => _rustDanmuLoadWorker(args));
+  }
+
+  List<RustDanmuRenderItem> danmuVisible(Map<String, dynamic> input) {
+    _ensureAvailable();
+    if (_danmuVisibleJson == null) {
+      throw StateError('Rust danmu is not available: missing visible symbol');
+    }
+    final text = _callString(_danmuVisibleJson, [jsonEncode(input)]);
+    final data = jsonDecode(text) as Map<String, dynamic>;
+    final items = data['items'] as List<dynamic>? ?? const [];
+    return items
+        .map((value) =>
+            RustDanmuRenderItem.fromJson(value as Map<String, dynamic>))
+        .toList(growable: false);
+  }
+
+  void danmuClear(int sessionId) {
+    if (sessionId <= 0) return;
+    _ensureAvailable();
+    if (_danmuClearJson == null) return;
+    _callString(_danmuClearJson, [jsonEncode(sessionId)]);
   }
 
   void metadataPut(
@@ -367,6 +406,10 @@ class RustCoreService {
       _tmdbGetJson = _library!
           .lookupFunction<_RustTwoStringFn, _RustTwoStringDart>(
               'player_core_tmdb_get_json');
+      _danmuLoadJson = _lookupOptionalString('player_core_danmu_load_json');
+      _danmuVisibleJson =
+          _lookupOptionalString('player_core_danmu_visible_json');
+      _danmuClearJson = _lookupOptionalString('player_core_danmu_clear_json');
       _metadataPutJson = _library!
           .lookupFunction<_RustFourStringFn, _RustFourStringDart>(
               'player_core_metadata_put_json');
@@ -425,6 +468,14 @@ class RustCoreService {
     if (Platform.isWindows) return 'player_core.dll';
     if (Platform.isMacOS) return 'libplayer_core.dylib';
     return 'libplayer_core.so';
+  }
+
+  _RustStringDart? _lookupOptionalString(String name) {
+    try {
+      return _library!.lookupFunction<_RustStringFn, _RustStringDart>(name);
+    } catch (_) {
+      return null;
+    }
   }
 
   String _callString(_RustStringDart? function, List<String> args) {
@@ -522,6 +573,11 @@ List<LocalEntry> _rustListLocalDirectoryWorker(List<String> args) {
 
 String _rustTmdbGetJsonWorker(List<String> args) {
   return RustCoreService._().tmdbGetJson(args[0], args[1]);
+}
+
+RustDanmuLoadResult _rustDanmuLoadWorker(List<String> args) {
+  return RustCoreService._()
+      .danmuLoad(jsonDecode(args[0]) as Map<String, dynamic>);
 }
 
 void _rustMetadataPutWorker(List<String> args) {
@@ -638,6 +694,72 @@ class RustMediaIdentity {
       season: (json['season'] as num?)?.toInt(),
       episode: (json['episode'] as num?)?.toInt(),
       kind: json['kind'] as String? ?? 'Unknown',
+    );
+  }
+}
+
+class RustDanmuLoadResult {
+  const RustDanmuLoadResult({
+    required this.sessionId,
+    required this.count,
+    required this.matchedEpisodeId,
+    required this.matchedTitle,
+    required this.matchedEpisode,
+    required this.logs,
+  });
+
+  final int sessionId;
+  final int count;
+  final String matchedEpisodeId;
+  final String matchedTitle;
+  final String matchedEpisode;
+  final List<String> logs;
+
+  factory RustDanmuLoadResult.fromJson(Map<String, dynamic> json) {
+    return RustDanmuLoadResult(
+      sessionId: (json['session_id'] as num?)?.toInt() ?? 0,
+      count: (json['count'] as num?)?.toInt() ?? 0,
+      matchedEpisodeId: json['matched_episode_id'] as String? ?? '',
+      matchedTitle: json['matched_title'] as String? ?? '',
+      matchedEpisode: json['matched_episode'] as String? ?? '',
+      logs: (json['logs'] as List<dynamic>? ?? const [])
+          .map((value) => value.toString())
+          .toList(growable: false),
+    );
+  }
+}
+
+class RustDanmuRenderItem {
+  const RustDanmuRenderItem({
+    required this.id,
+    required this.timeMs,
+    required this.mode,
+    required this.color,
+    required this.text,
+    required this.left,
+    required this.top,
+    required this.textWidth,
+  });
+
+  final int id;
+  final int timeMs;
+  final int mode;
+  final int color;
+  final String text;
+  final double left;
+  final double top;
+  final double textWidth;
+
+  factory RustDanmuRenderItem.fromJson(Map<String, dynamic> json) {
+    return RustDanmuRenderItem(
+      id: (json['id'] as num?)?.toInt() ?? 0,
+      timeMs: (json['time_ms'] as num?)?.toInt() ?? 0,
+      mode: (json['mode'] as num?)?.toInt() ?? 1,
+      color: (json['color'] as num?)?.toInt() ?? 0xFFFFFF,
+      text: json['text'] as String? ?? '',
+      left: (json['left'] as num?)?.toDouble() ?? 0,
+      top: (json['top'] as num?)?.toDouble() ?? 0,
+      textWidth: (json['text_width'] as num?)?.toDouble() ?? 0,
     );
   }
 }

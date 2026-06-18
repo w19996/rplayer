@@ -12,7 +12,11 @@ class VideoPlayerPage extends StatefulWidget {
   State<VideoPlayerPage> createState() => _VideoPlayerPageState();
 }
 
-class _VideoPlayerPageState extends State<VideoPlayerPage> {
+class _VideoPlayerPageState extends State<VideoPlayerPage>
+    with SingleTickerProviderStateMixin {
+  static const Duration _danmuPositionSyncThreshold =
+      Duration(milliseconds: 650);
+
   Player? _player;
   VideoController? _controller;
   late MediaItem currentItem = widget.item;
@@ -21,8 +25,14 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   Timer? loadingHideTimer;
   Timer? loadingProgressTimer;
   Timer? controlsHideTimer;
+  Timer? danmuRenderTimer;
+  late final AnimationController danmuTicker;
+  final danmuOverlayItems = ValueNotifier<List<RustDanmuRenderItem>>(const []);
+  final danmuTextLayoutCache = <String, _DanmuTextLayout>{};
   Duration position = Duration.zero;
   Duration duration = Duration.zero;
+  Duration danmuClockPosition = Duration.zero;
+  DateTime danmuClockStamp = DateTime.now();
   Duration? dragPreviewPosition;
   double dragDistance = 0;
   Duration dragStartPosition = Duration.zero;
@@ -38,8 +48,12 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   bool fullscreen = false;
   bool controlsLocked = false;
   bool episodePanelOpen = false;
+  bool episodePanelClosing = false;
+  bool danmuPanelOpen = false;
+  bool danmuPanelClosing = false;
   bool buffering = false;
   bool loadingVisible = false;
+  bool danmuLoading = false;
   VideoFitMode fitMode = VideoFitMode.contain;
   Tracks availableTracks = const Tracks();
   Track selectedTrack = const Track();
@@ -54,6 +68,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   String networkSpeed = '0 KB/s';
   bool charging = false;
   LibraryShowDetail? libraryDetail;
+  int danmuSessionId = 0;
+  int danmuTotalCount = 0;
+  String danmuStatus = '未加载';
+  int danmuLoadId = 0;
   Object? error;
 
   Player get player => _player ??= Player(
@@ -68,12 +86,22 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   @override
   void initState() {
     super.initState();
+    danmuTicker = AnimationController(
+      vsync: this,
+      duration: const Duration(hours: 24),
+    )..repeat();
+    widget.store.addListener(handleStoreChanged);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     startStatusTimer();
+    startDanmuRenderTimer();
     unawaited(loadCurrentLibraryDetail());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) init();
     });
+  }
+
+  void handleStoreChanged() {
+    setStateIfMounted(() {});
   }
 
   Future<void> loadCurrentLibraryDetail() async {
@@ -82,6 +110,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
       final detail = await widget.store.loadLibraryShowDetail(groupKey);
       if (!mounted || mediaFolderKey(currentItem) != groupKey) return;
       setState(() => libraryDetail = detail);
+      unawaited(loadDanmuForCurrentItem());
     } catch (_) {
       if (mounted && mediaFolderKey(currentItem) == groupKey) {
         setState(() => libraryDetail = null);
@@ -89,18 +118,208 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     }
   }
 
+  Future<void> loadDanmuForCurrentItem() async {
+    final config = widget.store.danmuConfig;
+    final file = currentDbFile;
+    final title = file?.showTitle?.trim().isNotEmpty == true
+        ? file!.showTitle!.trim()
+        : mediaGroupDisplayTitle(currentItem);
+    final season = file?.seasonNumber ?? currentItem.season;
+    final episode = file?.episodeNumber ?? currentItem.episode;
+    final sourceFileName = file?.filename ?? mediaIdentityFileName(currentItem);
+    final fileNames = buildDanmuMatchFileNames(
+      title: title,
+      sourceFileName: sourceFileName,
+      season: season,
+      episode: episode,
+    );
+    final loadId = ++danmuLoadId;
+    if (!config.available) {
+      clearDanmuSession();
+      setStateIfMounted(() {
+        danmuLoading = false;
+        danmuTotalCount = 0;
+        danmuStatus = '未配置弹幕 API';
+      });
+      clearDanmuOverlay();
+      return;
+    }
+    setStateIfMounted(() {
+      danmuLoading = true;
+      danmuStatus = '正在匹配弹幕...';
+    });
+    widget.store.addDiagnosticLog(
+      'danmu load context: item=${currentItem.id}, title=$title, sourceFile=$sourceFileName, season=$season, episode=$episode, candidates=${jsonEncode(fileNames)}, matchBodies=${jsonEncode(fileNames.map((name) => {
+            'fileName': name
+          }).toList())}, requestBase=${config.requestBaseUrl}',
+      category: 'danmu',
+    );
+    try {
+      final result = await DanmuService(
+        config,
+        log: (message) =>
+            widget.store.addDiagnosticLog(message, category: 'danmu'),
+      ).loadSession(
+        title: title,
+        fileNames: fileNames,
+        season: season,
+        episode: episode,
+      );
+      if (!mounted || loadId != danmuLoadId) return;
+      clearDanmuSession();
+      setState(() {
+        danmuSessionId = result.sessionId;
+        danmuTotalCount = result.count;
+        danmuStatus = result.count == 0 ? '没有匹配到弹幕' : '已加载 ${result.count} 条';
+        danmuLoading = false;
+      });
+      clearDanmuOverlay();
+      if (ready) refreshVisibleDanmu();
+    } catch (error) {
+      if (!mounted || loadId != danmuLoadId) return;
+      widget.store
+          .addDiagnosticLog('danmu load failed: $error', category: 'danmu');
+      clearDanmuSession();
+      setState(() {
+        danmuTotalCount = 0;
+        danmuStatus = '弹幕加载失败：$error';
+        danmuLoading = false;
+      });
+      clearDanmuOverlay();
+    }
+  }
+
+  void clearDanmuSession() {
+    final sessionId = danmuSessionId;
+    if (sessionId <= 0) return;
+    danmuSessionId = 0;
+    danmuTextLayoutCache.clear();
+    try {
+      RustCoreService.instance.danmuClear(sessionId);
+      widget.store.addDiagnosticLog('danmu session cleared: $sessionId',
+          category: 'danmu');
+    } catch (error) {
+      widget.store.addDiagnosticLog('danmu session clear failed: $error',
+          category: 'danmu');
+    }
+  }
+
+  void clearDanmuOverlay() {
+    if (danmuOverlayItems.value.isNotEmpty) {
+      danmuOverlayItems.value = const [];
+    }
+  }
+
+  void startDanmuRenderTimer() {
+    danmuRenderTimer?.cancel();
+    danmuRenderTimer = Timer.periodic(const Duration(milliseconds: 1500), (_) {
+      refreshVisibleDanmu();
+    });
+  }
+
+  void syncDanmuClock(Duration value) {
+    danmuClockPosition = value;
+    danmuClockStamp = DateTime.now();
+  }
+
+  void syncDanmuClockFromPlayer(Duration value) {
+    if (!ready || !playing || buffering || seekingByDrag) {
+      syncDanmuClock(value);
+      return;
+    }
+    final driftMs = value.inMilliseconds - currentDanmuPosition.inMilliseconds;
+    if (driftMs.abs() > _danmuPositionSyncThreshold.inMilliseconds) {
+      syncDanmuClock(value);
+    }
+  }
+
+  Duration get currentDanmuPosition {
+    if (!ready || !playing || buffering || seekingByDrag) {
+      return danmuClockPosition;
+    }
+    final elapsed = DateTime.now().difference(danmuClockStamp);
+    final milliseconds =
+        danmuClockPosition.inMilliseconds + elapsed.inMilliseconds;
+    final maxMilliseconds = duration.inMilliseconds;
+    if (maxMilliseconds > 0) {
+      return Duration(
+          milliseconds: milliseconds.clamp(0, maxMilliseconds).toInt());
+    }
+    return Duration(milliseconds: math.max(0, milliseconds).toInt());
+  }
+
+  void refreshVisibleDanmu() {
+    final config = widget.store.danmuConfig;
+    if (!mounted ||
+        !ready ||
+        danmuSessionId <= 0 ||
+        !config.available ||
+        !config.visible ||
+        danmuTotalCount <= 0) {
+      clearDanmuOverlay();
+      return;
+    }
+    if (!playing && danmuOverlayItems.value.isNotEmpty) {
+      return;
+    }
+    final size = MediaQuery.sizeOf(context);
+    final renderPosition = currentDanmuPosition;
+    try {
+      final items = RustCoreService.instance.danmuVisible({
+        'session_id': danmuSessionId,
+        'position_ms': renderPosition.inMilliseconds,
+        'width': size.width,
+        'height': size.height,
+        'font_size': config.fontSize,
+        'speed': config.speed,
+        'offset_ms': config.offsetMs,
+        'max_items': 56,
+      });
+      if (!sameDanmuItems(danmuOverlayItems.value, items)) {
+        danmuOverlayItems.value = items;
+      }
+    } catch (error) {
+      widget.store
+          .addDiagnosticLog('danmu visible failed: $error', category: 'danmu');
+    }
+  }
+
+  bool sameDanmuItems(
+      List<RustDanmuRenderItem> left, List<RustDanmuRenderItem> right) {
+    if (identical(left, right)) return true;
+    if (left.length != right.length) return false;
+    for (var index = 0; index < left.length; index++) {
+      final a = left[index];
+      final b = right[index];
+      if (a.id != b.id ||
+          a.mode != b.mode ||
+          a.color != b.color ||
+          a.text != b.text ||
+          a.timeMs != b.timeMs ||
+          (a.top - b.top).abs() > 0.5 ||
+          (a.textWidth - b.textWidth).abs() > 0.5) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   void attachStreams() {
     if (streamsAttached) return;
     streamsAttached = true;
     subscriptions
-      ..add(player.stream.position
-          .listen((value) => setStateIfMounted(() => position = value)))
+      ..add(player.stream.position.listen((value) {
+        syncDanmuClockFromPlayer(value);
+        setStateIfMounted(() => position = value);
+      }))
       ..add(player.stream.duration.listen((value) {
         setStateIfMounted(() => duration = value);
         widget.store.rememberDuration(currentItem.id, value);
       }))
-      ..add(player.stream.playing
-          .listen((value) => setStateIfMounted(() => playing = value)))
+      ..add(player.stream.playing.listen((value) {
+        syncDanmuClock(currentDanmuPosition);
+        setStateIfMounted(() => playing = value);
+      }))
       ..add(player.stream.buffering.listen(handleBufferingChanged))
       ..add(player.stream.bufferingPercentage.listen(handleBufferingPercentage))
       ..add(player.stream.width.listen((value) {
@@ -138,10 +357,14 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
       });
       startLoadingProgressTimer();
       await applyRememberedOrientation();
-      await widget.store.updateProgress(currentItem.id, position, duration);
       final source = widget.store.sources
           .firstWhere((value) => value.id == currentItem.sourceId);
       final saved = widget.store.progress[currentItem.id] ?? 0;
+      if (saved > 0) {
+        final savedPosition = Duration(milliseconds: saved);
+        position = savedPosition;
+        syncDanmuClock(savedPosition);
+      }
       final uri = currentItem.type == SourceType.local
           ? Uri.file(currentItem.uri).toString()
           : currentItem.uri;
@@ -163,6 +386,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
           ready = true;
           buffering = false;
         });
+        syncDanmuClock(position);
+        refreshVisibleDanmu();
         hideLoadingOverlay();
         scheduleControlsAutoHide();
       }
@@ -190,11 +415,16 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
 
   @override
   void dispose() {
+    widget.store.removeListener(handleStoreChanged);
     widget.store.updateProgress(currentItem.id, position, duration);
     statusTimer?.cancel();
     loadingHideTimer?.cancel();
     loadingProgressTimer?.cancel();
     controlsHideTimer?.cancel();
+    danmuRenderTimer?.cancel();
+    clearDanmuSession();
+    danmuTicker.dispose();
+    danmuOverlayItems.dispose();
     SystemChrome.setPreferredOrientations(DeviceOrientation.values);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
         overlays: SystemUiOverlay.values);
@@ -226,6 +456,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   }
 
   void handleBufferingChanged(bool value) {
+    syncDanmuClock(currentDanmuPosition);
     setStateIfMounted(() => buffering = value);
     if (value) {
       showLoadingOverlay();
@@ -329,8 +560,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   void beginSeekDrag(DragStartDetails details) {
     if (controlsLocked) return;
     markControlsInteraction();
+    final anchor = currentDanmuPosition;
+    syncDanmuClock(anchor);
     dragDistance = 0;
-    dragStartPosition = position;
+    dragStartPosition = anchor;
     seekingByDrag = false;
   }
 
@@ -346,7 +579,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     final nextMs = (dragStartPosition.inMilliseconds + offsetMs)
         .clamp(0, duration.inMilliseconds);
     setStateIfMounted(
-        () => dragPreviewPosition = Duration(milliseconds: nextMs));
+        () => dragPreviewPosition = Duration(milliseconds: nextMs.toInt()));
   }
 
   Future<void> endSeekDrag() async {
@@ -355,6 +588,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     seekingByDrag = false;
     setStateIfMounted(() => dragPreviewPosition = null);
     if (target != null && duration > Duration.zero) {
+      syncDanmuClock(target);
+      clearDanmuOverlay();
       await player.seek(target);
     }
     scheduleControlsAutoHide();
@@ -363,6 +598,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   void togglePlayback() {
     if (controlsLocked) return;
     markControlsInteraction();
+    syncDanmuClock(currentDanmuPosition);
     playing ? player.pause() : player.play();
   }
 
@@ -387,15 +623,22 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
 
   void scheduleControlsAutoHide() {
     controlsHideTimer?.cancel();
-    if (fullscreen || controlsLocked || episodePanelOpen) return;
+    if (fullscreen || controlsLocked || episodePanelOpen || danmuPanelOpen) {
+      return;
+    }
     controlsHideTimer = Timer(const Duration(seconds: 5), () {
-      if (!mounted || controlsLocked || episodePanelOpen) return;
+      if (!mounted || controlsLocked || episodePanelOpen || danmuPanelOpen) {
+        return;
+      }
       setState(() => fullscreen = true);
     });
   }
 
   void markControlsInteraction() {
-    if (!fullscreen && !controlsLocked && !episodePanelOpen) {
+    if (!fullscreen &&
+        !controlsLocked &&
+        !episodePanelOpen &&
+        !danmuPanelOpen) {
       scheduleControlsAutoHide();
     }
   }
@@ -496,7 +739,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     markControlsInteraction();
     final nextMs = (position.inMilliseconds + seconds * 1000)
         .clamp(0, duration.inMilliseconds);
-    await player.seek(Duration(milliseconds: nextMs));
+    final target = Duration(milliseconds: nextMs.toInt());
+    syncDanmuClock(target);
+    clearDanmuOverlay();
+    await player.seek(target);
   }
 
   Future<void> rotateScreen(BuildContext context) async {
@@ -521,6 +767,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
         controlsHideTimer?.cancel();
         fullscreen = true;
         episodePanelOpen = false;
+        episodePanelClosing = false;
+        danmuPanelOpen = false;
+        danmuPanelClosing = false;
         dragPreviewPosition = null;
         seekingByDrag = false;
       } else {
@@ -534,12 +783,49 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
   void openEpisodePanel() {
     if (controlsLocked) return;
     controlsHideTimer?.cancel();
-    setStateIfMounted(() => episodePanelOpen = true);
+    setStateIfMounted(() {
+      episodePanelOpen = true;
+      episodePanelClosing = false;
+      danmuPanelOpen = false;
+      danmuPanelClosing = false;
+    });
   }
 
   void closeEpisodePanel() {
-    setStateIfMounted(() => episodePanelOpen = false);
-    scheduleControlsAutoHide();
+    if (!episodePanelOpen || episodePanelClosing) return;
+    setStateIfMounted(() => episodePanelClosing = true);
+    Future<void>.delayed(const Duration(milliseconds: 220), () {
+      if (!mounted || !episodePanelClosing) return;
+      setState(() {
+        episodePanelOpen = false;
+        episodePanelClosing = false;
+      });
+      scheduleControlsAutoHide();
+    });
+  }
+
+  void openDanmuPanel() {
+    if (controlsLocked) return;
+    controlsHideTimer?.cancel();
+    setStateIfMounted(() {
+      danmuPanelOpen = true;
+      danmuPanelClosing = false;
+      episodePanelOpen = false;
+      episodePanelClosing = false;
+    });
+  }
+
+  void closeDanmuPanel() {
+    if (!danmuPanelOpen || danmuPanelClosing) return;
+    setStateIfMounted(() => danmuPanelClosing = true);
+    Future<void>.delayed(const Duration(milliseconds: 220), () {
+      if (!mounted || !danmuPanelClosing) return;
+      setState(() {
+        danmuPanelOpen = false;
+        danmuPanelClosing = false;
+      });
+      scheduleControlsAutoHide();
+    });
   }
 
   Widget controlIconButton({
@@ -692,6 +978,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
     }
     controlsHideTimer?.cancel();
     await widget.store.updateProgress(currentItem.id, position, duration);
+    syncDanmuClock(Duration.zero);
+    clearDanmuOverlay();
+    clearDanmuSession();
     setStateIfMounted(() {
       currentItem = item;
       position = Duration.zero;
@@ -704,6 +993,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
       bufferingPercentage = 0;
       error = null;
       episodePanelOpen = false;
+      episodePanelClosing = false;
+      danmuPanelOpen = false;
+      danmuPanelClosing = false;
+      danmuTotalCount = 0;
+      danmuStatus = '未加载';
       selectedTrack = const Track();
       availableTracks = const Tracks();
     });
@@ -880,6 +1174,15 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                   shadows: controlShadows),
             ),
           ),
+          IconButton(
+            color: Colors.white,
+            onPressed: openDanmuPanel,
+            icon: shadowIcon(Icons.chat_bubble_outline,
+                size: isLandscape ? 24 : 21),
+            padding: EdgeInsets.zero,
+            constraints: BoxConstraints.tightFor(
+                width: isLandscape ? 36 : 34, height: isLandscape ? 36 : 34),
+          ),
         ],
       ),
     );
@@ -937,83 +1240,287 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
           ),
           Align(
             alignment: Alignment.centerRight,
-            child: Container(
-              width: panelWidth,
-              height: double.infinity,
-              padding: EdgeInsets.fromLTRB(
-                  isLandscape ? 14 : 14, 12, isLandscape ? 18 : 14, 14),
-              decoration: const BoxDecoration(
-                color: Color(0xE81F1F24),
-                border: Border(left: BorderSide(color: Color(0x55FFFFFF))),
+            child: TweenAnimationBuilder<Offset>(
+              tween: Tween(
+                begin: const Offset(1, 0),
+                end: episodePanelClosing ? const Offset(1, 0) : Offset.zero,
               ),
-              child: SafeArea(
-                left: false,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('$episodePanelSeasonLabel（共 ${items.length} 集）',
-                        style: TextStyle(
-                            color: Colors.white70,
-                            fontSize: isLandscape ? 14 : 12)),
-                    SizedBox(height: isLandscape ? 14 : 12),
-                    Expanded(
-                      child: ListView.separated(
-                        itemCount: items.length,
-                        separatorBuilder: (_, __) =>
-                            SizedBox(height: isLandscape ? 10 : 7),
-                        itemBuilder: (context, index) {
-                          final item = items[index];
-                          final selected = item.id == currentItem.id;
-                          return InkWell(
-                            borderRadius: BorderRadius.circular(9),
-                            onTap: () => playEpisode(item),
-                            child: Container(
-                              padding: EdgeInsets.symmetric(
-                                  horizontal: isLandscape ? 14 : 10,
-                                  vertical: isLandscape ? 10 : 9),
-                              decoration: BoxDecoration(
-                                color: selected
-                                    ? const Color(0x22FFFFFF)
-                                    : Colors.transparent,
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
+              builder: (context, offset, child) => FractionalTranslation(
+                translation: offset,
+                child: child,
+              ),
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () {},
+                child: Container(
+                  width: panelWidth,
+                  height: double.infinity,
+                  padding: EdgeInsets.fromLTRB(
+                      isLandscape ? 14 : 14, 12, isLandscape ? 18 : 14, 14),
+                  decoration: const BoxDecoration(
+                    color: Color(0xE81F1F24),
+                    border: Border(left: BorderSide(color: Color(0x55FFFFFF))),
+                  ),
+                  child: SafeArea(
+                    left: false,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('$episodePanelSeasonLabel（共 ${items.length} 集）',
+                            style: TextStyle(
+                                color: Colors.white70,
+                                fontSize: isLandscape ? 14 : 12)),
+                        SizedBox(height: isLandscape ? 14 : 12),
+                        Expanded(
+                          child: ListView.separated(
+                            itemCount: items.length,
+                            separatorBuilder: (_, __) =>
+                                SizedBox(height: isLandscape ? 10 : 7),
+                            itemBuilder: (context, index) {
+                              final item = items[index];
+                              final selected = item.id == currentItem.id;
+                              return InkWell(
                                 borderRadius: BorderRadius.circular(9),
-                                border: Border.all(
+                                onTap: () => playEpisode(item),
+                                child: Container(
+                                  padding: EdgeInsets.symmetric(
+                                      horizontal: isLandscape ? 14 : 10,
+                                      vertical: isLandscape ? 10 : 9),
+                                  decoration: BoxDecoration(
                                     color: selected
-                                        ? Colors.white
-                                        : Colors.white38,
-                                    width: selected ? 2 : 1),
-                              ),
-                              child: Row(
-                                children: [
-                                  Icon(
-                                      selected
-                                          ? Icons.play_circle_fill
-                                          : Icons.play_circle_outline,
-                                      color: Colors.white,
-                                      size: 21),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: Text(
-                                      episodePanelTitle(item),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(
-                                          color: Colors.white,
-                                          fontSize: isLandscape ? 15 : 13),
-                                    ),
+                                        ? const Color(0x22FFFFFF)
+                                        : Colors.transparent,
+                                    borderRadius: BorderRadius.circular(9),
+                                    border: Border.all(
+                                        color: selected
+                                            ? Colors.white
+                                            : Colors.white38,
+                                        width: selected ? 2 : 1),
                                   ),
-                                ],
-                              ),
-                            ),
-                          );
-                        },
-                      ),
+                                  child: Row(
+                                    children: [
+                                      Icon(
+                                          selected
+                                              ? Icons.play_circle_fill
+                                              : Icons.play_circle_outline,
+                                          color: Colors.white,
+                                          size: 21),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: Text(
+                                          episodePanelTitle(item),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                              color: Colors.white,
+                                              fontSize: isLandscape ? 15 : 13),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
+                  ),
                 ),
               ),
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget buildDanmuPanel(BoxConstraints constraints, bool isLandscape) {
+    final panelWidth = (constraints.maxWidth * (isLandscape ? 0.42 : 0.92))
+        .clamp(280.0, isLandscape ? 500.0 : constraints.maxWidth)
+        .toDouble();
+    final config = widget.store.danmuConfig;
+    return Positioned.fill(
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: GestureDetector(
+              onTap: closeDanmuPanel,
+              child: const ColoredBox(color: Color(0x66000000)),
+            ),
+          ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TweenAnimationBuilder<Offset>(
+              tween: Tween(
+                begin: const Offset(1, 0),
+                end: danmuPanelClosing ? const Offset(1, 0) : Offset.zero,
+              ),
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
+              builder: (context, offset, child) => FractionalTranslation(
+                translation: offset,
+                child: child,
+              ),
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () {},
+                child: Container(
+                  width: panelWidth,
+                  height: double.infinity,
+                  padding: EdgeInsets.fromLTRB(
+                      isLandscape ? 14 : 14, 12, isLandscape ? 18 : 14, 14),
+                  decoration: const BoxDecoration(
+                    color: Color(0xE81F1F24),
+                    border: Border(left: BorderSide(color: Color(0x55FFFFFF))),
+                  ),
+                  child: SafeArea(
+                    left: false,
+                    child: ListView(
+                      children: [
+                        Row(
+                          children: [
+                            const Expanded(
+                              child: Text(
+                                '弹幕设置',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              color: Colors.white,
+                              onPressed: closeDanmuPanel,
+                              icon: const Icon(Icons.close),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        Text(
+                          danmuStatus,
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 12),
+                        ),
+                        const SizedBox(height: 12),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('启用弹幕',
+                              style: TextStyle(color: Colors.white)),
+                          value: config.enabled,
+                          onChanged: (value) {
+                            unawaited(widget.store.setDanmuConfig(
+                                config.copyWith(enabled: value)));
+                            if (value) unawaited(loadDanmuForCurrentItem());
+                          },
+                        ),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('显示弹幕',
+                              style: TextStyle(color: Colors.white)),
+                          value: config.visible,
+                          onChanged: (value) => unawaited(widget.store
+                              .setDanmuConfig(config.copyWith(visible: value))),
+                        ),
+                        _DanmuPanelSlider(
+                          label: '字号',
+                          value: config.fontSize,
+                          min: 12,
+                          max: 28,
+                          divisions: 16,
+                          display: config.fontSize.toStringAsFixed(0),
+                          onChanged: (value) => unawaited(widget.store
+                              .setDanmuConfig(
+                                  config.copyWith(fontSize: value))),
+                        ),
+                        _DanmuPanelSlider(
+                          label: '透明度',
+                          value: config.opacity,
+                          min: 0.3,
+                          max: 1,
+                          divisions: 7,
+                          display: '${(config.opacity * 100).round()}%',
+                          onChanged: (value) => unawaited(widget.store
+                              .setDanmuConfig(config.copyWith(opacity: value))),
+                        ),
+                        _DanmuPanelSlider(
+                          label: '速度',
+                          value: config.speed,
+                          min: 0.6,
+                          max: 1.8,
+                          divisions: 12,
+                          display: '${config.speed.toStringAsFixed(1)}x',
+                          onChanged: (value) => unawaited(widget.store
+                              .setDanmuConfig(config.copyWith(speed: value))),
+                        ),
+                        _DanmuPanelSlider(
+                          label: '时间偏移',
+                          value: config.offsetMs / 1000,
+                          min: -10,
+                          max: 10,
+                          divisions: 40,
+                          display:
+                              '${(config.offsetMs / 1000).toStringAsFixed(1)}s',
+                          onChanged: (value) =>
+                              unawaited(widget.store.setDanmuConfig(
+                            config.copyWith(offsetMs: (value * 1000).round()),
+                          )),
+                        ),
+                        const SizedBox(height: 14),
+                        FilledButton.icon(
+                          onPressed:
+                              danmuLoading ? null : loadDanmuForCurrentItem,
+                          icon: danmuLoading
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child:
+                                      CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Icon(Icons.refresh),
+                          label: Text(danmuLoading ? '加载中' : '重新匹配弹幕'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget buildDanmuOverlay() {
+    final config = widget.store.danmuConfig;
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: ValueListenableBuilder<List<RustDanmuRenderItem>>(
+          valueListenable: danmuOverlayItems,
+          builder: (context, items, _) {
+            if (!config.available || !config.visible || items.isEmpty) {
+              return const SizedBox.shrink();
+            }
+            return RepaintBoundary(
+              child: CustomPaint(
+                painter: _DanmuOverlayPainter(
+                  items: items,
+                  config: config,
+                  layoutCache: danmuTextLayoutCache,
+                  positionProvider: () => currentDanmuPosition,
+                  repaint: danmuTicker,
+                ),
+                isComplex: true,
+                willChange: true,
+                child: const SizedBox.expand(),
+              ),
+            );
+          },
+        ),
       ),
     );
   }
@@ -1094,7 +1601,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                           .clamp(1, double.infinity),
                       onChanged: (value) {
                         markControlsInteraction();
-                        player.seek(Duration(milliseconds: value.toInt()));
+                        final target = Duration(milliseconds: value.toInt());
+                        syncDanmuClock(target);
+                        clearDanmuOverlay();
+                        player.seek(target);
                       },
                     ),
                   ),
@@ -1190,6 +1700,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                     controls: NoVideoControls,
                   ),
                 ),
+                buildDanmuOverlay(),
                 if (error == null && loadingVisible) buildLoadingOverlay(),
                 if (error != null)
                   ErrorView(message: '$error', onRetry: init, dark: true),
@@ -1231,6 +1742,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
                   buildBottomControls(context, constraints, isLandscape),
                 if (episodePanelOpen)
                   buildEpisodePanel(constraints, isLandscape),
+                if (danmuPanelOpen) buildDanmuPanel(constraints, isLandscape),
               ],
             ),
           );
@@ -1238,4 +1750,166 @@ class _VideoPlayerPageState extends State<VideoPlayerPage> {
       ),
     );
   }
+}
+
+class _DanmuPanelSlider extends StatelessWidget {
+  const _DanmuPanelSlider({
+    required this.label,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.display,
+    required this.onChanged,
+    this.divisions,
+  });
+
+  final String label;
+  final double value;
+  final double min;
+  final double max;
+  final int? divisions;
+  final String display;
+  final ValueChanged<double> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: Text(label, style: const TextStyle(color: Colors.white)),
+            ),
+            Text(display, style: const TextStyle(color: Colors.white70)),
+          ],
+        ),
+        Slider(
+          value: value.clamp(min, max),
+          min: min,
+          max: max,
+          divisions: divisions,
+          onChanged: onChanged,
+        ),
+      ],
+    );
+  }
+}
+
+class _DanmuOverlayPainter extends CustomPainter {
+  _DanmuOverlayPainter({
+    required this.items,
+    required this.config,
+    required this.layoutCache,
+    required this.positionProvider,
+    required Listenable repaint,
+  }) : super(repaint: repaint) {
+    _runs = items
+        .map((item) => _DanmuPaintRun(
+              item: item,
+              layout: _layoutFor(item),
+            ))
+        .toList(growable: false);
+    _pruneLayoutCache();
+  }
+
+  final List<RustDanmuRenderItem> items;
+  final DanmuConfig config;
+  final Map<String, _DanmuTextLayout> layoutCache;
+  final Duration Function() positionProvider;
+  late final List<_DanmuPaintRun> _runs;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (size.width <= 0 || size.height <= 0 || _runs.isEmpty) return;
+    final effectiveMs = positionProvider().inMilliseconds + config.offsetMs;
+    for (final run in _runs) {
+      final left = _itemLeft(run, effectiveMs, size.width);
+      if (left == null) continue;
+      run.layout.painter.paint(canvas, Offset(left, run.item.top));
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _DanmuOverlayPainter oldDelegate) {
+    return !identical(items, oldDelegate.items) ||
+        config.visible != oldDelegate.config.visible ||
+        config.fontSize != oldDelegate.config.fontSize ||
+        config.opacity != oldDelegate.config.opacity ||
+        config.speed != oldDelegate.config.speed ||
+        config.offsetMs != oldDelegate.config.offsetMs;
+  }
+
+  _DanmuTextLayout _layoutFor(RustDanmuRenderItem item) {
+    final key = _danmuTextLayoutKey(item, config);
+    final cached = layoutCache[key];
+    if (cached != null) return cached;
+    final color = Color(0xFF000000 | item.color)
+        .withValues(alpha: config.opacity.clamp(0.0, 1.0).toDouble());
+    final painter = TextPainter(
+      text: TextSpan(
+        text: item.text,
+        style: TextStyle(
+          color: color,
+          fontSize: config.fontSize,
+          fontWeight: FontWeight.w700,
+          shadows: const [
+            Shadow(color: Colors.black87, blurRadius: 2, offset: Offset(0, 1)),
+          ],
+        ),
+      ),
+      maxLines: 1,
+      textDirection: TextDirection.ltr,
+      textScaler: TextScaler.noScaling,
+    )..layout();
+    final layout = _DanmuTextLayout(
+      painter: painter,
+      width: math.max(item.textWidth, painter.width),
+    );
+    layoutCache[key] = layout;
+    return layout;
+  }
+
+  void _pruneLayoutCache() {
+    if (layoutCache.length <= 180) return;
+    final activeKeys =
+        items.map((item) => _danmuTextLayoutKey(item, config)).toSet();
+    layoutCache.removeWhere((key, _) => !activeKeys.contains(key));
+  }
+
+  double? _itemLeft(_DanmuPaintRun run, int effectiveMs, double viewportWidth) {
+    final item = run.item;
+    final elapsedMs = effectiveMs - item.timeMs;
+    if (item.mode == 4 || item.mode == 5) {
+      if (elapsedMs < 0 || elapsedMs > 3800) return null;
+      return item.left;
+    }
+    final speed = config.speed.clamp(0.5, 2.0).toDouble();
+    final travelMs = (9500 / speed).round();
+    if (elapsedMs < 0 || elapsedMs > travelMs) return null;
+    final progress = elapsedMs / travelMs;
+    final width =
+        run.layout.width <= 0 ? viewportWidth * 0.5 : run.layout.width;
+    return viewportWidth - progress * (viewportWidth + width);
+  }
+}
+
+class _DanmuPaintRun {
+  const _DanmuPaintRun({required this.item, required this.layout});
+
+  final RustDanmuRenderItem item;
+  final _DanmuTextLayout layout;
+}
+
+class _DanmuTextLayout {
+  const _DanmuTextLayout({required this.painter, required this.width});
+
+  final TextPainter painter;
+  final double width;
+}
+
+String _danmuTextLayoutKey(RustDanmuRenderItem item, DanmuConfig config) {
+  return '${item.id}|${item.color}|${config.fontSize.toStringAsFixed(2)}|'
+      '${config.opacity.toStringAsFixed(2)}|${item.text}';
 }

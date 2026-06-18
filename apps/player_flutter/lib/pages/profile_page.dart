@@ -9,6 +9,7 @@ class ProfilePage extends StatelessWidget {
   Widget build(BuildContext context) {
     final sync = store.syncConfig;
     final tmdb = store.tmdbConfig;
+    final danmu = store.danmuConfig;
     return SafeArea(
       bottom: false,
       child: ListView(
@@ -74,6 +75,15 @@ class ProfilePage extends StatelessWidget {
                     appSlideRoute(
                         (_) => DiagnosticLogSettingsPage(store: store)),
                   ),
+                ),
+                ProfileActionCard(
+                  icon: Icons.chat_bubble_outline,
+                  title: '弹幕 API',
+                  subtitle: danmu.available
+                      ? '${Uri.parse(danmu.requestBaseUrl).host} / token ${danmu.normalizedApiToken.isEmpty ? '默认' : '已设置'}'
+                      : '配置 w19996/danmu_api 弹幕服务',
+                  actionText: danmu.available ? '编辑' : '设置',
+                  onTap: () => showDanmuConfigDialog(context, store),
                 ),
                 ProfileActionCard(
                   icon: Icons.settings_outlined,
@@ -409,6 +419,64 @@ Future<void> showTmdbConfigDialog(BuildContext context, AppStore store) async {
                     region:
                         region.text.trim().isEmpty ? 'CN' : region.text.trim(),
                     apiBaseUrl: normalizedApiBaseUrl,
+                  ),
+                );
+                if (context.mounted) Navigator.pop(context);
+              },
+              child: const Text('保存'),
+            ),
+          ],
+        );
+      },
+    ),
+  );
+}
+
+Future<void> showDanmuConfigDialog(BuildContext context, AppStore store) async {
+  final current = store.danmuConfig;
+  final apiBaseUrl = TextEditingController(text: current.normalizedApiBaseUrl);
+  final apiToken = TextEditingController(text: current.normalizedApiToken);
+
+  await showDialog<void>(
+    context: context,
+    builder: (context) => StatefulBuilder(
+      builder: (context, setDialogState) {
+        return AlertDialog(
+          title: const Text('弹幕 API'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: apiBaseUrl,
+                  decoration: const InputDecoration(
+                    labelText: 'API 地址',
+                    helperText: '例如 https://danmu.example.com，不填 /api/v2',
+                  ),
+                ),
+                TextField(
+                  controller: apiToken,
+                  decoration: const InputDecoration(
+                    labelText: 'Token',
+                    helperText: '默认 87654321 可留空；自定义 TOKEN 时填写',
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                final apiText = apiBaseUrl.text.trim();
+                await store.setDanmuConfig(
+                  current.copyWith(
+                    enabled: apiText.isNotEmpty,
+                    apiBaseUrl: apiText,
+                    apiToken: apiToken.text.trim(),
                   ),
                 );
                 if (context.mounted) Navigator.pop(context);

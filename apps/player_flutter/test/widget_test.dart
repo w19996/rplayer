@@ -70,6 +70,42 @@ void main() {
     expect(mediaFolderKey(item), 'source:local:C:/media/Low IQ Crime');
   });
 
+  test('normalizes webdav folder keys like the database', () {
+    const item = MediaItem(
+      id: 'source:/media/Show/01.mp4',
+      sourceId: 'source',
+      sourceName: 'WebDAV',
+      type: SourceType.webdav,
+      title: '01',
+      uri: 'https://example.com/dav/media/Show/01.mp4',
+    );
+
+    expect(mediaFolderKey(item), 'source:webdav:/media/Show');
+    expect(
+      normalizeMediaFolderKey('source:webdav:/dav/media/Show/'),
+      'source:webdav:/media/Show',
+    );
+  });
+
+  test('imports database folder orientation keys for playback lookup', () {
+    final store = AppStore();
+    store.importMediaStateJson(const {
+      'folderOrientations': {
+        'source:webdav:/dav/media/Show/': 'landscape',
+      },
+    });
+    const item = MediaItem(
+      id: 'source:/media/Show/01.mp4',
+      sourceId: 'source',
+      sourceName: 'WebDAV',
+      type: SourceType.webdav,
+      title: '01',
+      uri: 'https://example.com/dav/media/Show/01.mp4',
+    );
+
+    expect(store.folderOrientations[mediaFolderKey(item)], 'landscape');
+  });
+
   test('normalizes Chinese titles without dropping them', () {
     expect(
       normalizeMatchText('\u4f4e\u667a\u5546\u72af\u7f6a'),
@@ -95,6 +131,65 @@ void main() {
       const TmdbConfig(apiBaseUrl: 'https://tmdb.ansky.top')
           .toJson()['apiBaseUrl'],
       'https://tmdb.ansky.top/3',
+    );
+  });
+
+  test('normalizes danmu api endpoints', () {
+    expect(
+      normalizeDanmuApiBaseUrl('danmu.example.com/87654321/api/v2/'),
+      'https://danmu.example.com',
+    );
+    expect(
+      normalizeDanmuApiBaseUrl('https://danmu.example.com/api/v2'),
+      'https://danmu.example.com',
+    );
+    expect(
+      buildDanmuRequestBaseUrl('https://danmu.example.com', '87654321'),
+      'https://danmu.example.com/87654321',
+    );
+    final config = DanmuConfig.fromJson(const {
+      'enabled': true,
+      'apiBaseUrl': 'https://danmu.example.com/87654321/api/v2',
+    });
+    expect(config.normalizedApiBaseUrl, 'https://danmu.example.com');
+    expect(config.normalizedApiToken, '87654321');
+    expect(
+      const DanmuConfig(
+        enabled: true,
+        apiBaseUrl: 'https://danmu.example.com',
+        apiToken: '87654321',
+      ).requestBaseUrl,
+      'https://danmu.example.com/87654321',
+    );
+  });
+
+  test('builds danmu match filename with tmdb episode hints', () {
+    expect(
+      buildDanmuMatchFileName(
+        title: '宝莲灯',
+        sourceFileName: '24 4K.mp4',
+        season: 1,
+        episode: 1,
+      ),
+      '宝莲灯.S01E01',
+    );
+    expect(
+      buildDanmuMatchFileNames(
+        title: '无忧渡',
+        sourceFileName: '08 4K.mkv',
+        season: 2,
+        episode: 8,
+      ),
+      ['无忧渡.S02E08', '08 4K.mkv'],
+    );
+    expect(
+      buildDanmuMatchFileNames(
+        title: '无忧渡',
+        sourceFileName: '无忧渡.S02E08.1080p.WEB-DL.mkv',
+        season: 2,
+        episode: 8,
+      ),
+      ['无忧渡.S02E08', '无忧渡.S02E08.1080p.WEB-DL.mkv'],
     );
   });
 

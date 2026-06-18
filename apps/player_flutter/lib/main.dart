@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:ffi' as ffi;
 import 'dart:io';
@@ -30,6 +31,7 @@ part 'services/sync_service.dart';
 part 'services/rust_core_service.dart';
 part 'services/media_scan_service.dart';
 part 'services/tmdb_metadata_service.dart';
+part 'services/danmu_service.dart';
 part 'core/utils.dart';
 part 'models/media_models.dart';
 part 'services/webdav_client.dart';
