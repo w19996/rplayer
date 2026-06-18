@@ -16,6 +16,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     with SingleTickerProviderStateMixin {
   static const Duration _danmuPositionSyncThreshold =
       Duration(milliseconds: 650);
+  static const Duration _danmuVisibleRefreshInterval =
+      Duration(milliseconds: 1500);
+  static const int _danmuMaxVisibleItems = 36;
+  static const int _danmuFixedVisibleMs = 3800;
+  static const double _danmuBaseTravelMs = 9500;
 
   Player? _player;
   VideoController? _controller;
@@ -28,7 +33,6 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   Timer? danmuRenderTimer;
   late final AnimationController danmuTicker;
   final danmuOverlayItems = ValueNotifier<List<RustDanmuRenderItem>>(const []);
-  final danmuTextLayoutCache = <String, _DanmuTextLayout>{};
   Duration position = Duration.zero;
   Duration duration = Duration.zero;
   Duration danmuClockPosition = Duration.zero;
@@ -89,7 +93,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     danmuTicker = AnimationController(
       vsync: this,
       duration: const Duration(hours: 24),
-    )..repeat();
+    );
     widget.store.addListener(handleStoreChanged);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     startStatusTimer();
@@ -102,6 +106,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
 
   void handleStoreChanged() {
     setStateIfMounted(() {});
+    syncDanmuTickerState();
   }
 
   Future<void> loadCurrentLibraryDetail() async {
@@ -193,7 +198,6 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     final sessionId = danmuSessionId;
     if (sessionId <= 0) return;
     danmuSessionId = 0;
-    danmuTextLayoutCache.clear();
     try {
       RustCoreService.instance.danmuClear(sessionId);
       widget.store.addDiagnosticLog('danmu session cleared: $sessionId',
@@ -208,13 +212,32 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     if (danmuOverlayItems.value.isNotEmpty) {
       danmuOverlayItems.value = const [];
     }
+    syncDanmuTickerState();
   }
 
   void startDanmuRenderTimer() {
     danmuRenderTimer?.cancel();
-    danmuRenderTimer = Timer.periodic(const Duration(milliseconds: 1500), (_) {
+    danmuRenderTimer = Timer.periodic(_danmuVisibleRefreshInterval, (_) {
       refreshVisibleDanmu();
     });
+  }
+
+  void syncDanmuTickerState() {
+    if (!mounted) return;
+    final config = widget.store.danmuConfig;
+    final shouldAnimate = ready &&
+        playing &&
+        !buffering &&
+        !seekingByDrag &&
+        danmuSessionId > 0 &&
+        config.available &&
+        config.visible &&
+        danmuOverlayItems.value.isNotEmpty;
+    if (shouldAnimate) {
+      if (!danmuTicker.isAnimating) danmuTicker.repeat();
+    } else if (danmuTicker.isAnimating) {
+      danmuTicker.stop(canceled: false);
+    }
   }
 
   void syncDanmuClock(Duration value) {
@@ -273,14 +296,16 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         'font_size': config.fontSize,
         'speed': config.speed,
         'offset_ms': config.offsetMs,
-        'max_items': 56,
+        'max_items': _danmuMaxVisibleItems,
       });
       if (!sameDanmuItems(danmuOverlayItems.value, items)) {
         danmuOverlayItems.value = items;
       }
+      syncDanmuTickerState();
     } catch (error) {
       widget.store
           .addDiagnosticLog('danmu visible failed: $error', category: 'danmu');
+      syncDanmuTickerState();
     }
   }
 
@@ -297,6 +322,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
           a.text != b.text ||
           a.timeMs != b.timeMs ||
           (a.top - b.top).abs() > 0.5 ||
+          (a.mode != 1 && (a.left - b.left).abs() > 0.5) ||
           (a.textWidth - b.textWidth).abs() > 0.5) {
         return false;
       }
@@ -319,6 +345,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       ..add(player.stream.playing.listen((value) {
         syncDanmuClock(currentDanmuPosition);
         setStateIfMounted(() => playing = value);
+        syncDanmuTickerState();
       }))
       ..add(player.stream.buffering.listen(handleBufferingChanged))
       ..add(player.stream.bufferingPercentage.listen(handleBufferingPercentage))
@@ -388,6 +415,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         });
         syncDanmuClock(position);
         refreshVisibleDanmu();
+        syncDanmuTickerState();
         hideLoadingOverlay();
         scheduleControlsAutoHide();
       }
@@ -458,6 +486,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   void handleBufferingChanged(bool value) {
     syncDanmuClock(currentDanmuPosition);
     setStateIfMounted(() => buffering = value);
+    syncDanmuTickerState();
     if (value) {
       showLoadingOverlay();
     } else if (ready) {
@@ -573,6 +602,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     dragDistance += details.delta.dx;
     if (!seekingByDrag && dragDistance.abs() < 18) return;
     seekingByDrag = true;
+    syncDanmuTickerState();
     final maxSeekMs =
         (duration.inMilliseconds * 0.18).clamp(5000, 120000).toInt();
     final offsetMs = (dragDistance / width * maxSeekMs).round();
@@ -592,6 +622,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       clearDanmuOverlay();
       await player.seek(target);
     }
+    syncDanmuTickerState();
     scheduleControlsAutoHide();
   }
 
@@ -1505,18 +1536,28 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
             if (!config.available || !config.visible || items.isEmpty) {
               return const SizedBox.shrink();
             }
-            return RepaintBoundary(
-              child: CustomPaint(
-                painter: _DanmuOverlayPainter(
-                  items: items,
-                  config: config,
-                  layoutCache: danmuTextLayoutCache,
-                  positionProvider: () => currentDanmuPosition,
-                  repaint: danmuTicker,
-                ),
-                isComplex: true,
-                willChange: true,
-                child: const SizedBox.expand(),
+            return ClipRect(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final width = constraints.maxWidth;
+                  if (width <= 0) return const SizedBox.shrink();
+                  return Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      for (final item in items)
+                        _DanmuItemView(
+                          key: ValueKey(
+                            '${item.id}:${item.timeMs}:${item.mode}:${item.text}',
+                          ),
+                          item: item,
+                          config: config,
+                          viewportWidth: width,
+                          ticker: danmuTicker,
+                          positionProvider: () => currentDanmuPosition,
+                        ),
+                    ],
+                  );
+                },
               ),
             );
           },
@@ -1797,119 +1838,81 @@ class _DanmuPanelSlider extends StatelessWidget {
   }
 }
 
-class _DanmuOverlayPainter extends CustomPainter {
-  _DanmuOverlayPainter({
-    required this.items,
+class _DanmuItemView extends StatelessWidget {
+  const _DanmuItemView({
+    required this.item,
     required this.config,
-    required this.layoutCache,
+    required this.viewportWidth,
+    required this.ticker,
     required this.positionProvider,
-    required Listenable repaint,
-  }) : super(repaint: repaint) {
-    _runs = items
-        .map((item) => _DanmuPaintRun(
-              item: item,
-              layout: _layoutFor(item),
-            ))
-        .toList(growable: false);
-    _pruneLayoutCache();
-  }
+    super.key,
+  });
 
-  final List<RustDanmuRenderItem> items;
+  final RustDanmuRenderItem item;
   final DanmuConfig config;
-  final Map<String, _DanmuTextLayout> layoutCache;
+  final double viewportWidth;
+  final Listenable ticker;
   final Duration Function() positionProvider;
-  late final List<_DanmuPaintRun> _runs;
 
   @override
-  void paint(Canvas canvas, Size size) {
-    if (size.width <= 0 || size.height <= 0 || _runs.isEmpty) return;
-    final effectiveMs = positionProvider().inMilliseconds + config.offsetMs;
-    for (final run in _runs) {
-      final left = _itemLeft(run, effectiveMs, size.width);
-      if (left == null) continue;
-      run.layout.painter.paint(canvas, Offset(left, run.item.top));
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _DanmuOverlayPainter oldDelegate) {
-    return !identical(items, oldDelegate.items) ||
-        config.visible != oldDelegate.config.visible ||
-        config.fontSize != oldDelegate.config.fontSize ||
-        config.opacity != oldDelegate.config.opacity ||
-        config.speed != oldDelegate.config.speed ||
-        config.offsetMs != oldDelegate.config.offsetMs;
-  }
-
-  _DanmuTextLayout _layoutFor(RustDanmuRenderItem item) {
-    final key = _danmuTextLayoutKey(item, config);
-    final cached = layoutCache[key];
-    if (cached != null) return cached;
-    final color = Color(0xFF000000 | item.color)
-        .withValues(alpha: config.opacity.clamp(0.0, 1.0).toDouble());
-    final painter = TextPainter(
-      text: TextSpan(
-        text: item.text,
+  Widget build(BuildContext context) {
+    final child = RepaintBoundary(
+      child: Text(
+        item.text,
+        maxLines: 1,
+        softWrap: false,
+        overflow: TextOverflow.visible,
+        textScaler: TextScaler.noScaling,
         style: TextStyle(
-          color: color,
+          color: Color(0xFF000000 | item.color).withValues(
+            alpha: config.opacity.clamp(0.0, 1.0).toDouble(),
+          ),
           fontSize: config.fontSize,
           fontWeight: FontWeight.w700,
           shadows: const [
-            Shadow(color: Colors.black87, blurRadius: 2, offset: Offset(0, 1)),
+            Shadow(
+              color: Colors.black87,
+              blurRadius: 2,
+              offset: Offset(0, 1),
+            ),
           ],
         ),
       ),
-      maxLines: 1,
-      textDirection: TextDirection.ltr,
-      textScaler: TextScaler.noScaling,
-    )..layout();
-    final layout = _DanmuTextLayout(
-      painter: painter,
-      width: math.max(item.textWidth, painter.width),
     );
-    layoutCache[key] = layout;
-    return layout;
+
+    return Positioned(
+      left: 0,
+      top: item.top,
+      child: AnimatedBuilder(
+        animation: ticker,
+        child: child,
+        builder: (context, child) {
+          final left = itemLeft();
+          if (left == null) return const SizedBox.shrink();
+          return Transform.translate(
+            offset: Offset(left, 0),
+            child: child,
+          );
+        },
+      ),
+    );
   }
 
-  void _pruneLayoutCache() {
-    if (layoutCache.length <= 180) return;
-    final activeKeys =
-        items.map((item) => _danmuTextLayoutKey(item, config)).toSet();
-    layoutCache.removeWhere((key, _) => !activeKeys.contains(key));
-  }
-
-  double? _itemLeft(_DanmuPaintRun run, int effectiveMs, double viewportWidth) {
-    final item = run.item;
+  double? itemLeft() {
+    final effectiveMs = positionProvider().inMilliseconds + config.offsetMs;
     final elapsedMs = effectiveMs - item.timeMs;
     if (item.mode == 4 || item.mode == 5) {
-      if (elapsedMs < 0 || elapsedMs > 3800) return null;
+      if (elapsedMs < 0 ||
+          elapsedMs > _VideoPlayerPageState._danmuFixedVisibleMs) {
+        return null;
+      }
       return item.left;
     }
     final speed = config.speed.clamp(0.5, 2.0).toDouble();
-    final travelMs = (9500 / speed).round();
+    final travelMs = (_VideoPlayerPageState._danmuBaseTravelMs / speed).round();
     if (elapsedMs < 0 || elapsedMs > travelMs) return null;
     final progress = elapsedMs / travelMs;
-    final width =
-        run.layout.width <= 0 ? viewportWidth * 0.5 : run.layout.width;
+    final width = item.textWidth <= 0 ? viewportWidth * 0.5 : item.textWidth;
     return viewportWidth - progress * (viewportWidth + width);
   }
-}
-
-class _DanmuPaintRun {
-  const _DanmuPaintRun({required this.item, required this.layout});
-
-  final RustDanmuRenderItem item;
-  final _DanmuTextLayout layout;
-}
-
-class _DanmuTextLayout {
-  const _DanmuTextLayout({required this.painter, required this.width});
-
-  final TextPainter painter;
-  final double width;
-}
-
-String _danmuTextLayoutKey(RustDanmuRenderItem item, DanmuConfig config) {
-  return '${item.id}|${item.color}|${config.fontSize.toStringAsFixed(2)}|'
-      '${config.opacity.toStringAsFixed(2)}|${item.text}';
 }
