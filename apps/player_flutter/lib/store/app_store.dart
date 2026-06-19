@@ -618,6 +618,7 @@ class AppStore extends ChangeNotifier {
         tmdbConfig,
         log: (message) => addDiagnosticLog(message, category: 'tmdb'),
       );
+      await loadMetadataDatabase();
       var matched = 0;
       var failed = 0;
       var skipped = 0;

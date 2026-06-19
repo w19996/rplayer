@@ -49,6 +49,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   bool openedOnce = false;
   bool mediaOpenCompleted = false;
   bool playbackPositionConfirmed = false;
+  bool mpvLoadingPropertiesAttached = false;
+  bool mpvLoadingPropertiesUsable = false;
+  bool voConfigured = false;
+  bool pausedForCache = false;
   bool softwareDecoderFallback = false;
   bool fullscreen = false;
   bool controlsLocked = false;
@@ -373,6 +377,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
               playbackPositionConfirmed = true;
             });
             syncDanmuClock(value);
+            updateLoadingPercent(94, 'position confirmed');
             logVideoLoading(
                 'position accepted before ready: ${value.inMilliseconds}ms');
             maybeMarkPlaybackReady();
@@ -390,6 +395,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
           if (value > Duration.zero && value != duration) {
             setStateIfMounted(() => duration = value);
             widget.store.rememberDuration(currentItem.id, value);
+            updateLoadingPercent(58, 'duration accepted');
             logVideoLoading(
                 'duration accepted before ready: ${value.inMilliseconds}ms');
             return;
@@ -415,11 +421,13 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       ..add(player.stream.width.listen((value) {
         videoWidth = value;
         applyVideoOrientation();
+        if (hasRenderableVideo) updateLoadingPercent(74, 'video size');
         maybeMarkPlaybackReady();
       }))
       ..add(player.stream.height.listen((value) {
         videoHeight = value;
         applyVideoOrientation();
+        if (hasRenderableVideo) updateLoadingPercent(74, 'video size');
         maybeMarkPlaybackReady();
       }))
       ..add(player.stream.tracks
@@ -442,11 +450,14 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         resetCodecRetry ? 0.0 : bufferingPercentage.clamp(0, 100).toDouble();
     try {
       attachStreams();
+      await attachMpvLoadingProperties();
       setState(() {
         error = null;
         ready = false;
         mediaOpenCompleted = false;
         playbackPositionConfirmed = false;
+        voConfigured = false;
+        pausedForCache = false;
         playing = true;
         buffering = true;
         loadingVisible = true;
@@ -468,6 +479,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       final uri = currentItem.type == SourceType.local
           ? Uri.file(currentItem.uri).toString()
           : currentItem.uri;
+      updateLoadingPercent(
+          math.max(initialBufferingPercentage, 12), 'open start');
       logVideoLoading(
           'open start attempt=$attempt item=${currentItem.id} uri=$uri saved=${saved}ms');
       await configureDecoder();
@@ -490,6 +503,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
           buffering = player.state.buffering;
           mediaOpenCompleted = true;
         });
+        updateLoadingPercent(42, 'open returned');
         maybeMarkPlaybackReady(attempt: attempt);
       }
     } catch (e) {
@@ -516,6 +530,70 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     }
   }
 
+  Future<void> attachMpvLoadingProperties() async {
+    if (mpvLoadingPropertiesAttached) return;
+    mpvLoadingPropertiesAttached = true;
+    try {
+      final native = player.platform as dynamic;
+      var observedAny = false;
+      await native.observeProperty(
+        'vo-configured',
+        (String value) async {
+          final configured = mpvBoolValue(value);
+          logVideoLoading('mpv vo-configured: $value');
+          if (!mounted) return;
+          setStateIfMounted(() => voConfigured = configured);
+          if (configured) updateLoadingPercent(82, 'vo configured');
+          maybeMarkPlaybackReady();
+        },
+      );
+      observedAny = true;
+      await native.observeProperty(
+        'paused-for-cache',
+        (String value) async {
+          final paused = mpvBoolValue(value);
+          logVideoLoading('mpv paused-for-cache: $value');
+          if (!mounted) return;
+          setStateIfMounted(() => pausedForCache = paused);
+          if (!paused) updateLoadingPercent(88, 'cache resumed');
+          maybeMarkPlaybackReady();
+        },
+      );
+      observedAny = true;
+      if (mounted && observedAny) {
+        final currentVoConfigured = await native.getProperty('vo-configured');
+        final currentPausedForCache =
+            await native.getProperty('paused-for-cache');
+        logVideoLoading(
+            'mpv loading initial: vo-configured=$currentVoConfigured paused-for-cache=$currentPausedForCache');
+        setStateIfMounted(() {
+          mpvLoadingPropertiesUsable = true;
+          voConfigured = mpvBoolValue(currentVoConfigured);
+          pausedForCache = mpvBoolValue(currentPausedForCache);
+        });
+      }
+    } catch (error) {
+      if (mounted) {
+        setStateIfMounted(() {
+          mpvLoadingPropertiesUsable = false;
+          pausedForCache = false;
+        });
+      }
+      logVideoLoading('mpv loading property observe unavailable: $error');
+    }
+  }
+
+  Future<void> unobserveMpvLoadingProperties() async {
+    if (!mpvLoadingPropertiesAttached) return;
+    try {
+      final instance = _player;
+      if (instance == null) return;
+      final native = instance.platform as dynamic;
+      await native.unobserveProperty('vo-configured');
+      await native.unobserveProperty('paused-for-cache');
+    } catch (_) {}
+  }
+
   @override
   void dispose() {
     widget.store.removeListener(handleStoreChanged);
@@ -535,6 +613,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     for (final subscription in subscriptions) {
       subscription.cancel();
     }
+    unawaited(unobserveMpvLoadingProperties());
     _player?.dispose();
     super.dispose();
   }
@@ -566,6 +645,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         'buffering changed: $value ready=$ready openCompleted=$mediaOpenCompleted width=$videoWidth height=$videoHeight');
     syncDanmuClock(currentDanmuPosition);
     setStateIfMounted(() => buffering = value);
+    if (!value) updateLoadingPercent(86, 'buffering false');
     syncDanmuTickerState();
     if (value) {
       showLoadingOverlay();
@@ -579,20 +659,31 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   void handleBufferingPercentage(double value) {
     if (!value.isFinite) return;
     final percent = value.clamp(0, 100).toDouble();
-    logVideoLoading('buffering percent: ${percent.toStringAsFixed(1)}');
-    setStateIfMounted(() {
-      bufferingPercentage =
-          ready ? percent : math.max(bufferingPercentage, percent);
-    });
+    logVideoLoading('cache buffering percent: ${percent.toStringAsFixed(1)}');
   }
 
   bool get hasRenderableVideo =>
       (videoWidth ?? 0) > 0 && (videoHeight ?? 0) > 0;
 
+  bool mpvBoolValue(Object? value) {
+    final text = '$value'.trim().toLowerCase();
+    return text == 'yes' || text == 'true' || text == '1';
+  }
+
+  void updateLoadingPercent(double value, String reason) {
+    if (!mounted || ready) return;
+    final next = value.clamp(0, 99).toDouble();
+    if (next <= bufferingPercentage) return;
+    setStateIfMounted(() => bufferingPercentage = next);
+    logVideoLoading('loading milestone: ${next.toStringAsFixed(1)} $reason');
+  }
+
   void maybeMarkPlaybackReady({int? attempt}) {
     if (!mounted || ready || error != null) return;
     if (attempt != null && attempt != openAttempt) return;
-    if (!mediaOpenCompleted || buffering || !hasRenderableVideo) return;
+    if (!mediaOpenCompleted || buffering || pausedForCache) return;
+    if (mpvLoadingPropertiesUsable && !voConfigured) return;
+    if (!hasRenderableVideo) return;
     if (!playbackPositionConfirmed) return;
     final state = player.state;
     setState(() {
@@ -1412,6 +1503,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       ready = false;
       mediaOpenCompleted = false;
       playbackPositionConfirmed = false;
+      voConfigured = false;
+      pausedForCache = false;
       playing = true;
       buffering = true;
       loadingVisible = true;

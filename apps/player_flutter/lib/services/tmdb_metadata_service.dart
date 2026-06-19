@@ -1,6 +1,6 @@
 part of 'package:player_flutter/main.dart';
 
-const currentMetadataSchemaVersion = 6;
+const currentMetadataSchemaVersion = 9;
 
 enum _TmdbEndpointKind { search, detail }
 
@@ -24,25 +24,27 @@ class TmdbMetadataService {
       if (metadata != null) return metadata;
     }
 
-    final queries = looksLikeSeriesItem(item) || item.mediaKind == 'TvEpisode'
-        ? _tvQueriesFor(item)
-        : _movieQueriesFor(item);
+    final queries = _multiQueriesFor(item);
     _log('queries for ${describeMediaItem(item)} => ${queries.join(' | ')}');
     if (queries.isEmpty) return null;
 
+    final multi = await _lookupMulti(item, queries);
+    if (multi != null) return multi;
+
     if (looksLikeSeriesItem(item)) {
-      return await _lookupTv(item, queries) ??
-          await _lookupMovie(item, queries);
+      return await _lookupTv(item, _tvQueriesFor(item)) ??
+          await _lookupMovie(item, _movieQueriesFor(item));
     }
     if (item.mediaKind == 'TvEpisode') {
-      return await _lookupTv(item, queries) ??
-          await _lookupMovie(item, queries);
+      return await _lookupTv(item, _tvQueriesFor(item)) ??
+          await _lookupMovie(item, _movieQueriesFor(item));
     }
     if (item.mediaKind == 'Movie') {
-      return await _lookupMovie(item, queries) ??
-          await _lookupTv(item, queries);
+      return await _lookupMovie(item, _movieQueriesFor(item)) ??
+          await _lookupTv(item, _tvQueriesFor(item));
     }
-    return await _lookupMovie(item, queries) ?? await _lookupTv(item, queries);
+    return await _lookupMovie(item, _movieQueriesFor(item)) ??
+        await _lookupTv(item, _tvQueriesFor(item));
   }
 
   Future<Map<String, MediaMetadata>> lookupGroup(
@@ -62,8 +64,19 @@ class TmdbMetadataService {
       final result = await _lookupTvGroupFromCachedTitle(group, cachedTitle);
       if (result.isNotEmpty) return result;
     }
+    if (cachedTitle != null &&
+        cachedTitle.mediaType == 'movie' &&
+        cachedTitle.tmdbId > 0) {
+      final result = await _lookupMovieGroupById(group, cachedTitle.tmdbId);
+      if (result.isNotEmpty) return result;
+    }
 
     final tmdbId = group.items.map(explicitTmdbId).whereType<int>().firstOrNull;
+    if (tmdbId == null) {
+      final multi =
+          await _lookupMultiGroup(group, _multiQueriesFor(representative));
+      if (multi.isNotEmpty) return multi;
+    }
     final result = tmdbId == null
         ? await _lookupTvGroup(group, _tvQueriesFor(representative))
         : await _lookupTvGroupById(group, tmdbId);
@@ -95,6 +108,30 @@ class TmdbMetadataService {
           ),
         ),
     };
+  }
+
+  Future<Map<String, MediaMetadata>> _lookupMultiGroup(
+      MediaFolderGroup group, List<String> queries) async {
+    for (final query in queries) {
+      _log('GET /search/multi group="${group.title}" query="$query"');
+      final results = await _getJsonList(
+        '/search/multi',
+        {
+          'query': query,
+          if (group.representative.matchYear != null)
+            'year': '${group.representative.matchYear}',
+        },
+        kind: _TmdbEndpointKind.search,
+      );
+      _log('/search/multi group="${group.title}" results=${results.length}');
+      final best = _bestMultiSearchResult(results, group.representative);
+      final id = (best?['id'] as num?)?.toInt();
+      final mediaType = best?['media_type'] as String?;
+      if (id == null) continue;
+      if (mediaType == 'movie') return _lookupMovieGroupById(group, id);
+      if (mediaType == 'tv') return _lookupTvGroupById(group, id);
+    }
+    return {};
   }
 
   Future<Map<String, MediaMetadata>> _lookupTvGroup(
@@ -143,6 +180,18 @@ class TmdbMetadataService {
             inferredEpisodeNumber(item),
           ),
         ),
+    };
+  }
+
+  Future<Map<String, MediaMetadata>> _lookupMovieGroupById(
+      MediaFolderGroup group, int id) async {
+    _log('GET /movie/$id once for group="${group.title}"');
+    final details = await _getJson(
+      '/movie/$id',
+      {'append_to_response': 'images,credits'},
+    );
+    return {
+      for (final item in group.items) item.id: _movieMetadata(item, details),
     };
   }
 
@@ -222,6 +271,31 @@ class TmdbMetadataService {
     return null;
   }
 
+  Future<MediaMetadata?> _lookupMulti(
+      MediaItem item, List<String> queries) async {
+    for (final query in queries) {
+      _log('GET /search/multi query="$query"');
+      final results = await _getJsonList(
+        '/search/multi',
+        {
+          'query': query,
+          if (item.matchYear != null) 'year': '${item.matchYear}',
+        },
+        kind: _TmdbEndpointKind.search,
+      );
+      _log('/search/multi query="$query" results=${results.length}');
+      final best = _bestMultiSearchResult(results, item);
+      if (best == null) continue;
+      final id = (best['id'] as num?)?.toInt();
+      final mediaType = best['media_type'] as String?;
+      if (id == null) continue;
+      _log('selected multi id=$id type=$mediaType title=${_multiTitle(best)}');
+      if (mediaType == 'movie') return _lookupMovieId(item, id);
+      if (mediaType == 'tv') return _lookupTvId(item, id);
+    }
+    return null;
+  }
+
   Future<MediaMetadata?> _lookupTv(MediaItem item, List<String> queries) async {
     for (final query in queries) {
       _log('GET /search/tv query="$query"');
@@ -277,6 +351,17 @@ class TmdbMetadataService {
     final values = <String>[
       item.matchTitle,
       folderTitle,
+      item.title.replaceAll(RegExp(r'[Ss]\d{1,2}[Ee]\d{1,3}'), ''),
+      item.title.replaceAll(RegExp(r'\d{4}'), ''),
+      item.title,
+    ];
+    return _dedupeQueries(values);
+  }
+
+  List<String> _multiQueriesFor(MediaItem item) {
+    final values = <String>[
+      mediaGroupDisplayTitle(item),
+      item.matchTitle,
       item.title.replaceAll(RegExp(r'[Ss]\d{1,2}[Ee]\d{1,3}'), ''),
       item.title.replaceAll(RegExp(r'\d{4}'), ''),
       item.title,
@@ -345,6 +430,70 @@ class TmdbMetadataService {
       }
     }
     return best ?? results.first;
+  }
+
+  Map<String, dynamic>? _bestMultiSearchResult(
+      List<Map<String, dynamic>> results, MediaItem item) {
+    final candidates = results
+        .where((result) =>
+            result['media_type'] == 'movie' || result['media_type'] == 'tv')
+        .toList();
+    if (candidates.isEmpty) return null;
+    final target = normalizeMatchText(mediaGroupDisplayTitle(item));
+    final parsedTarget = normalizeMatchText(
+        item.matchTitle.isNotEmpty ? item.matchTitle : item.title);
+    final basename = normalizeMatchText(item.title);
+    Map<String, dynamic>? best;
+    var bestScore = -1;
+
+    for (final result in candidates.take(10)) {
+      final title = normalizeMatchText(_multiTitle(result));
+      final originalTitle = normalizeMatchText(_multiOriginalTitle(result));
+      if (title.isEmpty && originalTitle.isEmpty) continue;
+      var score = 0;
+      if (title == target || originalTitle == target) score += 95;
+      if (title == parsedTarget || originalTitle == parsedTarget) score += 90;
+      if (title == basename || originalTitle == basename) score += 82;
+      if (target.contains(title) || title.contains(target)) score += 35;
+      if (parsedTarget.contains(title) || title.contains(parsedTarget)) {
+        score += 32;
+      }
+      if (basename.contains(title) || title.contains(basename)) score += 30;
+      if (result['poster_path'] != null) score += 8;
+      if (result['backdrop_path'] != null) score += 4;
+      final date = result['media_type'] == 'movie'
+          ? result['release_date'] as String?
+          : result['first_air_date'] as String?;
+      if (item.matchYear != null &&
+          date?.startsWith('${item.matchYear}') == true) {
+        score += 18;
+      }
+      if (looksLikeSeriesItem(item) && result['media_type'] == 'tv') {
+        score += 10;
+      }
+      if (item.mediaKind == 'Movie' && result['media_type'] == 'movie') {
+        score += 10;
+      }
+      score += ((result['vote_count'] as num?)?.toInt() ?? 0).clamp(0, 20);
+
+      if (score > bestScore) {
+        bestScore = score;
+        best = result;
+      }
+    }
+    return best ?? candidates.first;
+  }
+
+  String _multiTitle(Map<String, dynamic> result) {
+    return result['media_type'] == 'movie'
+        ? result['title'] as String? ?? ''
+        : result['name'] as String? ?? '';
+  }
+
+  String _multiOriginalTitle(Map<String, dynamic> result) {
+    return result['media_type'] == 'movie'
+        ? result['original_title'] as String? ?? ''
+        : result['original_name'] as String? ?? '';
   }
 
   MediaMetadata _movieMetadata(MediaItem item, Map<String, dynamic> json) {
@@ -421,6 +570,66 @@ class TmdbMetadataService {
     return fallback;
   }
 
+  List<Map<String, dynamic>> _seasonEpisodes(Map<String, dynamic>? seasonJson) {
+    final seasonNumber = (seasonJson?['season_number'] as num?)?.toInt();
+    final episodes = seasonJson?['episodes'] as List<dynamic>? ?? const [];
+    return episodes
+        .whereType<Map<String, dynamic>>()
+        .map((episode) {
+          final episodeNumber = (episode['episode_number'] as num?)?.toInt();
+          if (episodeNumber == null) return null;
+          return <String, dynamic>{
+            if ((episode['id'] as num?) != null)
+              'episodeTmdbId': (episode['id'] as num).toInt(),
+            if (seasonNumber != null) 'seasonNumber': seasonNumber,
+            'episodeNumber': episodeNumber,
+            if (episode['name'] != null) 'episodeName': episode['name'],
+            if (episode['overview'] != null)
+              'episodeOverview': episode['overview'],
+            if (episode['air_date'] != null) 'releaseDate': episode['air_date'],
+            if ((episode['runtime'] as num?) != null)
+              'episodeRuntime': (episode['runtime'] as num).toInt(),
+            if (episode['still_path'] != null)
+              'stillPath': episode['still_path'],
+            if (episode['episode_type'] != null)
+              'episodeType': episode['episode_type'],
+            if ((episode['vote_average'] as num?) != null)
+              'voteAverage': (episode['vote_average'] as num).toDouble(),
+            if ((episode['vote_count'] as num?) != null)
+              'episodeVoteCount': (episode['vote_count'] as num).toInt(),
+          };
+        })
+        .whereType<Map<String, dynamic>>()
+        .toList();
+  }
+
+  List<Map<String, dynamic>> _showSeasons(Map<String, dynamic> showJson) {
+    final seasons = showJson['seasons'] as List<dynamic>? ?? const [];
+    return seasons
+        .whereType<Map<String, dynamic>>()
+        .map((season) {
+          final seasonNumber = (season['season_number'] as num?)?.toInt();
+          if (seasonNumber == null) return null;
+          return <String, dynamic>{
+            if ((season['id'] as num?) != null)
+              'seasonTmdbId': (season['id'] as num).toInt(),
+            'seasonNumber': seasonNumber,
+            if (season['name'] != null) 'seasonName': season['name'],
+            if (season['overview'] != null)
+              'seasonOverview': season['overview'],
+            if (season['air_date'] != null) 'seasonAirDate': season['air_date'],
+            if ((season['episode_count'] as num?) != null)
+              'seasonEpisodeCount': (season['episode_count'] as num).toInt(),
+            if (season['poster_path'] != null)
+              'seasonPosterPath': season['poster_path'],
+            if ((season['vote_average'] as num?) != null)
+              'seasonVoteAverage': (season['vote_average'] as num).toDouble(),
+          };
+        })
+        .whereType<Map<String, dynamic>>()
+        .toList();
+  }
+
   MediaMetadata _tvMetadataFromCachedTitle(MediaItem item, MediaMetadata title,
       Map<String, dynamic>? seasonJson, Map<String, dynamic>? episodeJson) {
     final episode = episodeJson?.isEmpty == true ? null : episodeJson;
@@ -429,6 +638,7 @@ class TmdbMetadataService {
       tmdbId: title.tmdbId,
       mediaType: title.mediaType,
       title: title.title,
+      tmdbType: title.tmdbType,
       originalTitle: title.originalTitle,
       overview: title.overview,
       posterPath: title.posterPath,
@@ -443,12 +653,14 @@ class TmdbMetadataService {
           (episode?['vote_average'] as num?)?.toDouble() ?? title.voteAverage,
       totalSeasons: title.totalSeasons,
       totalEpisodes: title.totalEpisodes,
+      showSeasons: title.showSeasons,
       seasonTmdbId: (seasonJson?['id'] as num?)?.toInt(),
       seasonName: seasonJson?['name'] as String?,
       seasonOverview: seasonJson?['overview'] as String?,
       seasonAirDate: seasonJson?['air_date'] as String?,
       seasonEpisodeCount: (seasonJson?['episodes'] as List<dynamic>?)?.length,
       seasonPosterPath: seasonJson?['poster_path'] as String?,
+      seasonEpisodes: _seasonEpisodes(seasonJson),
       episodeTmdbId: (episode?['id'] as num?)?.toInt(),
       episodeName: episode?['name'] as String?,
       episodeOverview: episode?['overview'] as String?,
@@ -472,6 +684,7 @@ class TmdbMetadataService {
       title: json['original_name'] as String? ??
           json['name'] as String? ??
           item.title,
+      tmdbType: json['type'] as String?,
       originalTitle: json['name'] as String?,
       overview: json['overview'] as String?,
       posterPath: json['poster_path'] as String?,
@@ -487,12 +700,14 @@ class TmdbMetadataService {
           (json['vote_average'] as num?)?.toDouble(),
       totalSeasons: (json['number_of_seasons'] as num?)?.toInt(),
       totalEpisodes: (json['number_of_episodes'] as num?)?.toInt(),
+      showSeasons: _showSeasons(json),
       seasonTmdbId: (seasonJson?['id'] as num?)?.toInt(),
       seasonName: seasonJson?['name'] as String?,
       seasonOverview: seasonJson?['overview'] as String?,
       seasonAirDate: seasonJson?['air_date'] as String?,
       seasonEpisodeCount: (seasonJson?['episodes'] as List<dynamic>?)?.length,
       seasonPosterPath: seasonJson?['poster_path'] as String?,
+      seasonEpisodes: _seasonEpisodes(seasonJson),
       episodeTmdbId: (episode?['id'] as num?)?.toInt(),
       episodeName: episode?['name'] as String?,
       episodeOverview: episode?['overview'] as String?,

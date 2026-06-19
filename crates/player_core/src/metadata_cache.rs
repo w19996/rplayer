@@ -5,6 +5,10 @@ use serde_json::{Map, Value};
 use std::{collections::HashSet, fs, path::Path};
 use url::Url;
 
+fn current_metadata_schema_version() -> i64 {
+    9
+}
+
 pub fn put_metadata_json(
     db_path: &str,
     title_key: &str,
@@ -49,7 +53,8 @@ pub fn get_all_metadata_json(db_path: &str) -> Result<String> {
            e.episode_type,
            e.vote_average,
            e.vote_count,
-           coalesce(e.last_synced_at, s.last_synced_at)
+           coalesce(e.last_synced_at, s.last_synced_at),
+           s.type
          from media_file_matches mfm
          join media_files mf on mf.id = mfm.file_id and mf.scan_status = 'active'
          join tmdb_tv_shows s on s.id = mfm.show_id
@@ -150,7 +155,63 @@ pub fn get_all_metadata_json(db_path: &str) -> Result<String> {
             row.get::<_, Option<i64>>(27)?,
         );
         insert_optional_i64(&mut object, "updatedAt", row.get::<_, Option<i64>>(28)?);
-        object.insert("schemaVersion".to_string(), Value::from(6));
+        insert_optional_string(&mut object, "tmdbType", row.get::<_, Option<String>>(29)?);
+        object.insert(
+            "schemaVersion".to_string(),
+            Value::from(current_metadata_schema_version()),
+        );
+        map.insert(item_id, Value::Object(object));
+    }
+    let mut movie_stmt = conn.prepare(
+        "select
+           mf.item_id,
+           m.tmdb_id,
+           m.title,
+           m.original_title,
+           m.overview,
+           m.poster_path,
+           m.backdrop_path,
+           m.logo_path,
+           m.vote_average,
+           m.release_date,
+           m.last_synced_at
+         from media_file_movie_matches mfmm
+         join media_files mf on mf.id = mfmm.file_id and mf.scan_status = 'active'
+         join tmdb_movies m on m.id = mfmm.movie_id
+         order by mf.item_id",
+    )?;
+    let mut movie_rows = movie_stmt.query([])?;
+    while let Some(row) = movie_rows.next()? {
+        let item_id = row.get::<_, String>(0)?;
+        let mut object = Map::new();
+        object.insert("itemId".to_string(), Value::String(item_id.clone()));
+        object.insert("tmdbId".to_string(), Value::from(row.get::<_, i64>(1)?));
+        object.insert("mediaType".to_string(), Value::String("movie".to_string()));
+        object.insert("title".to_string(), Value::String(row.get::<_, String>(2)?));
+        insert_optional_string(
+            &mut object,
+            "originalTitle",
+            row.get::<_, Option<String>>(3)?,
+        );
+        insert_optional_string(&mut object, "overview", row.get::<_, Option<String>>(4)?);
+        insert_optional_string(&mut object, "posterPath", row.get::<_, Option<String>>(5)?);
+        insert_optional_string(
+            &mut object,
+            "backdropPath",
+            row.get::<_, Option<String>>(6)?,
+        );
+        insert_optional_string(&mut object, "logoPath", row.get::<_, Option<String>>(7)?);
+        object.insert("profilePaths".to_string(), Value::Array(Vec::new()));
+        object.insert("castNames".to_string(), Value::Array(Vec::new()));
+        object.insert("genres".to_string(), Value::Array(Vec::new()));
+        insert_optional_f64(&mut object, "voteAverage", row.get::<_, Option<f64>>(8)?);
+        insert_optional_string(&mut object, "releaseDate", row.get::<_, Option<String>>(9)?);
+        object.insert("totalEpisodes".to_string(), Value::from(1));
+        object.insert("updatedAt".to_string(), Value::from(row.get::<_, i64>(10)?));
+        object.insert(
+            "schemaVersion".to_string(),
+            Value::from(current_metadata_schema_version()),
+        );
         map.insert(item_id, Value::Object(object));
     }
     Ok(Value::Object(map).to_string())
@@ -255,14 +316,16 @@ pub fn query_home_json(db_path: &str) -> Result<String> {
            sf.source_id,
            sf.path,
            s.id,
-           s.tmdb_id,
-           s.name,
-           s.overview,
-           s.poster_path,
-           s.backdrop_path,
-           s.vote_average,
-           s.first_air_date,
-           s.number_of_episodes,
+           m.id,
+           coalesce(s.tmdb_id, m.tmdb_id),
+           coalesce(s.name, m.title),
+           coalesce(s.overview, m.overview),
+           coalesce(s.poster_path, m.poster_path),
+           coalesce(s.backdrop_path, m.backdrop_path),
+           coalesce(s.vote_average, m.vote_average),
+           coalesce(s.first_air_date, m.release_date),
+           coalesce(s.number_of_episodes, 1),
+           s.type,
            count(distinct mf.id),
            max(pp.last_played_at),
            coalesce(sf.search_hint, min(mf.guess_title), sf.path)
@@ -270,9 +333,11 @@ pub fn query_home_json(db_path: &str) -> Result<String> {
          join media_files mf on mf.folder_id = sf.id and mf.scan_status = 'active'
          left join source_folder_matches sfm on sfm.folder_id = sf.id
          left join tmdb_tv_shows s on s.id = sfm.show_id
+         left join source_folder_movie_matches sfmm on sfmm.folder_id = sf.id
+         left join tmdb_movies m on m.id = sfmm.movie_id
          left join playback_progress pp on pp.file_id = mf.id
-         group by sf.id, s.id
-         order by s.id is null, max(pp.last_played_at) is null, max(pp.last_played_at) desc, coalesce(s.name, sf.path)",
+         group by sf.id, s.id, m.id
+         order by (s.id is null and m.id is null), max(pp.last_played_at) is null, max(pp.last_played_at) desc, coalesce(s.name, m.title, sf.path)",
     )?;
     let rows = stmt.query_map([], |row| {
         let mut object = Map::new();
@@ -286,41 +351,47 @@ pub fn query_home_json(db_path: &str) -> Result<String> {
             Value::from(row.get::<_, String>(2)?),
         );
         let show_id = row.get::<_, Option<i64>>(3)?;
-        let tmdb_id = row.get::<_, Option<i64>>(4)?;
+        let movie_id = row.get::<_, Option<i64>>(4)?;
+        let tmdb_id = row.get::<_, Option<i64>>(5)?;
         insert_optional_i64(&mut object, "showId", show_id);
+        insert_optional_i64(&mut object, "movieId", movie_id);
         insert_optional_i64(&mut object, "tmdbId", tmdb_id);
-        let fallback_title = row.get::<_, String>(14)?;
+        let fallback_title = row.get::<_, String>(16)?;
         let title = row
-            .get::<_, Option<String>>(5)?
+            .get::<_, Option<String>>(6)?
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| display_name_from_path(&fallback_title));
         object.insert("title".to_string(), Value::from(title));
-        insert_optional_string(&mut object, "overview", row.get::<_, Option<String>>(6)?);
-        insert_optional_string(&mut object, "posterPath", row.get::<_, Option<String>>(7)?);
+        insert_optional_string(&mut object, "overview", row.get::<_, Option<String>>(7)?);
+        insert_optional_string(&mut object, "posterPath", row.get::<_, Option<String>>(8)?);
         insert_optional_string(
             &mut object,
             "backdropPath",
-            row.get::<_, Option<String>>(8)?,
+            row.get::<_, Option<String>>(9)?,
         );
-        insert_optional_f64(&mut object, "voteAverage", row.get::<_, Option<f64>>(9)?);
+        insert_optional_f64(&mut object, "voteAverage", row.get::<_, Option<f64>>(10)?);
         insert_optional_string(
             &mut object,
             "releaseDate",
-            row.get::<_, Option<String>>(10)?,
+            row.get::<_, Option<String>>(11)?,
         );
-        insert_optional_i64(&mut object, "totalEpisodes", row.get::<_, Option<i64>>(11)?);
+        insert_optional_i64(&mut object, "totalEpisodes", row.get::<_, Option<i64>>(12)?);
+        insert_optional_string(&mut object, "tmdbType", row.get::<_, Option<String>>(13)?);
         object.insert(
             "localFileCount".to_string(),
-            Value::from(row.get::<_, i64>(12)?),
+            Value::from(row.get::<_, i64>(14)?),
         );
         insert_optional_i64(
             &mut object,
             "latestPlayedAt",
-            row.get::<_, Option<i64>>(13)?,
+            row.get::<_, Option<i64>>(15)?,
         );
-        object.insert("matched".to_string(), Value::from(show_id.is_some()));
+        let matched = show_id.is_some() || movie_id.is_some();
+        object.insert("matched".to_string(), Value::from(matched));
         if show_id.is_some() {
             object.insert("mediaType".to_string(), Value::from("tv"));
+        } else if movie_id.is_some() {
+            object.insert("mediaType".to_string(), Value::from("movie"));
         }
         Ok(Value::Object(object))
     })?;
@@ -352,17 +423,17 @@ pub fn query_show_detail_json(db_path: &str, folder_key: &str) -> Result<String>
            pp.duration_ms,
            pp.last_played_at,
            s.id,
-           s.tmdb_id,
-           s.name,
-           s.original_name,
-           s.overview,
-           s.poster_path,
-           s.backdrop_path,
-           s.logo_path,
-           s.vote_average,
-           s.first_air_date,
+           coalesce(s.tmdb_id, m.tmdb_id),
+           coalesce(s.name, m.title),
+           coalesce(s.original_name, m.original_title),
+           coalesce(s.overview, m.overview),
+           coalesce(s.poster_path, m.poster_path),
+           coalesce(s.backdrop_path, m.backdrop_path),
+           coalesce(s.logo_path, m.logo_path),
+           coalesce(s.vote_average, m.vote_average),
+           coalesce(s.first_air_date, m.release_date),
            s.number_of_seasons,
-           s.number_of_episodes,
+           coalesce(s.number_of_episodes, case when m.id is not null then 1 end),
            e.id,
            e.season_number,
            e.episode_number,
@@ -370,12 +441,17 @@ pub fn query_show_detail_json(db_path: &str, folder_key: &str) -> Result<String>
            e.overview,
            e.air_date,
            e.runtime,
-           e.still_path
+           e.still_path,
+           m.id,
+           case when m.id is not null then 'movie' when s.id is not null then 'tv' end,
+           s.type
          from media_files mf
          left join playback_progress pp on pp.file_id = mf.id
          left join media_file_matches mfm on mfm.file_id = mf.id
          left join tmdb_tv_shows s on s.id = mfm.show_id
          left join tmdb_tv_episodes e on e.id = mfm.episode_id
+         left join media_file_movie_matches mfmm on mfmm.file_id = mf.id
+         left join tmdb_movies m on m.id = mfmm.movie_id
          where mf.scan_status = 'active'
            and (?1 = '' or mf.source_id = ?1)
            and (?2 = '' or mf.relative_path = ?2 or mf.relative_path like ?3)
@@ -449,6 +525,9 @@ pub fn query_show_detail_json(db_path: &str, folder_key: &str) -> Result<String>
         );
         insert_optional_i64(&mut object, "runtime", row.get::<_, Option<i64>>(28)?);
         insert_optional_string(&mut object, "stillPath", row.get::<_, Option<String>>(29)?);
+        insert_optional_i64(&mut object, "movieId", row.get::<_, Option<i64>>(30)?);
+        insert_optional_string(&mut object, "mediaType", row.get::<_, Option<String>>(31)?);
+        insert_optional_string(&mut object, "tmdbType", row.get::<_, Option<String>>(32)?);
         Ok(Value::Object(object))
     })?;
     let mut files = Vec::new();
@@ -485,18 +564,21 @@ pub fn query_recent_json(db_path: &str) -> Result<String> {
            pp.position_ms,
            pp.duration_ms,
            pp.last_played_at,
-           s.name,
-           s.poster_path,
-           s.backdrop_path,
+           coalesce(s.name, m.title),
+           coalesce(s.poster_path, m.poster_path),
+           coalesce(s.backdrop_path, m.backdrop_path),
            e.season_number,
            e.episode_number,
            e.name,
-           e.still_path
+           e.still_path,
+           case when m.id is not null then 'movie' when s.id is not null then 'tv' end
          from playback_progress pp
          join media_files mf on mf.id = pp.file_id and mf.scan_status = 'active'
          left join media_file_matches mfm on mfm.file_id = mf.id
          left join tmdb_tv_shows s on s.id = mfm.show_id
          left join tmdb_tv_episodes e on e.id = mfm.episode_id
+         left join media_file_movie_matches mfmm on mfmm.file_id = mf.id
+         left join tmdb_movies m on m.id = mfmm.movie_id
          where pp.last_played_at is not null
          order by pp.last_played_at desc",
     )?;
@@ -531,6 +613,7 @@ pub fn query_recent_json(db_path: &str) -> Result<String> {
             row.get::<_, Option<String>>(13)?,
         );
         insert_optional_string(&mut object, "stillPath", row.get::<_, Option<String>>(14)?);
+        insert_optional_string(&mut object, "mediaType", row.get::<_, Option<String>>(15)?);
         Ok(Value::Object(object))
     })?;
     let mut values = Vec::new();
@@ -544,11 +627,14 @@ pub fn replace_all_metadata_json(db_path: &str, metadata_map_json: &str) -> Resu
     let value: Value = serde_json::from_str(metadata_map_json)?;
     let object = value.as_object().cloned().unwrap_or_default();
     let conn = open(db_path)?;
+    conn.execute("delete from media_file_movie_matches", [])?;
     conn.execute("delete from media_file_matches", [])?;
+    conn.execute("delete from source_folder_movie_matches", [])?;
     conn.execute("delete from source_folder_matches", [])?;
     conn.execute("delete from tmdb_credits", [])?;
     conn.execute("delete from tmdb_people_cache", [])?;
     conn.execute("delete from tmdb_images", [])?;
+    conn.execute("delete from tmdb_movies", [])?;
     conn.execute("delete from tmdb_tv_episodes", [])?;
     conn.execute("delete from tmdb_tv_seasons", [])?;
     conn.execute("delete from tmdb_tv_shows", [])?;
@@ -772,6 +858,25 @@ fn open(db_path: &str) -> Result<Connection> {
            created_at integer not null,
            updated_at integer not null
          );
+         create table if not exists tmdb_movies(
+           id integer primary key autoincrement,
+           tmdb_id integer not null unique,
+           title text not null,
+           original_title text,
+           overview text,
+           release_date text,
+           poster_path text,
+           backdrop_path text,
+           logo_path text,
+           vote_average real,
+           vote_count integer,
+           popularity real,
+           fetched_language text not null,
+           raw_json text,
+           last_synced_at integer not null,
+           created_at integer not null,
+           updated_at integer not null
+         );
          create table if not exists tmdb_tv_seasons(
            id integer primary key autoincrement,
            show_id integer not null,
@@ -831,6 +936,21 @@ fn open(db_path: &str) -> Result<Connection> {
            foreign key(folder_id) references source_folders(id) on delete cascade,
            foreign key(show_id) references tmdb_tv_shows(id) on delete cascade
          );
+         create table if not exists source_folder_movie_matches(
+           id integer primary key autoincrement,
+           folder_id integer not null,
+           movie_id integer not null,
+           provider text not null default 'tmdb',
+           match_status text not null,
+           search_query text,
+           selected_tmdb_id integer not null,
+           matched_by text,
+           created_at integer not null,
+           updated_at integer not null,
+           unique(folder_id, provider),
+           foreign key(folder_id) references source_folders(id) on delete cascade,
+           foreign key(movie_id) references tmdb_movies(id) on delete cascade
+         );
          create table if not exists media_file_matches(
            id integer primary key autoincrement,
            file_id integer not null,
@@ -850,6 +970,22 @@ fn open(db_path: &str) -> Result<Connection> {
            foreign key(show_id) references tmdb_tv_shows(id) on delete cascade,
            foreign key(season_id) references tmdb_tv_seasons(id) on delete set null,
            foreign key(episode_id) references tmdb_tv_episodes(id) on delete set null
+         );
+         create table if not exists media_file_movie_matches(
+           id integer primary key autoincrement,
+           file_id integer not null,
+           movie_id integer not null,
+           provider text not null default 'tmdb',
+           match_status text not null,
+           match_score real,
+           search_query text,
+           selected_tmdb_id integer,
+           matched_by text,
+           created_at integer not null,
+           updated_at integer not null,
+           unique(file_id),
+           foreign key(file_id) references media_files(id) on delete cascade,
+           foreign key(movie_id) references tmdb_movies(id) on delete cascade
          );
          create table if not exists tmdb_images(
            id integer primary key autoincrement,
@@ -933,7 +1069,10 @@ fn open(db_path: &str) -> Result<Connection> {
          create index if not exists idx_playback_recent on playback_progress(last_played_at desc);
          create index if not exists idx_folder_matches_folder on source_folder_matches(folder_id);
          create index if not exists idx_folder_matches_show on source_folder_matches(show_id);
+         create index if not exists idx_folder_movie_matches_folder on source_folder_movie_matches(folder_id);
+         create index if not exists idx_folder_movie_matches_movie on source_folder_movie_matches(movie_id);
          create index if not exists idx_file_matches_episode on media_file_matches(episode_id);
+         create index if not exists idx_file_movie_matches_movie on media_file_movie_matches(movie_id);
          create index if not exists idx_tmdb_episodes_lookup on tmdb_tv_episodes(show_id, season_number, episode_number);
           create index if not exists idx_image_cache_path_size on image_cache(provider, file_path, size);",
     )?;
@@ -967,7 +1106,9 @@ fn reset_incompatible_legacy_schema(conn: &Connection) -> Result<()> {
          drop table if exists tmdb_people_cache;
          drop table if exists image_cache;
          drop table if exists tmdb_images;
+         drop table if exists media_file_movie_matches;
          drop table if exists media_file_matches;
+         drop table if exists source_folder_movie_matches;
          drop table if exists source_folder_matches;
          drop table if exists match_candidates;
          drop table if exists match_tasks;
@@ -976,6 +1117,7 @@ fn reset_incompatible_legacy_schema(conn: &Connection) -> Result<()> {
          drop table if exists tmdb_tv_episodes;
          drop table if exists tmdb_tv_seasons;
          drop table if exists tmdb_tv_shows;
+         drop table if exists tmdb_movies;
          drop table if exists media_files;
          drop table if exists source_folders;
          drop table if exists sources;
@@ -1380,6 +1522,7 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
             ],
         )?;
         let file_id = media_file_id(conn, item_id)?;
+        auto_bind_media_file_to_cached_tmdb(conn, file_id, now)?;
         let position = progress.get(item_id).and_then(Value::as_i64).unwrap_or(0);
         let duration = durations.get(item_id).and_then(Value::as_i64);
         let last_played_at = last_played.get(item_id).and_then(Value::as_i64);
@@ -1449,6 +1592,19 @@ fn upsert_tmdb_metadata(
     item_id: &str,
     value: &Value,
 ) -> Result<()> {
+    match value.get("mediaType").and_then(Value::as_str) {
+        Some("tv") => upsert_tmdb_tv_metadata(conn, title_key, item_id, value),
+        Some("movie") => upsert_tmdb_movie_metadata(conn, title_key, item_id, value),
+        _ => Ok(()),
+    }
+}
+
+fn upsert_tmdb_tv_metadata(
+    conn: &Connection,
+    title_key: &str,
+    item_id: &str,
+    value: &Value,
+) -> Result<()> {
     if value.get("mediaType").and_then(Value::as_str) != Some("tv") {
         return Ok(());
     }
@@ -1463,17 +1619,18 @@ fn upsert_tmdb_metadata(
         .unwrap_or("TMDB TV");
     conn.execute(
         "insert into tmdb_tv_shows(
-           tmdb_id, name, original_name, overview, first_air_date,
+           tmdb_id, name, original_name, overview, first_air_date, type,
            number_of_seasons, number_of_episodes, poster_path, backdrop_path,
            logo_path, vote_average, fetched_language, raw_json, last_synced_at,
            created_at, updated_at
          )
-         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'unknown', ?12, ?13, ?13, ?13)
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'unknown', ?13, ?14, ?14, ?14)
          on conflict(tmdb_id) do update set
            name=excluded.name,
            original_name=excluded.original_name,
            overview=excluded.overview,
            first_air_date=excluded.first_air_date,
+           type=excluded.type,
            number_of_seasons=excluded.number_of_seasons,
            number_of_episodes=excluded.number_of_episodes,
            poster_path=excluded.poster_path,
@@ -1489,6 +1646,7 @@ fn upsert_tmdb_metadata(
             value.get("originalTitle").and_then(Value::as_str),
             value.get("overview").and_then(Value::as_str),
             value.get("releaseDate").and_then(Value::as_str),
+            value.get("tmdbType").and_then(Value::as_str),
             value.get("totalSeasons").and_then(Value::as_i64),
             value.get("totalEpisodes").and_then(Value::as_i64),
             value.get("posterPath").and_then(Value::as_str),
@@ -1506,6 +1664,7 @@ fn upsert_tmdb_metadata(
     )?;
     upsert_tmdb_images(conn, "show", show_id, value, now)?;
     upsert_people_and_credits(conn, show_id, value, now)?;
+    upsert_tmdb_show_seasons(conn, show_id, value, now)?;
 
     let file_id = match media_file_id(conn, item_id) {
         Ok(file_id) => file_id,
@@ -1525,6 +1684,10 @@ fn upsert_tmdb_metadata(
     )?;
     if let Some(folder_id) = folder_id {
         conn.execute(
+            "delete from source_folder_movie_matches where folder_id=?1",
+            params![folder_id],
+        )?;
+        conn.execute(
             "insert into source_folder_matches(
                folder_id, show_id, match_status, search_query, selected_tmdb_id,
                matched_by, created_at, updated_at
@@ -1542,42 +1705,34 @@ fn upsert_tmdb_metadata(
     }
 
     let season_number = season.unwrap_or(1);
-    conn.execute(
-        "insert into tmdb_tv_seasons(
-           show_id, tmdb_id, season_number, name, overview, air_date,
-           episode_count, poster_path, fetched_language, raw_json,
-           last_synced_at, created_at, updated_at
-         )
-         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'tmdb', ?9, ?10, ?10, ?10)
-         on conflict(show_id, season_number) do update set
-           tmdb_id=coalesce(excluded.tmdb_id, tmdb_tv_seasons.tmdb_id),
-           name=coalesce(excluded.name, tmdb_tv_seasons.name),
-           overview=coalesce(excluded.overview, tmdb_tv_seasons.overview),
-           air_date=coalesce(excluded.air_date, tmdb_tv_seasons.air_date),
-           episode_count=coalesce(excluded.episode_count, tmdb_tv_seasons.episode_count),
-           poster_path=coalesce(excluded.poster_path, tmdb_tv_seasons.poster_path),
-           fetched_language=excluded.fetched_language,
-           raw_json=coalesce(excluded.raw_json, tmdb_tv_seasons.raw_json),
-           last_synced_at=excluded.last_synced_at,
-           updated_at=excluded.updated_at",
-        params![
-            show_id,
-            value.get("seasonTmdbId").and_then(Value::as_i64),
-            season_number,
-            value.get("seasonName").and_then(Value::as_str),
-            value.get("seasonOverview").and_then(Value::as_str),
-            value.get("seasonAirDate").and_then(Value::as_str),
-            value.get("seasonEpisodeCount").and_then(Value::as_i64),
-            value.get("seasonPosterPath").and_then(Value::as_str),
-            season_json(value).to_string(),
-            now
-        ],
+    upsert_tmdb_season_summary(
+        conn,
+        show_id,
+        season_number,
+        value.get("seasonTmdbId").and_then(Value::as_i64),
+        value.get("seasonName").and_then(Value::as_str),
+        value.get("seasonOverview").and_then(Value::as_str),
+        value.get("seasonAirDate").and_then(Value::as_str),
+        value.get("seasonEpisodeCount").and_then(Value::as_i64),
+        value.get("seasonPosterPath").and_then(Value::as_str),
+        value.get("seasonVoteAverage").and_then(Value::as_f64),
+        &season_json(value),
+        now,
     )?;
     let season_id: i64 = conn.query_row(
         "select id from tmdb_tv_seasons where show_id=?1 and season_number=?2",
         params![show_id, season_number],
         |row| row.get(0),
     )?;
+    insert_tmdb_image(
+        conn,
+        "season",
+        season_id,
+        "poster",
+        value.get("seasonPosterPath").and_then(Value::as_str),
+        now,
+    )?;
+    upsert_tmdb_season_episodes(conn, show_id, season_id, season_number, value, now)?;
     let episode_id = if let Some(episode_number) = episode {
         conn.execute(
             "insert into tmdb_tv_episodes(
@@ -1629,6 +1784,10 @@ fn upsert_tmdb_metadata(
         None
     };
     conn.execute(
+        "delete from media_file_movie_matches where file_id=?1",
+        params![file_id],
+    )?;
+    conn.execute(
         "insert into media_file_matches(
            file_id, show_id, season_id, episode_id, match_status, match_score,
            search_query, selected_tmdb_id, matched_by, created_at, updated_at
@@ -1658,6 +1817,297 @@ fn upsert_tmdb_metadata(
             tmdb_id,
             now
         ],
+    )?;
+    Ok(())
+}
+
+fn upsert_tmdb_movie_metadata(
+    conn: &Connection,
+    title_key: &str,
+    item_id: &str,
+    value: &Value,
+) -> Result<()> {
+    let Some(tmdb_id) = value.get("tmdbId").and_then(Value::as_i64) else {
+        return Ok(());
+    };
+    let now = now_ms();
+    let title = value
+        .get("title")
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+        .unwrap_or("TMDB Movie");
+    conn.execute(
+        "insert into tmdb_movies(
+           tmdb_id, title, original_title, overview, release_date,
+           poster_path, backdrop_path, logo_path, vote_average,
+           fetched_language, raw_json, last_synced_at, created_at, updated_at
+         )
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'unknown', ?10, ?11, ?11, ?11)
+         on conflict(tmdb_id) do update set
+           title=excluded.title,
+           original_title=excluded.original_title,
+           overview=excluded.overview,
+           release_date=excluded.release_date,
+           poster_path=excluded.poster_path,
+           backdrop_path=excluded.backdrop_path,
+           logo_path=excluded.logo_path,
+           vote_average=excluded.vote_average,
+           raw_json=excluded.raw_json,
+           last_synced_at=excluded.last_synced_at,
+           updated_at=excluded.updated_at",
+        params![
+            tmdb_id,
+            title,
+            value.get("originalTitle").and_then(Value::as_str),
+            value.get("overview").and_then(Value::as_str),
+            value.get("releaseDate").and_then(Value::as_str),
+            value.get("posterPath").and_then(Value::as_str),
+            value.get("backdropPath").and_then(Value::as_str),
+            value.get("logoPath").and_then(Value::as_str),
+            value.get("voteAverage").and_then(Value::as_f64),
+            title_json(value).to_string(),
+            now
+        ],
+    )?;
+    let movie_id = query_row_id(conn, "select id from tmdb_movies where tmdb_id=?1", tmdb_id)?;
+    upsert_tmdb_images(conn, "movie", movie_id, value, now)?;
+
+    let file_id = match media_file_id(conn, item_id) {
+        Ok(file_id) => file_id,
+        Err(_) => return Ok(()),
+    };
+    let (folder_id, guess_title) = conn.query_row(
+        "select folder_id, guess_title from media_files where id=?1",
+        params![file_id],
+        |row| {
+            Ok((
+                row.get::<_, Option<i64>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+            ))
+        },
+    )?;
+    if let Some(folder_id) = folder_id {
+        conn.execute(
+            "delete from source_folder_matches where folder_id=?1",
+            params![folder_id],
+        )?;
+        conn.execute(
+            "insert into source_folder_movie_matches(
+               folder_id, movie_id, match_status, search_query, selected_tmdb_id,
+               matched_by, created_at, updated_at
+             )
+             values (?1, ?2, 'auto', ?3, ?4, 'tmdb-api', ?5, ?5)
+             on conflict(folder_id, provider) do update set
+               movie_id=excluded.movie_id,
+               match_status=excluded.match_status,
+               search_query=excluded.search_query,
+               selected_tmdb_id=excluded.selected_tmdb_id,
+               matched_by=excluded.matched_by,
+               updated_at=excluded.updated_at",
+            params![folder_id, movie_id, guess_title, tmdb_id, now],
+        )?;
+    }
+    conn.execute(
+        "delete from media_file_matches where file_id=?1",
+        params![file_id],
+    )?;
+    conn.execute(
+        "insert into media_file_movie_matches(
+           file_id, movie_id, match_status, match_score, search_query,
+           selected_tmdb_id, matched_by, created_at, updated_at
+         )
+         values (?1, ?2, 'auto', 1.0, ?3, ?4, 'tmdb-api', ?5, ?5)
+         on conflict(file_id) do update set
+           movie_id=excluded.movie_id,
+           match_status=excluded.match_status,
+           match_score=excluded.match_score,
+           search_query=excluded.search_query,
+           selected_tmdb_id=excluded.selected_tmdb_id,
+           matched_by=excluded.matched_by,
+           updated_at=excluded.updated_at",
+        params![file_id, movie_id, title_key, tmdb_id, now],
+    )?;
+    Ok(())
+}
+
+fn upsert_tmdb_season_episodes(
+    conn: &Connection,
+    show_id: i64,
+    season_id: i64,
+    season_number: i64,
+    value: &Value,
+    now: i64,
+) -> Result<()> {
+    let Some(episodes) = value.get("seasonEpisodes").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    for episode in episodes {
+        let Some(episode_number) = episode.get("episodeNumber").and_then(Value::as_i64) else {
+            continue;
+        };
+        upsert_tmdb_episode(
+            conn,
+            show_id,
+            season_id,
+            season_number,
+            episode_number,
+            episode,
+            now,
+        )?;
+    }
+    Ok(())
+}
+
+fn upsert_tmdb_show_seasons(
+    conn: &Connection,
+    show_id: i64,
+    value: &Value,
+    now: i64,
+) -> Result<()> {
+    let Some(seasons) = value.get("showSeasons").and_then(Value::as_array) else {
+        return Ok(());
+    };
+    for season in seasons {
+        let Some(season_number) = season.get("seasonNumber").and_then(Value::as_i64) else {
+            continue;
+        };
+        upsert_tmdb_season_summary(
+            conn,
+            show_id,
+            season_number,
+            season.get("seasonTmdbId").and_then(Value::as_i64),
+            season.get("seasonName").and_then(Value::as_str),
+            season.get("seasonOverview").and_then(Value::as_str),
+            season.get("seasonAirDate").and_then(Value::as_str),
+            season.get("seasonEpisodeCount").and_then(Value::as_i64),
+            season.get("seasonPosterPath").and_then(Value::as_str),
+            season.get("seasonVoteAverage").and_then(Value::as_f64),
+            season,
+            now,
+        )?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn upsert_tmdb_season_summary(
+    conn: &Connection,
+    show_id: i64,
+    season_number: i64,
+    season_tmdb_id: Option<i64>,
+    name: Option<&str>,
+    overview: Option<&str>,
+    air_date: Option<&str>,
+    episode_count: Option<i64>,
+    poster_path: Option<&str>,
+    vote_average: Option<f64>,
+    raw_json: &Value,
+    now: i64,
+) -> Result<()> {
+    conn.execute(
+        "insert into tmdb_tv_seasons(
+           show_id, tmdb_id, season_number, name, overview, air_date,
+           episode_count, poster_path, vote_average, fetched_language, raw_json,
+           last_synced_at, created_at, updated_at
+         )
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'tmdb', ?10, ?11, ?11, ?11)
+         on conflict(show_id, season_number) do update set
+           tmdb_id=coalesce(excluded.tmdb_id, tmdb_tv_seasons.tmdb_id),
+           name=coalesce(excluded.name, tmdb_tv_seasons.name),
+           overview=coalesce(excluded.overview, tmdb_tv_seasons.overview),
+           air_date=coalesce(excluded.air_date, tmdb_tv_seasons.air_date),
+           episode_count=coalesce(excluded.episode_count, tmdb_tv_seasons.episode_count),
+           poster_path=coalesce(excluded.poster_path, tmdb_tv_seasons.poster_path),
+           vote_average=coalesce(excluded.vote_average, tmdb_tv_seasons.vote_average),
+           fetched_language=excluded.fetched_language,
+           raw_json=coalesce(excluded.raw_json, tmdb_tv_seasons.raw_json),
+           last_synced_at=excluded.last_synced_at,
+           updated_at=excluded.updated_at",
+        params![
+            show_id,
+            season_tmdb_id,
+            season_number,
+            name,
+            overview,
+            air_date,
+            episode_count,
+            poster_path,
+            vote_average,
+            raw_json.to_string(),
+            now
+        ],
+    )?;
+    let season_id = conn.query_row(
+        "select id from tmdb_tv_seasons where show_id=?1 and season_number=?2",
+        params![show_id, season_number],
+        |row| row.get::<_, i64>(0),
+    )?;
+    insert_tmdb_image(conn, "season", season_id, "poster", poster_path, now)?;
+    Ok(())
+}
+
+fn upsert_tmdb_episode(
+    conn: &Connection,
+    show_id: i64,
+    season_id: i64,
+    season_number: i64,
+    episode_number: i64,
+    episode: &Value,
+    now: i64,
+) -> Result<()> {
+    conn.execute(
+        "insert into tmdb_tv_episodes(
+           show_id, season_id, tmdb_id, season_number, episode_number,
+           name, overview, air_date, runtime, still_path, episode_type,
+           vote_average, vote_count, fetched_language, raw_json,
+           last_synced_at, created_at, updated_at
+         )
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'tmdb', ?14, ?15, ?15, ?15)
+         on conflict(show_id, season_number, episode_number) do update set
+           season_id=excluded.season_id,
+           tmdb_id=coalesce(excluded.tmdb_id, tmdb_tv_episodes.tmdb_id),
+           name=excluded.name,
+           overview=coalesce(excluded.overview, tmdb_tv_episodes.overview),
+           air_date=excluded.air_date,
+           runtime=coalesce(excluded.runtime, tmdb_tv_episodes.runtime),
+           still_path=excluded.still_path,
+           episode_type=coalesce(excluded.episode_type, tmdb_tv_episodes.episode_type),
+           vote_average=excluded.vote_average,
+           vote_count=coalesce(excluded.vote_count, tmdb_tv_episodes.vote_count),
+           fetched_language=excluded.fetched_language,
+           raw_json=excluded.raw_json,
+           last_synced_at=excluded.last_synced_at,
+           updated_at=excluded.updated_at",
+        params![
+            show_id,
+            season_id,
+            episode.get("episodeTmdbId").and_then(Value::as_i64),
+            season_number,
+            episode_number,
+            episode.get("episodeName").and_then(Value::as_str),
+            episode.get("episodeOverview").and_then(Value::as_str),
+            episode.get("releaseDate").and_then(Value::as_str),
+            episode.get("episodeRuntime").and_then(Value::as_i64),
+            episode.get("stillPath").and_then(Value::as_str),
+            episode.get("episodeType").and_then(Value::as_str),
+            episode.get("voteAverage").and_then(Value::as_f64),
+            episode.get("episodeVoteCount").and_then(Value::as_i64),
+            episode.to_string(),
+            now
+        ],
+    )?;
+    let episode_id = conn.query_row(
+        "select id from tmdb_tv_episodes where show_id=?1 and season_number=?2 and episode_number=?3",
+        params![show_id, season_number, episode_number],
+        |row| row.get::<_, i64>(0),
+    )?;
+    insert_tmdb_image(
+        conn,
+        "episode",
+        episode_id,
+        "still",
+        episode.get("stillPath").and_then(Value::as_str),
+        now,
     )?;
     Ok(())
 }
@@ -1788,6 +2238,122 @@ fn media_file_id(conn: &Connection, item_id: &str) -> Result<i64> {
     )?)
 }
 
+fn auto_bind_media_file_to_cached_tmdb(conn: &Connection, file_id: i64, now: i64) -> Result<()> {
+    let already_matched: i64 = conn.query_row(
+        "select
+           (select count(*) from media_file_matches where file_id=?1) +
+           (select count(*) from media_file_movie_matches where file_id=?1)",
+        params![file_id],
+        |row| row.get(0),
+    )?;
+    if already_matched > 0 {
+        return Ok(());
+    }
+
+    let (folder_id, guess_season, guess_episode, guess_title) = conn.query_row(
+        "select folder_id, guess_season, guess_episode, guess_title from media_files where id=?1",
+        params![file_id],
+        |row| {
+            Ok((
+                row.get::<_, Option<i64>>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        },
+    )?;
+    let Some(folder_id) = folder_id else {
+        return Ok(());
+    };
+
+    if let (Some(season_number), Some(episode_number)) = (guess_season, guess_episode) {
+        let tv_match = conn.query_row(
+            "select sfm.show_id, sfm.selected_tmdb_id, e.season_id, e.id
+             from source_folder_matches sfm
+             join tmdb_tv_episodes e
+               on e.show_id=sfm.show_id
+              and e.season_number=?2
+              and e.episode_number=?3
+             where sfm.folder_id=?1
+             limit 1",
+            params![folder_id, season_number, episode_number],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        );
+        match tv_match {
+            Ok((show_id, tmdb_id, season_id, episode_id)) => {
+                conn.execute(
+                    "insert into media_file_matches(
+                       file_id, show_id, season_id, episode_id, match_status, match_score,
+                       search_query, selected_tmdb_id, matched_by, created_at, updated_at
+                     )
+                     values (?1, ?2, ?3, ?4, 'auto', 1.0, ?5, ?6, 'cached-tmdb', ?7, ?7)
+                     on conflict(file_id) do update set
+                       show_id=excluded.show_id,
+                       season_id=excluded.season_id,
+                       episode_id=excluded.episode_id,
+                       match_status=excluded.match_status,
+                       match_score=excluded.match_score,
+                       search_query=excluded.search_query,
+                       selected_tmdb_id=excluded.selected_tmdb_id,
+                       matched_by=excluded.matched_by,
+                       updated_at=excluded.updated_at",
+                    params![
+                        file_id,
+                        show_id,
+                        season_id,
+                        episode_id,
+                        guess_title,
+                        tmdb_id,
+                        now
+                    ],
+                )?;
+                return Ok(());
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    let movie_match = conn.query_row(
+        "select sfmm.movie_id, sfmm.selected_tmdb_id
+         from source_folder_movie_matches sfmm
+         where sfmm.folder_id=?1
+         limit 1",
+        params![folder_id],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+    );
+    match movie_match {
+        Ok((movie_id, tmdb_id)) => {
+            conn.execute(
+                "insert into media_file_movie_matches(
+                   file_id, movie_id, match_status, match_score, search_query,
+                   selected_tmdb_id, matched_by, created_at, updated_at
+                 )
+                 values (?1, ?2, 'auto', 1.0, ?3, ?4, 'cached-tmdb', ?5, ?5)
+                 on conflict(file_id) do update set
+                   movie_id=excluded.movie_id,
+                   match_status=excluded.match_status,
+                   match_score=excluded.match_score,
+                   search_query=excluded.search_query,
+                   selected_tmdb_id=excluded.selected_tmdb_id,
+                   matched_by=excluded.matched_by,
+                   updated_at=excluded.updated_at",
+                params![file_id, movie_id, guess_title, tmdb_id, now],
+            )?;
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => {}
+        Err(error) => return Err(error.into()),
+    }
+    Ok(())
+}
+
 fn query_row_id(conn: &Connection, sql: &str, value: i64) -> Result<i64> {
     Ok(conn.query_row(sql, params![value], |row| row.get(0))?)
 }
@@ -1818,15 +2384,30 @@ fn upsert_tmdb_images(
         ("logoPath", "logo"),
     ] {
         if let Some(path) = value.get(key).and_then(Value::as_str) {
-            conn.execute(
-                "insert into tmdb_images(owner_type, owner_id, image_type, file_path, created_at, updated_at)
-                 values (?1, ?2, ?3, ?4, ?5, ?5)
-                 on conflict(owner_type, owner_id, image_type, file_path) do update set
-                   updated_at=excluded.updated_at",
-                params![owner_type, owner_id, image_type, path, now],
-            )?;
+            insert_tmdb_image(conn, owner_type, owner_id, image_type, Some(path), now)?;
         }
     }
+    Ok(())
+}
+
+fn insert_tmdb_image(
+    conn: &Connection,
+    owner_type: &str,
+    owner_id: i64,
+    image_type: &str,
+    path: Option<&str>,
+    now: i64,
+) -> Result<()> {
+    let Some(path) = path.filter(|value| !value.trim().is_empty()) else {
+        return Ok(());
+    };
+    conn.execute(
+        "insert into tmdb_images(owner_type, owner_id, image_type, file_path, created_at, updated_at)
+         values (?1, ?2, ?3, ?4, ?5, ?5)
+         on conflict(owner_type, owner_id, image_type, file_path) do update set
+           updated_at=excluded.updated_at",
+        params![owner_type, owner_id, image_type, path, now],
+    )?;
     Ok(())
 }
 
@@ -1929,6 +2510,13 @@ fn cleanup_orphan_tmdb(conn: &Connection) -> Result<()> {
         [],
     )?;
     conn.execute(
+        "delete from source_folder_movie_matches
+         where not exists (
+           select 1 from media_files mf where mf.folder_id=source_folder_movie_matches.folder_id
+         )",
+        [],
+    )?;
+    conn.execute(
         "delete from folder_preferences
          where not exists (
            select 1 from media_files mf where mf.folder_id=folder_preferences.folder_id
@@ -1943,9 +2531,19 @@ fn cleanup_orphan_tmdb(conn: &Connection) -> Result<()> {
         [],
     )?;
     conn.execute(
+        "delete from media_file_movie_matches
+         where not exists (
+           select 1 from media_files mf where mf.id=media_file_movie_matches.file_id
+         )",
+        [],
+    )?;
+    conn.execute(
         "delete from tmdb_tv_episodes
          where not exists (
            select 1 from media_file_matches mfm where mfm.episode_id=tmdb_tv_episodes.id
+         )
+         and not exists (
+           select 1 from source_folder_matches sfm where sfm.show_id=tmdb_tv_episodes.show_id
          )",
         [],
     )?;
@@ -1954,9 +2552,12 @@ fn cleanup_orphan_tmdb(conn: &Connection) -> Result<()> {
          where not exists (
            select 1 from media_file_matches mfm where mfm.season_id=tmdb_tv_seasons.id
          )
-           and not exists (
-             select 1 from tmdb_tv_episodes e where e.season_id=tmdb_tv_seasons.id
-           )",
+         and not exists (
+           select 1 from tmdb_tv_episodes e where e.season_id=tmdb_tv_seasons.id
+         )
+         and not exists (
+           select 1 from source_folder_matches sfm where sfm.show_id=tmdb_tv_seasons.show_id
+         )",
         [],
     )?;
     conn.execute(
@@ -1966,6 +2567,16 @@ fn cleanup_orphan_tmdb(conn: &Connection) -> Result<()> {
          )
            and not exists (
              select 1 from media_file_matches mfm where mfm.show_id=tmdb_tv_shows.id
+           )",
+        [],
+    )?;
+    conn.execute(
+        "delete from tmdb_movies
+         where not exists (
+           select 1 from source_folder_movie_matches sfmm where sfmm.movie_id=tmdb_movies.id
+         )
+           and not exists (
+             select 1 from media_file_movie_matches mfmm where mfmm.movie_id=tmdb_movies.id
            )",
         [],
     )?;
@@ -1994,6 +2605,9 @@ fn cleanup_orphan_tmdb(conn: &Connection) -> Result<()> {
            ))
            or (owner_type='episode' and not exists (
              select 1 from tmdb_tv_episodes e where e.id=tmdb_images.owner_id
+           ))
+           or (owner_type='movie' and not exists (
+             select 1 from tmdb_movies m where m.id=tmdb_images.owner_id
            ))
            or (owner_type='person' and not exists (
              select 1 from tmdb_people_cache p where p.id=tmdb_images.owner_id
@@ -2393,14 +3007,287 @@ mod tests {
         assert_eq!(count_rows(&conn, "media_files"), 0);
         assert_eq!(count_rows(&conn, "folder_preferences"), 0);
         assert_eq!(count_rows(&conn, "source_folder_matches"), 0);
+        assert_eq!(count_rows(&conn, "source_folder_movie_matches"), 0);
         assert_eq!(count_rows(&conn, "media_file_matches"), 0);
+        assert_eq!(count_rows(&conn, "media_file_movie_matches"), 0);
         assert_eq!(count_rows(&conn, "tmdb_tv_shows"), 0);
+        assert_eq!(count_rows(&conn, "tmdb_movies"), 0);
         assert_eq!(count_rows(&conn, "tmdb_tv_seasons"), 0);
         assert_eq!(count_rows(&conn, "tmdb_tv_episodes"), 0);
         assert_eq!(count_rows(&conn, "tmdb_credits"), 0);
         assert_eq!(count_rows(&conn, "tmdb_people_cache"), 0);
         assert_eq!(count_rows(&conn, "tmdb_images"), 0);
         assert_eq!(count_rows(&conn, "image_cache"), 0);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn movie_metadata_round_trips_to_home_and_cache() {
+        let db_path =
+            std::env::temp_dir().join(format!("player_core_movie_metadata_{}.sqlite", now_ms()));
+        let state = r#"{
+          "version": 1,
+          "sources": [
+            {
+              "id": "local-1",
+              "name": "Local",
+              "type": "local",
+              "directory": "D:/Movies",
+              "selectedPaths": ["D:/Movies/Films"]
+            }
+          ],
+          "items": [
+            {
+              "id": "local-1:D:/Movies/Films/Movie.mp4",
+              "sourceId": "local-1",
+              "sourceName": "Local",
+              "type": "local",
+              "title": "Movie",
+              "uri": "D:/Movies/Films/Movie.mp4",
+              "folderTitle": "Films",
+              "matchTitle": "Movie",
+              "mediaKind": "Movie",
+              "size": 1234
+            }
+          ]
+        }"#;
+        let metadata = r#"{
+          "tmdbId": 200,
+          "mediaType": "movie",
+          "title": "TMDB Movie",
+          "originalTitle": "Original Movie",
+          "overview": "Movie overview",
+          "posterPath": "/movie-poster.jpg",
+          "backdropPath": "/movie-backdrop.jpg",
+          "releaseDate": "2026-01-02",
+          "voteAverage": 8.1,
+          "updatedAt": 1
+        }"#;
+
+        put_app_state_json(db_path.to_str().unwrap(), state).unwrap();
+        put_metadata_json(
+            db_path.to_str().unwrap(),
+            "local-1:local:D:/Movies/Films/",
+            "local-1:D:/Movies/Films/Movie.mp4",
+            metadata,
+        )
+        .unwrap();
+
+        let home: Value =
+            serde_json::from_str(&query_home_json(db_path.to_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(home[0]["mediaType"], "movie");
+        assert_eq!(home[0]["title"], "TMDB Movie");
+        assert_eq!(home[0]["matched"], true);
+        assert_eq!(home[0]["totalEpisodes"], 1);
+
+        let cache: Value =
+            serde_json::from_str(&get_all_metadata_json(db_path.to_str().unwrap()).unwrap())
+                .unwrap();
+        let cached = &cache["local-1:D:/Movies/Films/Movie.mp4"];
+        assert_eq!(cached["mediaType"], "movie");
+        assert_eq!(cached["title"], "TMDB Movie");
+        assert_eq!(cached["posterPath"], "/movie-poster.jpg");
+
+        let conn = open(db_path.to_str().unwrap()).unwrap();
+        assert_eq!(count_rows(&conn, "media_file_matches"), 0);
+        assert_eq!(count_rows(&conn, "media_file_movie_matches"), 1);
+        assert_eq!(count_rows(&conn, "tmdb_movies"), 1);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn tv_metadata_persists_full_season_episode_payload() {
+        let db_path =
+            std::env::temp_dir().join(format!("player_core_full_season_{}.sqlite", now_ms()));
+        let state = r#"{
+          "version": 1,
+          "sources": [
+            {
+              "id": "local-1",
+              "name": "Local",
+              "type": "local",
+              "directory": "D:/Shows",
+              "selectedPaths": ["D:/Shows/Show"]
+            }
+          ],
+          "items": [
+            {
+              "id": "local-1:D:/Shows/Show/01.mp4",
+              "sourceId": "local-1",
+              "sourceName": "Local",
+              "type": "local",
+              "title": "01",
+              "uri": "D:/Shows/Show/01.mp4",
+              "folderTitle": "Show",
+              "matchTitle": "Show",
+              "season": 1,
+              "episode": 1,
+              "mediaKind": "TvEpisode",
+              "size": 1234
+            }
+          ]
+        }"#;
+        let metadata = r#"{
+          "tmdbId": 100,
+          "mediaType": "tv",
+          "title": "TMDB Show",
+          "overview": "Show overview",
+          "posterPath": "/poster.jpg",
+          "backdropPath": "/backdrop.jpg",
+          "totalSeasons": 1,
+          "totalEpisodes": 2,
+          "showSeasons": [
+            {
+              "seasonTmdbId": 10,
+              "seasonNumber": 1,
+              "seasonName": "Season 1",
+              "seasonOverview": "First season",
+              "seasonAirDate": "2026-01-01",
+              "seasonEpisodeCount": 2,
+              "seasonPosterPath": "/season-1.jpg",
+              "seasonVoteAverage": 8.0
+            },
+            {
+              "seasonTmdbId": 20,
+              "seasonNumber": 2,
+              "seasonName": "Season 2",
+              "seasonOverview": "Second season",
+              "seasonAirDate": "2027-01-01",
+              "seasonEpisodeCount": 2,
+              "seasonPosterPath": "/season-2.jpg",
+              "seasonVoteAverage": 8.2
+            }
+          ],
+          "seasonTmdbId": 10,
+          "seasonName": "Season 1",
+          "seasonEpisodeCount": 2,
+          "seasonEpisodes": [
+            {
+              "episodeTmdbId": 101,
+              "seasonNumber": 1,
+              "episodeNumber": 1,
+              "episodeName": "Episode 1",
+              "episodeOverview": "First episode",
+              "releaseDate": "2026-01-01",
+              "episodeRuntime": 45,
+              "stillPath": "/still-1.jpg",
+              "episodeType": "standard",
+              "voteAverage": 8.0,
+              "episodeVoteCount": 2
+            },
+            {
+              "episodeTmdbId": 102,
+              "seasonNumber": 1,
+              "episodeNumber": 2,
+              "episodeName": "Episode 2",
+              "episodeOverview": "Second episode",
+              "releaseDate": "2026-01-08",
+              "episodeRuntime": 46,
+              "stillPath": "/still-2.jpg",
+              "episodeType": "standard",
+              "voteAverage": 8.2,
+              "episodeVoteCount": 3
+            }
+          ],
+          "episodeTmdbId": 101,
+          "episodeName": "Episode 1",
+          "episodeOverview": "First episode",
+          "releaseDate": "2026-01-01",
+          "episodeRuntime": 45,
+          "stillPath": "/still-1.jpg",
+          "episodeType": "standard",
+          "episodeVoteCount": 2,
+          "updatedAt": 1,
+          "schemaVersion": 9
+        }"#;
+
+        put_app_state_json(db_path.to_str().unwrap(), state).unwrap();
+        put_metadata_json(
+            db_path.to_str().unwrap(),
+            "local-1:local:D:/Shows/Show/",
+            "local-1:D:/Shows/Show/01.mp4",
+            metadata,
+        )
+        .unwrap();
+
+        let conn = open(db_path.to_str().unwrap()).unwrap();
+        assert_eq!(count_rows(&conn, "tmdb_tv_seasons"), 2);
+        assert_eq!(count_rows(&conn, "tmdb_tv_episodes"), 2);
+        assert_eq!(count_rows(&conn, "media_file_matches"), 1);
+        assert_eq!(
+            conn.query_row(
+                "select count(*) from tmdb_images where owner_type='episode'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            2
+        );
+
+        let cache: Value =
+            serde_json::from_str(&get_all_metadata_json(db_path.to_str().unwrap()).unwrap())
+                .unwrap();
+        let cached = &cache["local-1:D:/Shows/Show/01.mp4"];
+        assert_eq!(cached["episodeName"], "Episode 1");
+        assert_eq!(cached["schemaVersion"], 9);
+
+        drop(conn);
+        let state_with_new_file = r#"{
+          "version": 1,
+          "sources": [
+            {
+              "id": "local-1",
+              "name": "Local",
+              "type": "local",
+              "directory": "D:/Shows",
+              "selectedPaths": ["D:/Shows/Show"]
+            }
+          ],
+          "items": [
+            {
+              "id": "local-1:D:/Shows/Show/01.mp4",
+              "sourceId": "local-1",
+              "sourceName": "Local",
+              "type": "local",
+              "title": "01",
+              "uri": "D:/Shows/Show/01.mp4",
+              "folderTitle": "Show",
+              "matchTitle": "Show",
+              "season": 1,
+              "episode": 1,
+              "mediaKind": "TvEpisode",
+              "size": 1234
+            },
+            {
+              "id": "local-1:D:/Shows/Show/02.mp4",
+              "sourceId": "local-1",
+              "sourceName": "Local",
+              "type": "local",
+              "title": "02",
+              "uri": "D:/Shows/Show/02.mp4",
+              "folderTitle": "Show",
+              "matchTitle": "Show",
+              "season": 1,
+              "episode": 2,
+              "mediaKind": "TvEpisode",
+              "size": 2345
+            }
+          ]
+        }"#;
+        put_app_state_json(db_path.to_str().unwrap(), state_with_new_file).unwrap();
+        let conn = open(db_path.to_str().unwrap()).unwrap();
+        assert_eq!(count_rows(&conn, "tmdb_tv_seasons"), 2);
+        assert_eq!(count_rows(&conn, "tmdb_tv_episodes"), 2);
+        assert_eq!(count_rows(&conn, "media_file_matches"), 2);
+        let cached: Value =
+            serde_json::from_str(&get_all_metadata_json(db_path.to_str().unwrap()).unwrap())
+                .unwrap();
+        assert_eq!(
+            cached["local-1:D:/Shows/Show/02.mp4"]["episodeName"],
+            "Episode 2"
+        );
 
         let _ = std::fs::remove_file(db_path);
     }

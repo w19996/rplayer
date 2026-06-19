@@ -651,6 +651,7 @@ class MediaMetadata {
     required this.tmdbId,
     required this.mediaType,
     required this.title,
+    this.tmdbType,
     this.originalTitle,
     this.overview,
     this.posterPath,
@@ -664,12 +665,14 @@ class MediaMetadata {
     this.voteAverage,
     this.totalSeasons,
     this.totalEpisodes,
+    this.showSeasons = const [],
     this.seasonTmdbId,
     this.seasonName,
     this.seasonOverview,
     this.seasonAirDate,
     this.seasonEpisodeCount,
     this.seasonPosterPath,
+    this.seasonEpisodes = const [],
     this.episodeTmdbId,
     this.episodeName,
     this.episodeOverview,
@@ -684,6 +687,7 @@ class MediaMetadata {
   final int tmdbId;
   final String mediaType;
   final String title;
+  final String? tmdbType;
   final String? originalTitle;
   final String? overview;
   final String? posterPath;
@@ -697,12 +701,14 @@ class MediaMetadata {
   final double? voteAverage;
   final int? totalSeasons;
   final int? totalEpisodes;
+  final List<Map<String, dynamic>> showSeasons;
   final int? seasonTmdbId;
   final String? seasonName;
   final String? seasonOverview;
   final String? seasonAirDate;
   final int? seasonEpisodeCount;
   final String? seasonPosterPath;
+  final List<Map<String, dynamic>> seasonEpisodes;
   final int? episodeTmdbId;
   final String? episodeName;
   final String? episodeOverview;
@@ -724,6 +730,7 @@ class MediaMetadata {
         tmdbId: (json['tmdbId'] as num).toInt(),
         mediaType: json['mediaType'] as String? ?? 'movie',
         title: json['title'] as String? ?? '',
+        tmdbType: json['tmdbType'] as String?,
         originalTitle: json['originalTitle'] as String?,
         overview: json['overview'] as String?,
         posterPath: json['posterPath'] as String?,
@@ -743,12 +750,20 @@ class MediaMetadata {
         voteAverage: (json['voteAverage'] as num?)?.toDouble(),
         totalSeasons: (json['totalSeasons'] as num?)?.toInt(),
         totalEpisodes: (json['totalEpisodes'] as num?)?.toInt(),
+        showSeasons: (json['showSeasons'] as List<dynamic>? ?? const [])
+            .whereType<Map>()
+            .map((entry) => Map<String, dynamic>.from(entry))
+            .toList(),
         seasonTmdbId: (json['seasonTmdbId'] as num?)?.toInt(),
         seasonName: json['seasonName'] as String?,
         seasonOverview: json['seasonOverview'] as String?,
         seasonAirDate: json['seasonAirDate'] as String?,
         seasonEpisodeCount: (json['seasonEpisodeCount'] as num?)?.toInt(),
         seasonPosterPath: json['seasonPosterPath'] as String?,
+        seasonEpisodes: (json['seasonEpisodes'] as List<dynamic>? ?? const [])
+            .whereType<Map>()
+            .map((entry) => Map<String, dynamic>.from(entry))
+            .toList(),
         episodeTmdbId: (json['episodeTmdbId'] as num?)?.toInt(),
         episodeName: json['episodeName'] as String?,
         episodeOverview: json['episodeOverview'] as String?,
@@ -764,6 +779,7 @@ class MediaMetadata {
         'tmdbId': tmdbId,
         'mediaType': mediaType,
         'title': title,
+        'tmdbType': tmdbType,
         'originalTitle': originalTitle,
         'overview': overview,
         'posterPath': posterPath,
@@ -777,12 +793,14 @@ class MediaMetadata {
         'voteAverage': voteAverage,
         'totalSeasons': totalSeasons,
         'totalEpisodes': totalEpisodes,
+        'showSeasons': showSeasons,
         'seasonTmdbId': seasonTmdbId,
         'seasonName': seasonName,
         'seasonOverview': seasonOverview,
         'seasonAirDate': seasonAirDate,
         'seasonEpisodeCount': seasonEpisodeCount,
         'seasonPosterPath': seasonPosterPath,
+        'seasonEpisodes': seasonEpisodes,
         'episodeTmdbId': episodeTmdbId,
         'episodeName': episodeName,
         'episodeOverview': episodeOverview,
@@ -812,6 +830,7 @@ class LibraryHomeEntry {
     this.latestPlayedAt,
     this.matched = false,
     this.mediaType,
+    this.tmdbType,
   });
 
   final int folderId;
@@ -830,6 +849,7 @@ class LibraryHomeEntry {
   final int? latestPlayedAt;
   final bool matched;
   final String? mediaType;
+  final String? tmdbType;
 
   factory LibraryHomeEntry.fromJson(Map<String, dynamic> json) {
     return LibraryHomeEntry(
@@ -849,6 +869,7 @@ class LibraryHomeEntry {
       latestPlayedAt: (json['latestPlayedAt'] as num?)?.toInt(),
       matched: json['matched'] == true,
       mediaType: json['mediaType'] as String?,
+      tmdbType: json['tmdbType'] as String?,
     );
   }
 

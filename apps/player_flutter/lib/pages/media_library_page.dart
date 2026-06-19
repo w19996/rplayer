@@ -179,13 +179,27 @@ class MediaLibraryPage extends StatelessWidget {
   String _libraryCategoryKey(LibraryHomeEntry entry) {
     if (!entry.matched) return 'other';
     final mediaType = entry.mediaType?.trim().toLowerCase();
-    if (mediaType == null || mediaType.isEmpty) return 'tv';
-    return mediaType;
+    if (mediaType == 'movie') return 'movie';
+    if (mediaType != 'tv') {
+      return mediaType?.isNotEmpty == true ? mediaType! : 'tv';
+    }
+    final tmdbType = entry.tmdbType?.trim().toLowerCase();
+    return switch (tmdbType) {
+      'reality' || 'talk show' => 'variety',
+      'documentary' => 'documentary',
+      'news' => 'news',
+      'miniseries' => 'miniseries',
+      _ => 'tv',
+    };
   }
 
   String _libraryCategoryTitle(String mediaType) {
     return switch (mediaType) {
       'tv' => '电视剧',
+      'miniseries' => '迷你剧',
+      'variety' => '综艺',
+      'documentary' => '纪录片',
+      'news' => '新闻',
       'movie' => '电影',
       _ => mediaType.toUpperCase(),
     };
