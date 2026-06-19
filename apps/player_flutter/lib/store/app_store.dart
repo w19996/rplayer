@@ -204,6 +204,7 @@ class AppStore extends ChangeNotifier {
     try {
       final db = await metadataDatabaseFile;
       final metadataJson = jsonEncode(value.toJson());
+      final homeImageJson = jsonEncode(homeImageCacheMetadata(value));
       addDiagnosticLog(
         'database write metadata started: item=$itemId, titleKey=$titleKey, tmdb=${value.tmdbId}, type=${value.mediaType}',
         category: 'database',
@@ -214,11 +215,13 @@ class AppStore extends ChangeNotifier {
         itemId,
         metadataJson,
       );
-      await RustCoreService.instance.metadataCacheImagesAsync(
-        db.path,
-        metadataJson,
-        tmdbConfig.imageBaseUrl,
-      );
+      if (value.posterPath?.trim().isNotEmpty == true) {
+        await RustCoreService.instance.metadataCacheImagesAsync(
+          db.path,
+          homeImageJson,
+          tmdbConfig.imageBaseUrl,
+        );
+      }
       addDiagnosticLog(
         'database write metadata finished: item=$itemId, elapsed=${stopwatch.elapsedMilliseconds}ms',
         category: 'database',
@@ -228,6 +231,10 @@ class AppStore extends ChangeNotifier {
           category: 'database');
     }
   }
+
+  Map<String, dynamic> homeImageCacheMetadata(MediaMetadata value) => {
+        'posterPath': value.posterPath,
+      };
 
   Future<void> reloadDatabaseBackedState() async {
     addDiagnosticLog('database backed state reload requested',
@@ -344,10 +351,23 @@ class AppStore extends ChangeNotifier {
       id: newId(),
       name: p.basename(dir).isEmpty ? '本地目录' : p.basename(dir),
       directory: dir,
-    );
+    ).copyWith(selectedPaths: [dir]);
     sources.add(source);
+    final stopwatch = Stopwatch()..start();
+    var count = 0;
+    for (final item in await scanner.scanLocalPath(source, dir)) {
+      addOrReplaceItem(item);
+      count++;
+    }
+    items
+        .sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+    addDiagnosticLog(
+      'add local source scanned: $dir, items=$count, elapsed=${stopwatch.elapsedMilliseconds}ms',
+      category: 'scan',
+    );
     await save();
     notifyListeners();
+    unawaited(refreshMissingMetadata());
     return source;
   }
 

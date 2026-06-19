@@ -28,7 +28,6 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   final subscriptions = <StreamSubscription<dynamic>>[];
   Timer? statusTimer;
   Timer? loadingHideTimer;
-  Timer? loadingProgressTimer;
   Timer? controlsHideTimer;
   Timer? danmuRenderTimer;
   late final AnimationController danmuTicker;
@@ -48,6 +47,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   bool seekingByDrag = false;
   bool streamsAttached = false;
   bool openedOnce = false;
+  bool mediaOpenCompleted = false;
+  bool playbackPositionConfirmed = false;
   bool softwareDecoderFallback = false;
   bool fullscreen = false;
   bool controlsLocked = false;
@@ -67,8 +68,6 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   Tracks availableTracks = const Tracks();
   Track selectedTrack = const Track();
   double bufferingPercentage = 0;
-  double loadingDisplayPercent = 0;
-  double loadingTargetPercent = 0;
   int transientCodecRetryCount = 0;
   int openAttempt = 0;
   int battery = -1;
@@ -364,14 +363,49 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     streamsAttached = true;
     subscriptions
       ..add(player.stream.position.listen((value) {
+        if (!ready) {
+          if (mediaOpenCompleted &&
+              !buffering &&
+              hasRenderableVideo &&
+              value >= Duration.zero) {
+            setStateIfMounted(() {
+              position = value;
+              playbackPositionConfirmed = true;
+            });
+            syncDanmuClock(value);
+            logVideoLoading(
+                'position accepted before ready: ${value.inMilliseconds}ms');
+            maybeMarkPlaybackReady();
+            return;
+          }
+          logVideoLoading(
+              'position ignored before ready: ${value.inMilliseconds}ms');
+          return;
+        }
         syncDanmuClockFromPlayer(value);
         setStateIfMounted(() => position = value);
       }))
       ..add(player.stream.duration.listen((value) {
+        if (!ready) {
+          if (value > Duration.zero && value != duration) {
+            setStateIfMounted(() => duration = value);
+            widget.store.rememberDuration(currentItem.id, value);
+            logVideoLoading(
+                'duration accepted before ready: ${value.inMilliseconds}ms');
+            return;
+          }
+          logVideoLoading(
+              'duration ignored before ready: ${value.inMilliseconds}ms');
+          return;
+        }
         setStateIfMounted(() => duration = value);
         widget.store.rememberDuration(currentItem.id, value);
       }))
       ..add(player.stream.playing.listen((value) {
+        if (!ready) {
+          logVideoLoading('playing ignored before ready: $value');
+          return;
+        }
         syncDanmuClock(currentDanmuPosition);
         setStateIfMounted(() => playing = value);
         syncDanmuTickerState();
@@ -381,10 +415,12 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       ..add(player.stream.width.listen((value) {
         videoWidth = value;
         applyVideoOrientation();
+        maybeMarkPlaybackReady();
       }))
       ..add(player.stream.height.listen((value) {
         videoHeight = value;
         applyVideoOrientation();
+        maybeMarkPlaybackReady();
       }))
       ..add(player.stream.tracks
           .listen((value) => setStateIfMounted(() => availableTracks = value)))
@@ -396,34 +432,44 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   Future<void> init(
       {bool automaticRetry = true, bool resetCodecRetry = true}) async {
     final attempt = ++openAttempt;
+    final saved = rememberedPositionMsFor(currentItem);
+    final rememberedDuration = rememberedDurationMsFor(currentItem);
     if (resetCodecRetry) {
       transientCodecRetryCount = 0;
       softwareDecoderFallback = false;
     }
+    final initialBufferingPercentage =
+        resetCodecRetry ? 0.0 : bufferingPercentage.clamp(0, 100).toDouble();
     try {
       attachStreams();
       setState(() {
         error = null;
         ready = false;
+        mediaOpenCompleted = false;
+        playbackPositionConfirmed = false;
+        playing = true;
         buffering = true;
         loadingVisible = true;
-        bufferingPercentage = 0;
-        loadingDisplayPercent = 0;
-        loadingTargetPercent = 0;
+        position = saved > 0 ? Duration(milliseconds: saved) : Duration.zero;
+        duration = rememberedDuration > 0
+            ? Duration(milliseconds: rememberedDuration)
+            : Duration.zero;
+        bufferingPercentage = initialBufferingPercentage;
+        videoWidth = null;
+        videoHeight = null;
       });
-      startLoadingProgressTimer();
       await applyRememberedOrientation();
       final source = widget.store.sources
           .firstWhere((value) => value.id == currentItem.sourceId);
-      final saved = widget.store.progress[currentItem.id] ?? 0;
       if (saved > 0) {
         final savedPosition = Duration(milliseconds: saved);
-        position = savedPosition;
         syncDanmuClock(savedPosition);
       }
       final uri = currentItem.type == SourceType.local
           ? Uri.file(currentItem.uri).toString()
           : currentItem.uri;
+      logVideoLoading(
+          'open start attempt=$attempt item=${currentItem.id} uri=$uri saved=${saved}ms');
       await configureDecoder();
       if (openedOnce) {
         await player.stop();
@@ -436,23 +482,23 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
           start: saved > 0 ? Duration(milliseconds: saved) : null,
         ),
       );
+      logVideoLoading(
+          'open returned attempt=$attempt stateBuffering=${player.state.buffering} statePlaying=${player.state.playing} width=${player.state.width} height=${player.state.height} position=${player.state.position.inMilliseconds}ms duration=${player.state.duration.inMilliseconds}ms');
       openedOnce = true;
       if (attempt == openAttempt) {
         setStateIfMounted(() {
-          ready = true;
-          buffering = false;
+          buffering = player.state.buffering;
+          mediaOpenCompleted = true;
         });
-        syncDanmuClock(position);
-        refreshVisibleDanmu();
-        syncDanmuTickerState();
-        hideLoadingOverlay();
-        scheduleControlsAutoHide();
+        maybeMarkPlaybackReady(attempt: attempt);
       }
     } catch (e) {
       if (automaticRetry && canRetryTransientCodec(e)) {
+        logVideoLoading('open transient codec retry attempt=$attempt error=$e');
         await retryTransientCodec(attempt);
         return;
       }
+      logVideoLoading('open failed attempt=$attempt error=$e');
       if (attempt == openAttempt) setStateIfMounted(() => error = e);
     }
   }
@@ -476,7 +522,6 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     widget.store.updateProgress(currentItem.id, position, duration);
     statusTimer?.cancel();
     loadingHideTimer?.cancel();
-    loadingProgressTimer?.cancel();
     controlsHideTimer?.cancel();
     danmuRenderTimer?.cancel();
     clearDanmuSession();
@@ -498,23 +543,27 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     if (mounted) setState(update);
   }
 
+  void logVideoLoading(String message) {
+    widget.store.addDiagnosticLog(message, category: 'player');
+  }
+
   void showLoadingOverlay() {
     loadingHideTimer?.cancel();
     if (!loadingVisible) {
       setStateIfMounted(() => loadingVisible = true);
     }
-    startLoadingProgressTimer();
   }
 
   void hideLoadingOverlay() {
     loadingHideTimer?.cancel();
     loadingHideTimer = Timer(const Duration(milliseconds: 260), () {
-      loadingProgressTimer?.cancel();
       setStateIfMounted(() => loadingVisible = false);
     });
   }
 
   void handleBufferingChanged(bool value) {
+    logVideoLoading(
+        'buffering changed: $value ready=$ready openCompleted=$mediaOpenCompleted width=$videoWidth height=$videoHeight');
     syncDanmuClock(currentDanmuPosition);
     setStateIfMounted(() => buffering = value);
     syncDanmuTickerState();
@@ -522,41 +571,44 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       showLoadingOverlay();
     } else if (ready) {
       hideLoadingOverlay();
+    } else {
+      maybeMarkPlaybackReady();
     }
   }
 
   void handleBufferingPercentage(double value) {
     if (!value.isFinite) return;
-    final target = value.clamp(0, ready ? 99 : 96).toDouble();
+    final percent = value.clamp(0, 100).toDouble();
+    logVideoLoading('buffering percent: ${percent.toStringAsFixed(1)}');
     setStateIfMounted(() {
-      bufferingPercentage = value;
-      if (target > loadingTargetPercent) {
-        loadingTargetPercent = target;
-      }
+      bufferingPercentage =
+          ready ? percent : math.max(bufferingPercentage, percent);
     });
-    if (loadingVisible) startLoadingProgressTimer();
   }
 
-  void startLoadingProgressTimer() {
-    if (loadingProgressTimer?.isActive ?? false) return;
-    loadingProgressTimer =
-        Timer.periodic(const Duration(milliseconds: 120), (_) {
-      if (!mounted || !loadingVisible) return;
-      setState(() {
-        final softCeiling = ready ? 99.0 : 96.0;
-        final target = math.max(
-          loadingTargetPercent,
-          math.min(softCeiling, loadingDisplayPercent + 1.2),
-        );
-        if (loadingDisplayPercent < target) {
-          final gap = target - loadingDisplayPercent;
-          loadingDisplayPercent += gap.clamp(0.35, 2.2).toDouble();
-          if (loadingDisplayPercent > softCeiling) {
-            loadingDisplayPercent = softCeiling;
-          }
-        }
-      });
+  bool get hasRenderableVideo =>
+      (videoWidth ?? 0) > 0 && (videoHeight ?? 0) > 0;
+
+  void maybeMarkPlaybackReady({int? attempt}) {
+    if (!mounted || ready || error != null) return;
+    if (attempt != null && attempt != openAttempt) return;
+    if (!mediaOpenCompleted || buffering || !hasRenderableVideo) return;
+    if (!playbackPositionConfirmed) return;
+    final state = player.state;
+    setState(() {
+      ready = true;
+      playing = state.playing;
+      position = state.position;
+      if (state.duration > Duration.zero) duration = state.duration;
+      bufferingPercentage = 100;
     });
+    logVideoLoading(
+        'ready: playing=$playing position=${position.inMilliseconds}ms duration=${duration.inMilliseconds}ms width=$videoWidth height=$videoHeight buffer=${bufferingPercentage.toStringAsFixed(1)}');
+    syncDanmuClock(position);
+    refreshVisibleDanmu();
+    syncDanmuTickerState();
+    hideLoadingOverlay();
+    scheduleControlsAutoHide();
   }
 
   bool isTransientCodecError(Object value) {
@@ -570,7 +622,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
 
   Future<void> retryTransientCodec(int attempt) async {
     transientCodecRetryCount++;
-    if (transientCodecRetryCount >= 2) softwareDecoderFallback = true;
+    softwareDecoderFallback = true;
+    logVideoLoading(
+        'transient codec retry: sourceAttempt=$attempt retry=$transientCodecRetryCount softwareFallback=$softwareDecoderFallback');
     await Future<void>.delayed(const Duration(milliseconds: 450));
     if (!mounted || attempt != openAttempt) return;
     await player.stop();
@@ -580,9 +634,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   Future<void> handlePlayerError(Object value) async {
     final attempt = openAttempt;
     if (canRetryTransientCodec(value)) {
+      logVideoLoading('player stream error retryable attempt=$attempt: $value');
       await retryTransientCodec(attempt);
       return;
     }
+    logVideoLoading('player stream error attempt=$attempt: $value');
     if (attempt == openAttempt) setStateIfMounted(() => error = value);
   }
 
@@ -1297,6 +1353,20 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     return null;
   }
 
+  int rememberedPositionMsFor(MediaItem item) {
+    final stored = widget.store.progress[item.id];
+    if (stored != null && stored > 0) return stored;
+    final filePosition = dbFileForItem(item)?.positionMs;
+    return filePosition != null && filePosition > 0 ? filePosition : 0;
+  }
+
+  int rememberedDurationMsFor(MediaItem item) {
+    final stored = widget.store.durations[item.id];
+    if (stored != null && stored > 0) return stored;
+    final fileDuration = dbFileForItem(item)?.durationMs;
+    return fileDuration != null && fileDuration > 0 ? fileDuration : 0;
+  }
+
   LibraryFileEntry? get currentDbFile => dbFileForItem(currentItem);
 
   String playbackTitleFor(MediaItem item) {
@@ -1326,16 +1396,23 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     }
     controlsHideTimer?.cancel();
     await widget.store.updateProgress(currentItem.id, position, duration);
-    syncDanmuClock(Duration.zero);
+    final saved = rememberedPositionMsFor(item);
+    final rememberedDuration = rememberedDurationMsFor(item);
+    syncDanmuClock(saved > 0 ? Duration(milliseconds: saved) : Duration.zero);
     clearDanmuOverlay();
     clearDanmuSession();
     setStateIfMounted(() {
       currentItem = item;
-      position = Duration.zero;
-      duration = Duration.zero;
+      position = saved > 0 ? Duration(milliseconds: saved) : Duration.zero;
+      duration = rememberedDuration > 0
+          ? Duration(milliseconds: rememberedDuration)
+          : Duration.zero;
       videoWidth = null;
       videoHeight = null;
       ready = false;
+      mediaOpenCompleted = false;
+      playbackPositionConfirmed = false;
+      playing = true;
       buffering = true;
       loadingVisible = true;
       bufferingPercentage = 0;
@@ -1381,7 +1458,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   }
 
   Widget buildLoadingOverlay() {
-    final percent = loadingDisplayPercent.clamp(0, 99).round();
+    final percent = bufferingPercentage.clamp(0, 100).round();
     return IgnorePointer(
       child: Center(
         child: DecoratedBox(

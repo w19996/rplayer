@@ -811,6 +811,7 @@ class LibraryHomeEntry {
     required this.localFileCount,
     this.latestPlayedAt,
     this.matched = false,
+    this.mediaType,
   });
 
   final int folderId;
@@ -828,6 +829,7 @@ class LibraryHomeEntry {
   final int localFileCount;
   final int? latestPlayedAt;
   final bool matched;
+  final String? mediaType;
 
   factory LibraryHomeEntry.fromJson(Map<String, dynamic> json) {
     return LibraryHomeEntry(
@@ -846,6 +848,7 @@ class LibraryHomeEntry {
       localFileCount: (json['localFileCount'] as num?)?.toInt() ?? 0,
       latestPlayedAt: (json['latestPlayedAt'] as num?)?.toInt(),
       matched: json['matched'] == true,
+      mediaType: json['mediaType'] as String?,
     );
   }
 

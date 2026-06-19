@@ -319,6 +319,9 @@ pub fn query_home_json(db_path: &str) -> Result<String> {
             row.get::<_, Option<i64>>(13)?,
         );
         object.insert("matched".to_string(), Value::from(show_id.is_some()));
+        if show_id.is_some() {
+            object.insert("mediaType".to_string(), Value::from("tv"));
+        }
         Ok(Value::Object(object))
     })?;
     let mut values = Vec::new();

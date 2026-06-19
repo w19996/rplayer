@@ -99,18 +99,13 @@ class MediaLibraryPage extends StatelessWidget {
                   ),
                   const SliverToBoxAdapter(child: SizedBox(height: 24)),
                 ],
-                ..._libraryGridSection(
-                  context,
-                  store,
-                  '电视剧',
-                  data.home.where((entry) => entry.matched).toList(),
-                ),
-                ..._libraryGridSection(
-                  context,
-                  store,
-                  '其他',
-                  data.home.where((entry) => !entry.matched).toList(),
-                ),
+                for (final section in _libraryCategorySections(data.home))
+                  ..._libraryGridSection(
+                    context,
+                    store,
+                    section.title,
+                    section.entries,
+                  ),
                 const SliverToBoxAdapter(child: SizedBox(height: 24)),
               ],
             ],
@@ -157,6 +152,54 @@ class MediaLibraryPage extends StatelessWidget {
       ),
     ];
   }
+
+  List<_LibraryCategorySection> _libraryCategorySections(
+    List<LibraryHomeEntry> entries,
+  ) {
+    final grouped = <String, List<LibraryHomeEntry>>{};
+    for (final entry in entries) {
+      final key = _libraryCategoryKey(entry);
+      grouped.putIfAbsent(key, () => []).add(entry);
+    }
+    final sections = <_LibraryCategorySection>[];
+    for (final entry in grouped.entries) {
+      if (entry.key == 'other') continue;
+      sections.add(_LibraryCategorySection(
+        title: _libraryCategoryTitle(entry.key),
+        entries: entry.value,
+      ));
+    }
+    final other = grouped['other'];
+    if (other != null && other.isNotEmpty) {
+      sections.add(_LibraryCategorySection(title: '其他', entries: other));
+    }
+    return sections;
+  }
+
+  String _libraryCategoryKey(LibraryHomeEntry entry) {
+    if (!entry.matched) return 'other';
+    final mediaType = entry.mediaType?.trim().toLowerCase();
+    if (mediaType == null || mediaType.isEmpty) return 'tv';
+    return mediaType;
+  }
+
+  String _libraryCategoryTitle(String mediaType) {
+    return switch (mediaType) {
+      'tv' => '电视剧',
+      'movie' => '电影',
+      _ => mediaType.toUpperCase(),
+    };
+  }
+}
+
+class _LibraryCategorySection {
+  const _LibraryCategorySection({
+    required this.title,
+    required this.entries,
+  });
+
+  final String title;
+  final List<LibraryHomeEntry> entries;
 }
 
 class _LibraryPageData {
