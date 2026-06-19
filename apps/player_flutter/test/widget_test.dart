@@ -145,21 +145,27 @@ void main() {
     );
     expect(
       buildDanmuRequestBaseUrl('https://danmu.example.com', '87654321'),
-      'https://danmu.example.com/87654321',
+      'https://danmu.example.com',
     );
     final config = DanmuConfig.fromJson(const {
       'enabled': true,
       'apiBaseUrl': 'https://danmu.example.com/87654321/api/v2',
+      'maxLines': 10,
+      'topPadding': 36,
     });
     expect(config.normalizedApiBaseUrl, 'https://danmu.example.com');
     expect(config.normalizedApiToken, '87654321');
+    expect(config.maxLines, 10);
+    expect(config.topPadding, 36);
+    expect(config.toJson()['maxLines'], 10);
+    expect(config.toJson()['topPadding'], 36);
     expect(
       const DanmuConfig(
         enabled: true,
         apiBaseUrl: 'https://danmu.example.com',
         apiToken: '87654321',
       ).requestBaseUrl,
-      'https://danmu.example.com/87654321',
+      'https://danmu.example.com',
     );
   });
 

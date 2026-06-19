@@ -478,6 +478,8 @@ class DanmuConfig {
     this.opacity = 0.92,
     this.speed = 1,
     this.offsetMs = 0,
+    this.maxLines = 8,
+    this.topPadding = 24,
   });
 
   final bool enabled;
@@ -488,6 +490,8 @@ class DanmuConfig {
   final double opacity;
   final double speed;
   final int offsetMs;
+  final int maxLines;
+  final double topPadding;
 
   String get normalizedApiBaseUrl => normalizeDanmuApiBaseUrl(apiBaseUrl);
   String get normalizedApiToken => normalizeDanmuApiToken(apiToken);
@@ -504,6 +508,8 @@ class DanmuConfig {
     double? opacity,
     double? speed,
     int? offsetMs,
+    int? maxLines,
+    double? topPadding,
   }) {
     final endpoint = _normalizeDanmuEndpointParts(
       apiBaseUrl ?? this.apiBaseUrl,
@@ -518,6 +524,8 @@ class DanmuConfig {
       opacity: opacity ?? this.opacity,
       speed: speed ?? this.speed,
       offsetMs: offsetMs ?? this.offsetMs,
+      maxLines: maxLines ?? this.maxLines,
+      topPadding: topPadding ?? this.topPadding,
     );
   }
 
@@ -535,6 +543,8 @@ class DanmuConfig {
       opacity: (json['opacity'] as num?)?.toDouble() ?? 0.92,
       speed: (json['speed'] as num?)?.toDouble() ?? 1,
       offsetMs: (json['offsetMs'] as num?)?.toInt() ?? 0,
+      maxLines: (json['maxLines'] as num?)?.toInt() ?? 8,
+      topPadding: (json['topPadding'] as num?)?.toDouble() ?? 24,
     );
   }
 
@@ -547,6 +557,8 @@ class DanmuConfig {
         'opacity': opacity,
         'speed': speed,
         'offsetMs': offsetMs,
+        'maxLines': maxLines,
+        'topPadding': topPadding,
       };
 }
 
@@ -559,7 +571,7 @@ String buildDanmuRequestBaseUrl(String apiBaseUrl, String apiToken) {
   final base = normalizeDanmuApiBaseUrl(apiBaseUrl);
   if (base.isEmpty) return '';
   final token = normalizeDanmuApiToken(apiToken);
-  if (token.isEmpty) return base;
+  if (token.isEmpty || token == '87654321') return base;
   final uri = Uri.tryParse(base);
   if (uri == null) return base;
   final segments = uri.pathSegments.where((part) => part.isNotEmpty).toList();

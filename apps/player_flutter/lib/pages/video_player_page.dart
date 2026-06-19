@@ -55,6 +55,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   bool episodePanelClosing = false;
   bool danmuPanelOpen = false;
   bool danmuPanelClosing = false;
+  bool danmuSearchPanelOpen = false;
+  bool danmuSearchPanelClosing = false;
+  bool danmuSearchLoading = false;
+  bool danmuSearchStarted = false;
+  bool resumeAfterDanmuSearch = false;
   bool buffering = false;
   bool loadingVisible = false;
   bool danmuLoading = false;
@@ -76,6 +81,12 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   int danmuTotalCount = 0;
   String danmuStatus = '未加载';
   int danmuLoadId = 0;
+  String danmuSearchError = '';
+  String? selectingDanmuEpisodeId;
+  String lastDanmuVisualSignature = '';
+  List<DanmuSearchResult> danmuSearchResults = const [];
+  late final TextEditingController danmuSearchController;
+  late final TextEditingController danmuSearchEpisodeController;
   Object? error;
 
   Player get player => _player ??= Player(
@@ -94,6 +105,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       vsync: this,
       duration: const Duration(hours: 24),
     );
+    danmuSearchController = TextEditingController();
+    danmuSearchEpisodeController = TextEditingController();
+    lastDanmuVisualSignature = danmuVisualSignature(widget.store.danmuConfig);
     widget.store.addListener(handleStoreChanged);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     startStatusTimer();
@@ -105,9 +119,22 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   }
 
   void handleStoreChanged() {
+    final signature = danmuVisualSignature(widget.store.danmuConfig);
+    if (lastDanmuVisualSignature.isNotEmpty &&
+        lastDanmuVisualSignature != signature) {
+      if (ready) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) refreshVisibleDanmu(force: true);
+        });
+      }
+    }
+    lastDanmuVisualSignature = signature;
     setStateIfMounted(() {});
     syncDanmuTickerState();
   }
+
+  String danmuVisualSignature(DanmuConfig config) =>
+      '${config.fontSize}:${config.opacity}:${config.speed}:${config.offsetMs}:${config.maxLines}:${config.topPadding}:${config.visible}:${config.enabled}';
 
   Future<void> loadCurrentLibraryDetail() async {
     final groupKey = mediaFolderKey(currentItem);
@@ -271,7 +298,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     return Duration(milliseconds: math.max(0, milliseconds).toInt());
   }
 
-  void refreshVisibleDanmu() {
+  void refreshVisibleDanmu({bool force = false}) {
     final config = widget.store.danmuConfig;
     if (!mounted ||
         !ready ||
@@ -282,7 +309,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       clearDanmuOverlay();
       return;
     }
-    if (!playing && danmuOverlayItems.value.isNotEmpty) {
+    if (!force && !playing && danmuOverlayItems.value.isNotEmpty) {
       return;
     }
     final size = MediaQuery.sizeOf(context);
@@ -297,6 +324,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         'speed': config.speed,
         'offset_ms': config.offsetMs,
         'max_items': _danmuMaxVisibleItems,
+        'max_lines': config.maxLines,
+        'top_padding': 0.0,
       });
       if (!sameDanmuItems(danmuOverlayItems.value, items)) {
         danmuOverlayItems.value = items;
@@ -453,6 +482,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     clearDanmuSession();
     danmuTicker.dispose();
     danmuOverlayItems.dispose();
+    danmuSearchController.dispose();
+    danmuSearchEpisodeController.dispose();
     SystemChrome.setPreferredOrientations(DeviceOrientation.values);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
         overlays: SystemUiOverlay.values);
@@ -654,11 +685,19 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
 
   void scheduleControlsAutoHide() {
     controlsHideTimer?.cancel();
-    if (fullscreen || controlsLocked || episodePanelOpen || danmuPanelOpen) {
+    if (fullscreen ||
+        controlsLocked ||
+        episodePanelOpen ||
+        danmuPanelOpen ||
+        danmuSearchPanelOpen) {
       return;
     }
     controlsHideTimer = Timer(const Duration(seconds: 5), () {
-      if (!mounted || controlsLocked || episodePanelOpen || danmuPanelOpen) {
+      if (!mounted ||
+          controlsLocked ||
+          episodePanelOpen ||
+          danmuPanelOpen ||
+          danmuSearchPanelOpen) {
         return;
       }
       setState(() => fullscreen = true);
@@ -801,6 +840,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         episodePanelClosing = false;
         danmuPanelOpen = false;
         danmuPanelClosing = false;
+        danmuSearchPanelOpen = false;
+        danmuSearchPanelClosing = false;
+        resumeAfterDanmuSearch = false;
         dragPreviewPosition = null;
         seekingByDrag = false;
       } else {
@@ -819,6 +861,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       episodePanelClosing = false;
       danmuPanelOpen = false;
       danmuPanelClosing = false;
+      danmuSearchPanelOpen = false;
+      danmuSearchPanelClosing = false;
+      resumeAfterDanmuSearch = false;
     });
   }
 
@@ -857,6 +902,278 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       });
       scheduleControlsAutoHide();
     });
+  }
+
+  String get danmuSearchDefaultKeyword {
+    final file = currentDbFile;
+    final showTitle = file?.showTitle?.trim();
+    if (showTitle != null && showTitle.isNotEmpty) return showTitle;
+    return mediaGroupDisplayTitle(currentItem);
+  }
+
+  int? get danmuSearchDefaultEpisode =>
+      currentDbFile?.episodeNumber ?? currentItem.episode;
+
+  int? get manualDanmuSearchEpisode {
+    final text = danmuSearchEpisodeController.text.trim();
+    if (text.isEmpty) return null;
+    return int.tryParse(text);
+  }
+
+  void openDanmuSearchPanel() {
+    if (controlsLocked) return;
+    final config = widget.store.danmuConfig;
+    if (!config.available) {
+      setStateIfMounted(() => danmuStatus = '请先启用并配置弹幕 API');
+      return;
+    }
+    controlsHideTimer?.cancel();
+    final defaultKeyword = danmuSearchDefaultKeyword;
+    resumeAfterDanmuSearch = playing;
+    if (playing) player.pause();
+    setStateIfMounted(() {
+      danmuSearchController.text = defaultKeyword;
+      danmuSearchEpisodeController.text =
+          danmuSearchDefaultEpisode?.toString() ?? '';
+      danmuSearchPanelOpen = true;
+      danmuSearchPanelClosing = false;
+      danmuSearchError = '';
+      danmuSearchResults = const [];
+      danmuSearchStarted = false;
+      selectingDanmuEpisodeId = null;
+    });
+  }
+
+  void closeDanmuSearchPanel({bool restorePlayback = true}) {
+    if (!danmuSearchPanelOpen || danmuSearchPanelClosing) return;
+    final shouldResume = restorePlayback && resumeAfterDanmuSearch;
+    setStateIfMounted(() => danmuSearchPanelClosing = true);
+    Future<void>.delayed(const Duration(milliseconds: 220), () {
+      if (!mounted || !danmuSearchPanelClosing) return;
+      setState(() {
+        danmuSearchPanelOpen = false;
+        danmuSearchPanelClosing = false;
+        danmuSearchLoading = false;
+        danmuSearchStarted = false;
+        selectingDanmuEpisodeId = null;
+        resumeAfterDanmuSearch = false;
+      });
+      if (shouldResume) player.play();
+      scheduleControlsAutoHide();
+    });
+  }
+
+  Future<void> searchDanmuManually() async {
+    final keyword = danmuSearchController.text.trim();
+    if (keyword.isEmpty) {
+      setStateIfMounted(() {
+        danmuSearchResults = const [];
+        danmuSearchError = '请输入要搜索的片名';
+      });
+      return;
+    }
+    setStateIfMounted(() {
+      danmuSearchStarted = true;
+      danmuSearchLoading = true;
+      danmuSearchError = '';
+      selectingDanmuEpisodeId = null;
+    });
+    try {
+      final results = await DanmuService(
+        widget.store.danmuConfig,
+        log: (message) =>
+            widget.store.addDiagnosticLog(message, category: 'danmu'),
+      ).search(keyword, episode: manualDanmuSearchEpisode);
+      if (!mounted) return;
+      setState(() {
+        danmuSearchResults = results;
+        danmuSearchLoading = false;
+        danmuSearchError = results.isEmpty ? '没有找到可用弹幕' : '';
+      });
+    } catch (error) {
+      if (!mounted) return;
+      widget.store.addDiagnosticLog('danmu manual search failed: $error',
+          category: 'danmu');
+      setState(() {
+        danmuSearchResults = const [];
+        danmuSearchLoading = false;
+        danmuSearchError = '搜索失败：$error';
+      });
+    }
+  }
+
+  Future<void> selectDanmuSearchResult(DanmuSearchResult result) async {
+    if (selectingDanmuEpisodeId != null) return;
+    final loadId = ++danmuLoadId;
+    final file = currentDbFile;
+    final sourceFileName = file?.filename ?? mediaIdentityFileName(currentItem);
+    final season = file?.seasonNumber ?? currentItem.season;
+    final episode =
+        result.episodeNumber ?? file?.episodeNumber ?? currentItem.episode;
+    final manualFileNames = buildManualDanmuMatchFileNames(
+      result: result,
+      sourceFileName: sourceFileName,
+      season: season,
+      episode: episode,
+    );
+    setStateIfMounted(() {
+      selectingDanmuEpisodeId = result.episodeId;
+      danmuLoading = true;
+      danmuStatus = '正在加载选中的弹幕...';
+    });
+    try {
+      final service = DanmuService(
+        widget.store.danmuConfig,
+        log: (message) =>
+            widget.store.addDiagnosticLog(message, category: 'danmu'),
+      );
+      final trimmedEpisodeId = result.episodeId.trim();
+      final canLoadDirectly = RegExp(r'^\d+$').hasMatch(trimmedEpisodeId) ||
+          trimmedEpisodeId.startsWith('http://') ||
+          trimmedEpisodeId.startsWith('https://');
+      var loadResult = const RustDanmuLoadResult(
+        sessionId: 0,
+        count: 0,
+        matchedEpisodeId: '',
+        matchedTitle: '',
+        matchedEpisode: '',
+        logs: [],
+      );
+      if (canLoadDirectly) {
+        widget.store.addDiagnosticLog(
+          'danmu manual direct comment: episodeId=${result.episodeId}',
+          category: 'danmu',
+        );
+        loadResult = await service.loadSession(
+          title: result.animeTitle,
+          fileNames: manualFileNames,
+          season: season,
+          episode: episode,
+          episodeId: result.episodeId,
+          episodeTitle: result.episodeTitle,
+        );
+      }
+      if (loadResult.count == 0 && canLoadDirectly) {
+        final keyword = danmuSearchController.text.trim();
+        if (keyword.isNotEmpty) {
+          widget.store.addDiagnosticLog(
+            'danmu manual direct empty, refresh search candidates: keyword=$keyword episode=$episode',
+            category: 'danmu',
+          );
+          final freshResults = await service.search(keyword, episode: episode);
+          for (final candidate in freshResults.take(6)) {
+            final candidateEpisodeId = candidate.episodeId.trim();
+            if (candidateEpisodeId.isEmpty ||
+                candidateEpisodeId == trimmedEpisodeId) {
+              continue;
+            }
+            final candidateCanLoadDirectly =
+                RegExp(r'^\d+$').hasMatch(candidateEpisodeId) ||
+                    candidateEpisodeId.startsWith('http://') ||
+                    candidateEpisodeId.startsWith('https://');
+            if (!candidateCanLoadDirectly) continue;
+            widget.store.addDiagnosticLog(
+              'danmu manual retry direct comment: episodeId=${candidate.episodeId}',
+              category: 'danmu',
+            );
+            loadResult = await service.loadSession(
+              title: candidate.animeTitle,
+              fileNames: buildManualDanmuMatchFileNames(
+                result: candidate,
+                sourceFileName: sourceFileName,
+                season: season,
+                episode: episode,
+              ),
+              season: season,
+              episode: episode,
+              episodeId: candidate.episodeId,
+              episodeTitle: candidate.episodeTitle,
+            );
+            if (loadResult.count > 0) break;
+          }
+        }
+      }
+      if (loadResult.count == 0) {
+        widget.store.addDiagnosticLog(
+          'danmu manual direct empty, fallback to match: episodeId=${result.episodeId}',
+          category: 'danmu',
+        );
+        loadResult = await service.loadSession(
+          title: result.animeTitle,
+          fileNames: manualFileNames,
+          season: season,
+          episode: episode,
+        );
+      }
+      if (loadResult.count == 0 && !manualFileNames.contains(sourceFileName)) {
+        loadResult = await service.loadSession(
+          title: result.animeTitle,
+          fileNames: [sourceFileName],
+          season: season,
+          episode: episode,
+        );
+      }
+      if (loadResult.count == 0 && !canLoadDirectly) {
+        widget.store.addDiagnosticLog(
+          'danmu manual skipped direct comment for non-numeric episodeId=${result.episodeId}',
+          category: 'danmu',
+        );
+      }
+      if (!mounted || loadId != danmuLoadId) return;
+      if (loadResult.count == 0) {
+        setState(() {
+          danmuLoading = false;
+          selectingDanmuEpisodeId = null;
+          danmuSearchError = '选中的弹幕为空，已保留当前弹幕';
+          danmuStatus = danmuSessionId > 0 ? '已保留当前弹幕' : '选中的弹幕为空';
+        });
+        syncDanmuTickerState();
+        return;
+      }
+      clearDanmuSession();
+      setState(() {
+        danmuSessionId = loadResult.sessionId;
+        danmuTotalCount = loadResult.count;
+        danmuStatus =
+            loadResult.count == 0 ? '选中的弹幕为空' : '已加载 ${loadResult.count} 条';
+        danmuLoading = false;
+        selectingDanmuEpisodeId = null;
+      });
+      clearDanmuOverlay();
+      if (ready) refreshVisibleDanmu(force: true);
+      closeDanmuSearchPanel();
+    } catch (error) {
+      if (!mounted || loadId != danmuLoadId) return;
+      widget.store.addDiagnosticLog('danmu manual load failed: $error',
+          category: 'danmu');
+      setState(() {
+        danmuLoading = false;
+        selectingDanmuEpisodeId = null;
+        danmuSearchError = '加载失败：$error';
+        danmuStatus = '弹幕加载失败';
+      });
+    }
+  }
+
+  List<String> buildManualDanmuMatchFileNames({
+    required DanmuSearchResult result,
+    required String sourceFileName,
+    int? season,
+    int? episode,
+  }) {
+    final title = result.animeTitle.trim();
+    final episodeTitle = result.episodeTitle.trim();
+    final candidates = <String>[
+      if (title.isNotEmpty && season != null && episode != null)
+        '$title.S${season.toString().padLeft(2, '0')}E${episode.toString().padLeft(2, '0')}',
+      if (title.isNotEmpty && episode != null) '$title 第 $episode 集',
+      if (title.isNotEmpty && episodeTitle.isNotEmpty) '$title $episodeTitle',
+      result.displayTitle,
+      sourceFileName,
+    ];
+    return LinkedHashSet<String>.of(candidates.map((value) => value.trim()))
+        .where((value) => value.isNotEmpty)
+        .toList(growable: false);
   }
 
   Widget controlIconButton({
@@ -1027,6 +1344,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       episodePanelClosing = false;
       danmuPanelOpen = false;
       danmuPanelClosing = false;
+      danmuSearchPanelOpen = false;
+      danmuSearchPanelClosing = false;
+      resumeAfterDanmuSearch = false;
       danmuTotalCount = 0;
       danmuStatus = '未加载';
       selectedTrack = const Track();
@@ -1500,7 +1820,38 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
                             config.copyWith(offsetMs: (value * 1000).round()),
                           )),
                         ),
+                        _DanmuPanelSlider(
+                          label: '滚动行数',
+                          value: config.maxLines.toDouble(),
+                          min: 1,
+                          max: 14,
+                          divisions: 13,
+                          display: '${config.maxLines} 行',
+                          onChanged: (value) =>
+                              unawaited(widget.store.setDanmuConfig(
+                            config.copyWith(maxLines: value.round()),
+                          )),
+                        ),
+                        _DanmuPanelSlider(
+                          label: '顶部位置',
+                          value: config.topPadding,
+                          min: -120,
+                          max: 220,
+                          divisions: 34,
+                          display: '${config.topPadding.round()} px',
+                          onChanged: (value) =>
+                              unawaited(widget.store.setDanmuConfig(
+                            config.copyWith(topPadding: value),
+                          )),
+                        ),
                         const SizedBox(height: 14),
+                        OutlinedButton.icon(
+                          onPressed:
+                              config.available ? openDanmuSearchPanel : null,
+                          icon: const Icon(Icons.search),
+                          label: const Text('搜索弹幕'),
+                        ),
+                        const SizedBox(height: 10),
                         FilledButton.icon(
                           onPressed:
                               danmuLoading ? null : loadDanmuForCurrentItem,
@@ -1513,6 +1864,282 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
                                 )
                               : const Icon(Icons.refresh),
                           label: Text(danmuLoading ? '加载中' : '重新匹配弹幕'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget buildDanmuSearchPanel(BoxConstraints constraints, bool isLandscape) {
+    final panelWidth = (constraints.maxWidth * (isLandscape ? 0.52 : 0.96))
+        .clamp(320.0, isLandscape ? 620.0 : constraints.maxWidth)
+        .toDouble();
+    return Positioned.fill(
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: GestureDetector(
+              onTap: closeDanmuSearchPanel,
+              child: const ColoredBox(color: Color(0x8A000000)),
+            ),
+          ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: TweenAnimationBuilder<Offset>(
+              tween: Tween(
+                begin: const Offset(1, 0),
+                end: danmuSearchPanelClosing ? const Offset(1, 0) : Offset.zero,
+              ),
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
+              builder: (context, offset, child) => FractionalTranslation(
+                translation: offset,
+                child: child,
+              ),
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () {},
+                child: Container(
+                  width: panelWidth,
+                  height: double.infinity,
+                  padding: EdgeInsets.fromLTRB(
+                      isLandscape ? 16 : 14, 12, isLandscape ? 20 : 14, 14),
+                  decoration: const BoxDecoration(
+                    color: Color(0xF21F1F24),
+                    border: Border(left: BorderSide(color: Color(0x55FFFFFF))),
+                  ),
+                  child: SafeArea(
+                    left: false,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          children: [
+                            const Expanded(
+                              child: Text(
+                                '搜索弹幕',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              color: Colors.white,
+                              onPressed: closeDanmuSearchPanel,
+                              icon: const Icon(Icons.close),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 10),
+                        TextField(
+                          controller: danmuSearchController,
+                          style: const TextStyle(color: Colors.white),
+                          textInputAction: TextInputAction.search,
+                          onSubmitted: (_) => searchDanmuManually(),
+                          decoration: InputDecoration(
+                            hintText: '输入片名搜索',
+                            hintStyle: const TextStyle(color: Colors.white54),
+                            prefixIcon:
+                                const Icon(Icons.search, color: Colors.white70),
+                            suffixIcon: danmuSearchLoading
+                                ? const Padding(
+                                    padding: EdgeInsets.all(12),
+                                    child: SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    ),
+                                  )
+                                : IconButton(
+                                    color: Colors.white70,
+                                    onPressed: searchDanmuManually,
+                                    icon: const Icon(Icons.arrow_forward),
+                                  ),
+                            filled: true,
+                            fillColor: const Color(0x22FFFFFF),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide:
+                                  const BorderSide(color: Color(0x33FFFFFF)),
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide:
+                                  const BorderSide(color: Color(0x33FFFFFF)),
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(8),
+                              borderSide:
+                                  const BorderSide(color: Color(0xAAFFFFFF)),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Wrap(
+                          spacing: 10,
+                          runSpacing: 10,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          children: [
+                            SizedBox(
+                              width: 118,
+                              child: TextField(
+                                controller: danmuSearchEpisodeController,
+                                keyboardType: TextInputType.number,
+                                style: const TextStyle(color: Colors.white),
+                                textInputAction: TextInputAction.search,
+                                onSubmitted: (_) => searchDanmuManually(),
+                                decoration: InputDecoration(
+                                  labelText: '集数',
+                                  labelStyle:
+                                      const TextStyle(color: Colors.white54),
+                                  hintText: '全部',
+                                  hintStyle:
+                                      const TextStyle(color: Colors.white38),
+                                  filled: true,
+                                  fillColor: const Color(0x22FFFFFF),
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                    borderSide: const BorderSide(
+                                        color: Color(0x33FFFFFF)),
+                                  ),
+                                  enabledBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                    borderSide: const BorderSide(
+                                        color: Color(0x33FFFFFF)),
+                                  ),
+                                  focusedBorder: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                    borderSide: const BorderSide(
+                                        color: Color(0xAAFFFFFF)),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            OutlinedButton.icon(
+                              onPressed: () {
+                                danmuSearchEpisodeController.clear();
+                              },
+                              icon: const Icon(Icons.format_list_bulleted),
+                              label: const Text('全部集'),
+                            ),
+                            FilledButton.icon(
+                              onPressed: danmuSearchLoading
+                                  ? null
+                                  : searchDanmuManually,
+                              icon: const Icon(Icons.search),
+                              label: const Text('搜索'),
+                            ),
+                          ],
+                        ),
+                        if (danmuSearchError.isNotEmpty) ...[
+                          const SizedBox(height: 10),
+                          Text(
+                            danmuSearchError,
+                            style: const TextStyle(
+                                color: Color(0xFFFFC4C4), fontSize: 12),
+                          ),
+                        ],
+                        const SizedBox(height: 12),
+                        Expanded(
+                          child: danmuSearchResults.isEmpty
+                              ? Center(
+                                  child: Text(
+                                    danmuSearchLoading
+                                        ? '正在搜索...'
+                                        : danmuSearchStarted
+                                            ? '没有搜索结果'
+                                            : '点击搜索开始',
+                                    style:
+                                        const TextStyle(color: Colors.white54),
+                                  ),
+                                )
+                              : ListView.separated(
+                                  itemCount: danmuSearchResults.length,
+                                  separatorBuilder: (_, __) => const Divider(
+                                    color: Color(0x22FFFFFF),
+                                    height: 1,
+                                  ),
+                                  itemBuilder: (context, index) {
+                                    final result = danmuSearchResults[index];
+                                    final selecting = selectingDanmuEpisodeId ==
+                                        result.episodeId;
+                                    return Material(
+                                      color: Colors.transparent,
+                                      child: InkWell(
+                                        onTap: selecting
+                                            ? null
+                                            : () => unawaited(
+                                                  selectDanmuSearchResult(
+                                                      result),
+                                                ),
+                                        child: Padding(
+                                          padding: const EdgeInsets.symmetric(
+                                              vertical: 12),
+                                          child: Row(
+                                            children: [
+                                              Expanded(
+                                                child: Column(
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment.start,
+                                                  children: [
+                                                    Text(
+                                                      result.displayTitle,
+                                                      maxLines: 2,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                      style: const TextStyle(
+                                                        color: Colors.white,
+                                                        fontWeight:
+                                                            FontWeight.w700,
+                                                      ),
+                                                    ),
+                                                    const SizedBox(height: 4),
+                                                    Text(
+                                                      'ID ${result.episodeId}',
+                                                      maxLines: 1,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                      style: const TextStyle(
+                                                        color: Colors.white54,
+                                                        fontSize: 12,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                              const SizedBox(width: 12),
+                                              selecting
+                                                  ? const SizedBox(
+                                                      width: 18,
+                                                      height: 18,
+                                                      child:
+                                                          CircularProgressIndicator(
+                                                        strokeWidth: 2,
+                                                      ),
+                                                    )
+                                                  : const Icon(
+                                                      Icons.chevron_right,
+                                                      color: Colors.white70,
+                                                    ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
                         ),
                       ],
                     ),
@@ -1547,7 +2174,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
                       for (final item in items)
                         _DanmuItemView(
                           key: ValueKey(
-                            '${item.id}:${item.timeMs}:${item.mode}:${item.text}',
+                            '${item.id}:${item.timeMs}:${item.mode}:${item.text}:${config.fontSize}:${config.topPadding}',
                           ),
                           item: item,
                           config: config,
@@ -1784,6 +2411,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
                 if (episodePanelOpen)
                   buildEpisodePanel(constraints, isLandscape),
                 if (danmuPanelOpen) buildDanmuPanel(constraints, isLandscape),
+                if (danmuSearchPanelOpen)
+                  buildDanmuSearchPanel(constraints, isLandscape),
               ],
             ),
           );
@@ -1868,7 +2497,7 @@ class _DanmuItemView extends StatelessWidget {
             alpha: config.opacity.clamp(0.0, 1.0).toDouble(),
           ),
           fontSize: config.fontSize,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w500,
           shadows: const [
             Shadow(
               color: Colors.black87,
@@ -1882,7 +2511,7 @@ class _DanmuItemView extends StatelessWidget {
 
     return Positioned(
       left: 0,
-      top: item.top,
+      top: item.top + config.topPadding,
       child: AnimatedBuilder(
         animation: ticker,
         child: child,

@@ -560,11 +560,11 @@ class AppStore extends ChangeNotifier {
       apiToken: config.normalizedApiToken,
     );
     addDiagnosticLog(
-      'danmu config updated: enabled=${danmuConfig.enabled}, api=${danmuConfig.requestBaseUrl}',
+      'danmu config updated: enabled=${danmuConfig.enabled}, api=${danmuConfig.requestBaseUrl}, maxLines=${danmuConfig.maxLines}, topPadding=${danmuConfig.topPadding.round()}',
       category: 'danmu',
     );
-    await saveSettings();
     notifyListeners();
+    await saveSettings();
   }
 
   Future<void> setDiagnosticLoggingEnabled(bool value) async {

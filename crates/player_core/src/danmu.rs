@@ -105,6 +105,8 @@ struct DanmuLoadInput {
     file_names: Vec<String>,
     season: Option<u16>,
     episode: Option<u16>,
+    episode_id: Option<String>,
+    episode_title: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -117,6 +119,8 @@ struct DanmuVisibleInput {
     speed: f64,
     offset_ms: i64,
     max_items: Option<usize>,
+    max_lines: Option<usize>,
+    top_padding: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -147,6 +151,7 @@ struct DanmuLayoutKey {
     speed_percent: u32,
     lane_count: usize,
     fixed_lane_count: usize,
+    top_padding_px: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -218,6 +223,22 @@ async fn load_danmu_session(input: DanmuLoadInput) -> Result<DanmuLoadOutput> {
         "rust danmu load start: base={} title={} S{:?} E{:?} candidates={:?}",
         base_url, input.title, input.season, input.episode, input.file_names
     ));
+    if let Some(episode_id) = input
+        .episode_id
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        return load_danmu_episode(
+            &client,
+            &base_url,
+            episode_id,
+            input.title.trim(),
+            input.episode_title.as_deref().unwrap_or("").trim(),
+            logs,
+        )
+        .await;
+    }
 
     for (index, file_name) in input.file_names.iter().enumerate() {
         let body = json!({
@@ -426,12 +447,111 @@ async fn load_danmu_session(input: DanmuLoadInput) -> Result<DanmuLoadOutput> {
     })
 }
 
+async fn load_danmu_episode(
+    client: &Client,
+    base_url: &str,
+    episode_id: &str,
+    anime_title: &str,
+    episode_title: &str,
+    mut logs: Vec<String>,
+) -> Result<DanmuLoadOutput> {
+    let episode_id_is_url = episode_id.starts_with("http://") || episode_id.starts_with("https://");
+    let comment_url = if episode_id_is_url {
+        format!("{base_url}/api/v2/comment")
+    } else {
+        format!("{base_url}/api/v2/comment/{episode_id}")
+    };
+    logs.push(format!(
+        "rust danmu manual comment request: {}?format=json&duration=true match={}/{}",
+        comment_url, anime_title, episode_title
+    ));
+    let mut request = client
+        .get(&comment_url)
+        .header("accept", "application/json");
+    request = if episode_id_is_url {
+        request.query(&[
+            ("url", episode_id),
+            ("format", "json"),
+            ("duration", "true"),
+        ])
+    } else {
+        request.query(&[("format", "json"), ("duration", "true")])
+    };
+    let response = request.send().await?;
+    let status = response.status();
+    let text = response.text().await?;
+    logs.push(format!(
+        "rust danmu manual comment response: episodeId={} status={} body={}",
+        episode_id,
+        status.as_u16(),
+        short_body(&text)
+    ));
+    if !status.is_success() || empty_comment_response(&text) {
+        logs.push(format!(
+            "rust danmu manual comment skipped: episodeId={} status={} empty={}",
+            episode_id,
+            status.as_u16(),
+            empty_comment_response(&text)
+        ));
+        return Ok(DanmuLoadOutput {
+            session_id: 0,
+            count: 0,
+            matched_episode_id: episode_id.to_string(),
+            matched_title: anime_title.to_string(),
+            matched_episode: episode_title.to_string(),
+            logs,
+        });
+    }
+    let events = parse_comment_events(&text)?;
+    if events.is_empty() {
+        logs.push(format!(
+            "rust danmu manual comment empty after parse: episodeId={}",
+            episode_id
+        ));
+        return Ok(DanmuLoadOutput {
+            session_id: 0,
+            count: 0,
+            matched_episode_id: episode_id.to_string(),
+            matched_title: anime_title.to_string(),
+            matched_episode: episode_title.to_string(),
+            logs,
+        });
+    }
+    let count = events.len();
+    let session_id = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed);
+    let session = DanmuSession {
+        events,
+        layout: None,
+    };
+    SESSIONS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| anyhow!("danmu session lock poisoned"))?
+        .insert(session_id, session);
+    logs.push(format!(
+        "rust danmu manual session loaded: session={} count={} episodeId={}",
+        session_id, count, episode_id
+    ));
+    Ok(DanmuLoadOutput {
+        session_id,
+        count,
+        matched_episode_id: episode_id.to_string(),
+        matched_title: anime_title.to_string(),
+        matched_episode: episode_title.to_string(),
+        logs,
+    })
+}
+
 fn visible_danmu(session: &mut DanmuSession, input: &DanmuVisibleInput) -> DanmuVisibleOutput {
     let width = input.width.max(1.0);
     let height = input.height.max(1.0);
     let font_size = input.font_size.clamp(10.0, 32.0);
     let lane_height = font_size + 8.0;
-    let lane_count = ((height * 0.32) / lane_height).floor().clamp(3.0, 8.0) as usize;
+    let top_padding = input
+        .top_padding
+        .unwrap_or(24.0)
+        .clamp(-(height * 0.20), height * 0.55);
+    let lane_count = input.max_lines.unwrap_or(8).clamp(1, 14);
     let fixed_lane_count = ((height * 0.20) / lane_height).floor().clamp(1.0, 3.0) as usize;
     let speed = input.speed.clamp(0.5, 2.0);
     let travel_ms = (9500.0 / speed).round() as i64;
@@ -445,6 +565,7 @@ fn visible_danmu(session: &mut DanmuSession, input: &DanmuVisibleInput) -> Danmu
         speed_percent: (speed * 100.0).round().max(1.0) as u32,
         lane_count,
         fixed_lane_count,
+        top_padding_px: (top_padding.round() + 10_000.0).max(0.0) as u32,
     };
     ensure_danmu_layout(session, layout_key, width, font_size, travel_ms, fixed_ms);
     let layout = session.layout.as_ref().expect("danmu layout initialized");
@@ -474,7 +595,7 @@ fn visible_danmu(session: &mut DanmuSession, input: &DanmuVisibleInput) -> Danmu
         let text_width = estimate_text_width(&event.text, font_size).min(width * 0.92);
         match event.mode {
             DanmuMode::Top if elapsed <= fixed_ms => {
-                let top = 48.0 + lane as f64 * lane_height;
+                let top = top_padding + lane as f64 * lane_height;
                 items.push(render_item(
                     absolute_index,
                     event,
@@ -496,7 +617,7 @@ fn visible_danmu(session: &mut DanmuSession, input: &DanmuVisibleInput) -> Danmu
             _ if elapsed <= travel_ms => {
                 let progress = elapsed as f64 / travel_ms as f64;
                 let left = width - progress * (width + text_width);
-                let top = 48.0 + lane as f64 * lane_height;
+                let top = top_padding + lane as f64 * lane_height;
                 items.push(render_item(absolute_index, event, left, top, text_width));
             }
             _ => {}
@@ -519,14 +640,21 @@ fn parse_comment_events(body: &str) -> Result<Vec<DanmuEvent>> {
         let seconds = parts
             .next()
             .and_then(|value| value.parse::<f64>().ok())
+            .or_else(|| number_value(comment.get("timepoint")))
+            .or_else(|| number_value(comment.get("time")))
+            .or_else(|| number_value(comment.get("t")))
             .unwrap_or(0.0);
         let mode_value = parts
             .next()
             .and_then(|value| value.parse::<u8>().ok())
+            .or_else(|| int_value(comment.get("ct")).map(|value| value as u8))
+            .or_else(|| int_value(comment.get("mode")).map(|value| value as u8))
+            .or_else(|| int_value(comment.get("type")).map(|value| value as u8))
             .unwrap_or(1);
         let color = parts
             .next()
             .and_then(|value| value.parse::<u32>().ok())
+            .or_else(|| int_value(comment.get("color")).map(|value| value as u32))
             .unwrap_or(0x00ff_ffff);
         let text = comment
             .get("m")
@@ -670,6 +798,22 @@ fn value_to_string(value: &Value) -> String {
         Value::String(value) => value.clone(),
         Value::Number(value) => value.to_string(),
         _ => String::new(),
+    }
+}
+
+fn number_value(value: Option<&Value>) -> Option<f64> {
+    match value? {
+        Value::Number(value) => value.as_f64(),
+        Value::String(value) => value.trim().parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+fn int_value(value: Option<&Value>) -> Option<u64> {
+    match value? {
+        Value::Number(value) => value.as_u64(),
+        Value::String(value) => value.trim().parse::<u64>().ok(),
+        _ => None,
     }
 }
 
