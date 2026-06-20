@@ -1091,17 +1091,12 @@ class _MediaGroupDbBody extends StatelessWidget {
                   const SizedBox(height: 28),
                   const _DarkSectionHeader(title: '剧情简介'),
                   const SizedBox(height: 12),
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 180),
-                    child: SingleChildScrollView(
-                      child: Text(
-                        head.showOverview!,
-                        style: const TextStyle(
-                          color: Color(0xDDFFFFFF),
-                          height: 1.65,
-                          fontSize: 15,
-                        ),
-                      ),
+                  Text(
+                    head.showOverview!,
+                    style: const TextStyle(
+                      color: Color(0xDDFFFFFF),
+                      height: 1.65,
+                      fontSize: 15,
                     ),
                   ),
                 ],
