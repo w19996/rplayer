@@ -839,7 +839,6 @@ fn open(db_path: &str) -> Result<Connection> {
            overview text,
            poster_path text,
            score real,
-           raw_json text,
            created_at integer not null,
            unique(task_id, tmdb_id),
            foreign key(task_id) references match_tasks(id) on delete cascade
@@ -900,7 +899,6 @@ fn open(db_path: &str) -> Result<Connection> {
            poster_path text,
            vote_average real,
            fetched_language text not null,
-           raw_json text,
            last_synced_at integer,
            created_at integer not null,
            updated_at integer not null,
@@ -924,7 +922,6 @@ fn open(db_path: &str) -> Result<Connection> {
            vote_average real,
            vote_count integer,
            fetched_language text not null,
-           raw_json text,
            last_synced_at integer,
            created_at integer not null,
            updated_at integer not null,
@@ -1033,7 +1030,6 @@ fn open(db_path: &str) -> Result<Connection> {
            tmdb_id integer unique,
            name text not null,
            profile_path text,
-           raw_json text,
            updated_at integer not null
          );
          create table if not exists tmdb_credits(
@@ -1046,7 +1042,6 @@ fn open(db_path: &str) -> Result<Connection> {
            job text,
            department text,
            credit_order integer,
-           raw_json text,
            unique(owner_type, owner_id, person_id, credit_type, character_name, job),
            foreign key(person_id) references tmdb_people_cache(id) on delete set null
          );
@@ -1093,6 +1088,11 @@ fn open(db_path: &str) -> Result<Connection> {
     add_column_if_missing(&conn, "tmdb_movies", "genres_json", "text")?;
     drop_column_if_exists(&conn, "tmdb_tv_shows", "raw_json")?;
     drop_column_if_exists(&conn, "tmdb_movies", "raw_json")?;
+    drop_column_if_exists(&conn, "match_candidates", "raw_json")?;
+    drop_column_if_exists(&conn, "tmdb_tv_seasons", "raw_json")?;
+    drop_column_if_exists(&conn, "tmdb_tv_episodes", "raw_json")?;
+    drop_column_if_exists(&conn, "tmdb_people_cache", "raw_json")?;
+    drop_column_if_exists(&conn, "tmdb_credits", "raw_json")?;
     conn.execute_batch("pragma foreign_keys = on;")?;
     Ok(conn)
 }
@@ -1738,7 +1738,6 @@ fn upsert_tmdb_tv_metadata(
         value.get("seasonEpisodeCount").and_then(Value::as_i64),
         value.get("seasonPosterPath").and_then(Value::as_str),
         value.get("seasonVoteAverage").and_then(Value::as_f64),
-        &season_json(value),
         now,
     )?;
     let season_id: i64 = conn.query_row(
@@ -1760,10 +1759,10 @@ fn upsert_tmdb_tv_metadata(
             "insert into tmdb_tv_episodes(
                show_id, season_id, tmdb_id, season_number, episode_number,
                name, overview, air_date, runtime, still_path, episode_type,
-               vote_average, vote_count, fetched_language, raw_json,
+               vote_average, vote_count, fetched_language,
                last_synced_at, created_at, updated_at
              )
-             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'tmdb', ?14, ?15, ?15, ?15)
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'tmdb', ?14, ?14, ?14)
              on conflict(show_id, season_number, episode_number) do update set
                season_id=excluded.season_id,
                tmdb_id=coalesce(excluded.tmdb_id, tmdb_tv_episodes.tmdb_id),
@@ -1776,7 +1775,6 @@ fn upsert_tmdb_tv_metadata(
                vote_average=excluded.vote_average,
                vote_count=coalesce(excluded.vote_count, tmdb_tv_episodes.vote_count),
                fetched_language=excluded.fetched_language,
-               raw_json=excluded.raw_json,
                last_synced_at=excluded.last_synced_at,
                updated_at=excluded.updated_at",
             params![
@@ -1793,7 +1791,6 @@ fn upsert_tmdb_tv_metadata(
                 value.get("episodeType").and_then(Value::as_str),
                 value.get("voteAverage").and_then(Value::as_f64),
                 value.get("episodeVoteCount").and_then(Value::as_i64),
-                episode_json(value).to_string(),
                 now
             ],
         )?;
@@ -2004,7 +2001,6 @@ fn upsert_tmdb_show_seasons(
             season.get("seasonEpisodeCount").and_then(Value::as_i64),
             season.get("seasonPosterPath").and_then(Value::as_str),
             season.get("seasonVoteAverage").and_then(Value::as_f64),
-            season,
             now,
         )?;
     }
@@ -2023,16 +2019,15 @@ fn upsert_tmdb_season_summary(
     episode_count: Option<i64>,
     poster_path: Option<&str>,
     vote_average: Option<f64>,
-    raw_json: &Value,
     now: i64,
 ) -> Result<()> {
     conn.execute(
         "insert into tmdb_tv_seasons(
            show_id, tmdb_id, season_number, name, overview, air_date,
-           episode_count, poster_path, vote_average, fetched_language, raw_json,
+           episode_count, poster_path, vote_average, fetched_language,
            last_synced_at, created_at, updated_at
          )
-         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'tmdb', ?10, ?11, ?11, ?11)
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'tmdb', ?10, ?10, ?10)
          on conflict(show_id, season_number) do update set
            tmdb_id=coalesce(excluded.tmdb_id, tmdb_tv_seasons.tmdb_id),
            name=coalesce(excluded.name, tmdb_tv_seasons.name),
@@ -2042,7 +2037,6 @@ fn upsert_tmdb_season_summary(
            poster_path=coalesce(excluded.poster_path, tmdb_tv_seasons.poster_path),
            vote_average=coalesce(excluded.vote_average, tmdb_tv_seasons.vote_average),
            fetched_language=excluded.fetched_language,
-           raw_json=coalesce(excluded.raw_json, tmdb_tv_seasons.raw_json),
            last_synced_at=excluded.last_synced_at,
            updated_at=excluded.updated_at",
         params![
@@ -2055,7 +2049,6 @@ fn upsert_tmdb_season_summary(
             episode_count,
             poster_path,
             vote_average,
-            raw_json.to_string(),
             now
         ],
     )?;
@@ -2081,10 +2074,10 @@ fn upsert_tmdb_episode(
         "insert into tmdb_tv_episodes(
            show_id, season_id, tmdb_id, season_number, episode_number,
            name, overview, air_date, runtime, still_path, episode_type,
-           vote_average, vote_count, fetched_language, raw_json,
+           vote_average, vote_count, fetched_language,
            last_synced_at, created_at, updated_at
          )
-         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'tmdb', ?14, ?15, ?15, ?15)
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'tmdb', ?14, ?14, ?14)
          on conflict(show_id, season_number, episode_number) do update set
            season_id=excluded.season_id,
            tmdb_id=coalesce(excluded.tmdb_id, tmdb_tv_episodes.tmdb_id),
@@ -2097,7 +2090,6 @@ fn upsert_tmdb_episode(
            vote_average=excluded.vote_average,
            vote_count=coalesce(excluded.vote_count, tmdb_tv_episodes.vote_count),
            fetched_language=excluded.fetched_language,
-           raw_json=excluded.raw_json,
            last_synced_at=excluded.last_synced_at,
            updated_at=excluded.updated_at",
         params![
@@ -2114,7 +2106,6 @@ fn upsert_tmdb_episode(
             episode.get("episodeType").and_then(Value::as_str),
             episode.get("voteAverage").and_then(Value::as_f64),
             episode.get("episodeVoteCount").and_then(Value::as_i64),
-            episode.to_string(),
             now
         ],
     )?;
@@ -2140,48 +2131,6 @@ fn genres_json(value: &Value) -> String {
         .and_then(Value::as_array)
         .map(|genres| Value::Array(genres.clone()).to_string())
         .unwrap_or_else(|| "[]".to_string())
-}
-
-fn episode_json(value: &Value) -> Value {
-    let mut object = Map::new();
-    for key in [
-        "itemId",
-        "episodeTmdbId",
-        "stillPath",
-        "episodeName",
-        "episodeOverview",
-        "releaseDate",
-        "episodeRuntime",
-        "episodeType",
-        "voteAverage",
-        "episodeVoteCount",
-        "updatedAt",
-        "schemaVersion",
-    ] {
-        if let Some(value) = value.get(key) {
-            object.insert(key.to_string(), value.clone());
-        }
-    }
-    Value::Object(object)
-}
-
-fn season_json(value: &Value) -> Value {
-    let mut object = Map::new();
-    for key in [
-        "seasonTmdbId",
-        "seasonName",
-        "seasonOverview",
-        "seasonAirDate",
-        "seasonEpisodeCount",
-        "seasonPosterPath",
-        "updatedAt",
-        "schemaVersion",
-    ] {
-        if let Some(value) = value.get(key) {
-            object.insert(key.to_string(), value.clone());
-        }
-    }
-    Value::Object(object)
 }
 
 fn image_specs(value: &Value) -> Vec<(String, String)> {

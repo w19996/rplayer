@@ -23,6 +23,63 @@ String parentPath(String value) {
   return '${trimmed.substring(0, index)}/';
 }
 
+String sourcePathIdentity(
+  MediaSourceConfig source,
+  String path, {
+  bool? isDir,
+}) {
+  if (source.type == SourceType.webdav) {
+    return isDir == true || path.endsWith('/')
+        ? normalizeRemoteDir(path)
+        : path;
+  }
+  return path.replaceAll('\\', '/');
+}
+
+bool sourceStoredPathIsDir(MediaSourceConfig source, String path) {
+  if (source.type == SourceType.webdav) return path.endsWith('/');
+  return !isVideoName(path);
+}
+
+String sourceComparablePath(
+  MediaSourceConfig source,
+  String path, {
+  bool? isDir,
+}) {
+  final identity = sourcePathIdentity(source, path, isDir: isDir);
+  final directory = isDir ?? sourceStoredPathIsDir(source, identity);
+  if (source.type == SourceType.local && directory && !identity.endsWith('/')) {
+    return '$identity/';
+  }
+  return identity;
+}
+
+bool sourcePathCovers(
+  MediaSourceConfig source,
+  String container,
+  String target, {
+  bool? containerIsDir,
+  bool? targetIsDir,
+}) {
+  final containerPath =
+      sourceComparablePath(source, container, isDir: containerIsDir);
+  final targetPath = sourceComparablePath(source, target, isDir: targetIsDir);
+  if (containerPath == targetPath) return true;
+  final directory = containerIsDir ?? sourceStoredPathIsDir(source, container);
+  if (!directory) return false;
+  final prefix =
+      containerPath.endsWith('/') ? containerPath : '$containerPath/';
+  return targetPath.startsWith(prefix);
+}
+
+String sourceItemPath(MediaSourceConfig source, MediaItem item) {
+  if (source.type == SourceType.webdav) {
+    final prefix = '${source.id}:';
+    return item.id.startsWith(prefix) ? item.id.substring(prefix.length) : '';
+  }
+  return item.uri.replaceAll('\\', '/');
+}
+
 bool looksLikeSeasonFolderName(String value) {
   final text = value.trim();
   if (text.isEmpty) return false;

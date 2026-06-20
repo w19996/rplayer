@@ -220,7 +220,7 @@ class _WebdavBrowserPageState extends State<WebdavBrowserPage> {
 
   bool isSelected(WebdavEntry entry) {
     final entryPath = entry.isDir ? normalizeRemoteDir(entry.path) : entry.path;
-    return source.selectedPaths.contains(entryPath);
+    return widget.store.sourcePathAdded(source, entryPath, isDir: entry.isDir);
   }
 
   @override
@@ -261,7 +261,6 @@ class _WebdavBrowserPageState extends State<WebdavBrowserPage> {
               );
             }
             final hasParent = path != widget.source.directory;
-            final selectedPaths = source.selectedPaths.toSet();
             return ListView.builder(
               itemExtent: 72,
               cacheExtent: 1440,
@@ -277,7 +276,8 @@ class _WebdavBrowserPageState extends State<WebdavBrowserPage> {
                 final entry = entries[index - (hasParent ? 1 : 0)];
                 final entryPath =
                     entry.isDir ? normalizeRemoteDir(entry.path) : entry.path;
-                final selected = selectedPaths.contains(entryPath);
+                final selected = widget.store
+                    .sourcePathAdded(source, entryPath, isDir: entry.isDir);
                 return ListTile(
                   leading:
                       Icon(entry.isDir ? Icons.folder : Icons.movie_outlined),

@@ -74,7 +74,7 @@ class _LocalBrowserPageState extends State<LocalBrowserPage> {
   }
 
   bool isSelected(LocalEntry entry) =>
-      source.selectedPaths.contains(entry.path);
+      widget.store.sourcePathAdded(source, entry.path, isDir: entry.isDir);
 
   @override
   Widget build(BuildContext context) {

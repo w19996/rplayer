@@ -507,18 +507,7 @@ class AppStore extends ChangeNotifier {
   Future<void> removeLocalSelection(
       MediaSourceConfig source, LocalEntry entry) async {
     addDiagnosticLog('remove local selection: ${entry.path}', category: 'scan');
-    final updated = source.copyWith(
-      selectedPaths:
-          source.selectedPaths.where((path) => path != entry.path).toList(),
-    );
-    replaceSource(updated);
-    items.removeWhere((item) => item.sourceId == source.id);
-    await scanSourceIntoItems(updated);
-    metadata
-        .removeWhere((itemId, _) => !items.any((item) => item.id == itemId));
-    await save();
-    notifyListeners();
-    unawaited(refreshMissingMetadata());
+    await removeSelectedPath(source, entry.path);
   }
 
   Future<void> removeWebdavSelection(
@@ -527,23 +516,99 @@ class AppStore extends ChangeNotifier {
         category: 'scan');
     final normalizedPath =
         entry.isDir ? normalizeRemoteDir(entry.path) : entry.path;
+    await removeSelectedPath(source, normalizedPath);
+  }
+
+  Future<void> removeSelectedPath(
+    MediaSourceConfig source,
+    String selectedPath,
+  ) async {
+    addDiagnosticLog(
+      'remove selected path: ${source.name} $selectedPath',
+      category: 'scan',
+    );
+    final normalizedPath =
+        source.type == SourceType.webdav && selectedPath.endsWith('/')
+            ? normalizeRemoteDir(selectedPath)
+            : sourcePathIdentity(source, selectedPath);
+    final pathIsDir = sourceStoredPathIsDir(source, normalizedPath);
+    final exactSelected = source.selectedPaths.contains(normalizedPath);
+    final selectedPaths =
+        source.selectedPaths.where((path) => path != normalizedPath).toList();
     final updated = source.copyWith(
-      selectedPaths:
-          source.selectedPaths.where((path) => path != normalizedPath).toList(),
+      selectedPaths: selectedPaths..sort(),
     );
     replaceSource(updated);
-    items.removeWhere((item) => item.sourceId == source.id);
-    await scanSourceIntoItems(updated);
-    metadata
-        .removeWhere((itemId, _) => !items.any((item) => item.id == itemId));
+    final removedItemIds = <String>{};
+    items.removeWhere((item) {
+      final itemPath = sourceItemPath(source, item);
+      if (item.sourceId != source.id ||
+          !sourcePathCovers(
+            source,
+            normalizedPath,
+            itemPath,
+            containerIsDir: pathIsDir,
+            targetIsDir: false,
+          )) {
+        return false;
+      }
+      if (exactSelected &&
+          updated.selectedPaths.any(
+            (path) => sourcePathCovers(
+              updated,
+              path,
+              itemPath,
+              targetIsDir: false,
+            ),
+          )) {
+        return false;
+      }
+      removedItemIds.add(item.id);
+      return true;
+    });
+    for (final itemId in removedItemIds) {
+      progress.remove(itemId);
+      durations.remove(itemId);
+      lastPlayedAt.remove(itemId);
+      metadata.remove(itemId);
+    }
+    final liveItemIds = items.map((item) => item.id).toSet();
+    metadata.removeWhere((itemId, _) => !liveItemIds.contains(itemId));
+    final liveFolderKeys = mediaFolderGroups(items)
+        .map((group) => normalizeMediaFolderKey(group.key))
+        .toSet();
+    folderOrientations.removeWhere(
+      (key, _) => !liveFolderKeys.contains(normalizeMediaFolderKey(key)),
+    );
     await save();
     notifyListeners();
-    unawaited(refreshMissingMetadata());
   }
 
   void addOrReplaceItem(MediaItem item) {
     items.removeWhere((value) => value.id == item.id);
     items.add(item);
+  }
+
+  bool sourcePathAdded(
+    MediaSourceConfig source,
+    String path, {
+    required bool isDir,
+  }) {
+    final identity = sourcePathIdentity(source, path, isDir: isDir);
+    if (source.selectedPaths.contains(identity)) return true;
+    return items.any((item) {
+      if (item.sourceId != source.id) return false;
+      final itemPath = sourceItemPath(source, item);
+      return isDir
+          ? sourcePathCovers(
+              source,
+              identity,
+              itemPath,
+              containerIsDir: true,
+              targetIsDir: false,
+            )
+          : itemPath == identity;
+    });
   }
 
   MediaItem? itemById(String id) {

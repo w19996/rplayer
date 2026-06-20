@@ -328,6 +328,7 @@ class SourceCard extends StatelessWidget {
       required this.count,
       required this.onOpen,
       required this.onDelete,
+      required this.onAdded,
       this.onEdit,
       super.key});
 
@@ -335,6 +336,7 @@ class SourceCard extends StatelessWidget {
   final int count;
   final VoidCallback onOpen;
   final VoidCallback onDelete;
+  final VoidCallback onAdded;
   final VoidCallback? onEdit;
 
   @override
@@ -380,10 +382,12 @@ class SourceCard extends StatelessWidget {
               ),
               PopupMenuButton<String>(
                 onSelected: (value) {
+                  if (value == 'added') onAdded();
                   if (value == 'edit') onEdit?.call();
                   if (value == 'delete') onDelete();
                 },
                 itemBuilder: (_) => [
+                  const PopupMenuItem(value: 'added', child: Text('已添加')),
                   if (onEdit != null)
                     const PopupMenuItem(value: 'edit', child: Text('编辑源')),
                   const PopupMenuItem(value: 'delete', child: Text('删除源')),
