@@ -14,7 +14,7 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "popcorn_player/app").setMethodCallHandler { call, result ->
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "rplayer/app").setMethodCallHandler { call, result ->
             when (call.method) {
                 "appFilesDir" -> result.success(filesDir.absolutePath)
                 "playerStatus" -> result.success(playerStatus())

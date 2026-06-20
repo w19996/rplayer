@@ -845,6 +845,15 @@ class _MediaGroupDbBody extends StatelessWidget {
     }
   }
 
+  Future<void> _refreshTmdb(BuildContext context) async {
+    try {
+      await store.refreshLibraryDetail(detail);
+      if (context.mounted) showSnack(context, '刷新已完成');
+    } catch (err) {
+      if (context.mounted) showSnack(context, '刷新失败：$err');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final head = detail.representative!;
@@ -924,9 +933,15 @@ class _MediaGroupDbBody extends StatelessWidget {
                               onSelected: (value) {
                                 if (value == 'manual-match') {
                                   unawaited(_openManualMatch(context));
+                                } else if (value == 'refresh') {
+                                  unawaited(_refreshTmdb(context));
                                 }
                               },
                               itemBuilder: (context) => const [
+                                PopupMenuItem(
+                                  value: 'refresh',
+                                  child: Text('刷新'),
+                                ),
                                 PopupMenuItem(
                                   value: 'manual-match',
                                   child: Text('手动识别'),

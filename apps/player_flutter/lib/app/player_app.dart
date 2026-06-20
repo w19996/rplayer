@@ -37,10 +37,21 @@ class _PlayerAppState extends State<PlayerApp> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: '爆米花播放器',
+      title: appName,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2E7AF6)),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF2E7AF6),
+          surface: Colors.white,
+        ),
         scaffoldBackgroundColor: Colors.white,
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Colors.white,
+          surfaceTintColor: Colors.white,
+        ),
+        navigationBarTheme: const NavigationBarThemeData(
+          backgroundColor: Colors.white,
+          surfaceTintColor: Colors.white,
+        ),
         visualDensity: VisualDensity.compact,
         useMaterial3: true,
       ),

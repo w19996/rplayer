@@ -56,7 +56,7 @@ class SourceLibraryPage extends StatelessWidget {
     final webdavSources = _sourcesOf(SourceType.webdav);
 
     return ColoredBox(
-      color: const Color(0xFFF3F2F7),
+      color: Colors.white,
       child: SafeArea(
         bottom: false,
         child: CustomScrollView(

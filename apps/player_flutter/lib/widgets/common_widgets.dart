@@ -16,7 +16,7 @@ class AppBrand extends StatelessWidget {
           child: const Icon(Icons.local_movies, color: Color(0xFF2F5FA8)),
         ),
         const SizedBox(width: 8),
-        const Text('爆米花播放器',
+        const Text(appName,
             style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
       ],
     );

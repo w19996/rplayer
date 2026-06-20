@@ -788,6 +788,80 @@ class AppStore extends ChangeNotifier {
     }
   }
 
+  Future<void> refreshLibraryDetail(LibraryShowDetail detail) async {
+    if (!tmdbConfig.enabled) {
+      throw StateError('请先在设置中配置 TMDB 访问令牌');
+    }
+    if (metadataRefreshing) {
+      throw StateError('已有 TMDB 刷新正在进行');
+    }
+    final groupItems = detail.files
+        .map((file) => itemById(file.itemId))
+        .whereType<MediaItem>()
+        .toList()
+      ..sort(compareMediaItems);
+    if (groupItems.isEmpty) {
+      throw StateError('没有找到可刷新的本地视频');
+    }
+    final representative = groupItems.first;
+    final title = detail.representative?.showTitle?.trim();
+    final group = MediaFolderGroup(
+      key: detail.folderKey,
+      title: title?.isNotEmpty == true
+          ? title!
+          : mediaGroupDisplayTitle(representative),
+      items: groupItems,
+      representative: representative,
+      latestPlayedAt: groupItems.fold<int>(
+        0,
+        (latest, item) => math.max(latest, lastPlayedAt[item.id] ?? 0),
+      ),
+    );
+    final stopwatch = Stopwatch()..start();
+    metadataRefreshing = true;
+    tmdbLastStatus = '正在刷新：${group.title}';
+    addDiagnosticLog(
+      'single TMDB refresh started: folder=${detail.folderKey}, title=${group.title}, items=${group.items.length}',
+      category: 'match',
+    );
+    notifyListeners();
+    try {
+      final service = TmdbMetadataService(
+        tmdbConfig,
+        log: (message) => addDiagnosticLog(message, category: 'tmdb'),
+      );
+      final values = await service.lookupGroup(group);
+      if (values.isEmpty) {
+        throw StateError('TMDB 没有返回可写入的数据');
+      }
+      for (final item in group.items) {
+        metadata.remove(item.id);
+      }
+      var written = 0;
+      for (final entry in values.entries) {
+        metadata[entry.key] = entry.value;
+        await saveMetadataToDatabase(group.key, entry.key, entry.value);
+        written++;
+      }
+      await pruneMetadataDatabase();
+      await loadMetadataDatabase();
+      await save();
+      metadataRevision++;
+      tmdbLastStatus = '刷新完成：${group.title}';
+      addDiagnosticLog(
+        'single TMDB refresh finished: written=$written, elapsed=${stopwatch.elapsedMilliseconds}ms',
+        category: 'match',
+      );
+    } catch (error) {
+      tmdbLastStatus = '刷新失败：$error';
+      addDiagnosticLog(tmdbLastStatus, category: 'match');
+      rethrow;
+    } finally {
+      metadataRefreshing = false;
+      notifyListeners();
+    }
+  }
+
   bool metadataCompleteForItem(MediaItem item, MediaMetadata value) {
     if (value.schemaVersion < currentMetadataSchemaVersion) return false;
     if (value.mediaType != 'tv') return true;

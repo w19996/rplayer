@@ -8,9 +8,9 @@ class AddSourcePage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF3F2F7),
+      backgroundColor: Colors.white,
       appBar: AppBar(
-        backgroundColor: const Color(0xFFF3F2F7),
+        backgroundColor: Colors.white,
         title: const Text('添加新文件源'),
         centerTitle: true,
       ),

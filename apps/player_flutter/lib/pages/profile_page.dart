@@ -17,11 +17,7 @@ class ProfilePage extends StatelessWidget {
           Container(
             padding: const EdgeInsets.fromLTRB(22, 34, 22, 30),
             decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [Color(0xFFDCEEFF), Colors.white],
-              ),
+              color: Colors.white,
             ),
             child: Column(
               children: [
@@ -65,25 +61,17 @@ class ProfilePage extends StatelessWidget {
                   ),
                 ),
                 ProfileActionCard(
-                  icon: Icons.bug_report_outlined,
-                  title: '诊断日志',
-                  subtitle: store.diagnosticLoggingEnabled
-                      ? '已开启，记录数据库、扫描、匹配、缓存、同步和播放事件'
-                      : '已关闭，不记录新的诊断日志',
+                  icon: Icons.chat_bubble_outline,
+                  title: '弹幕设置',
+                  subtitle: danmu.enabled
+                      ? (danmu.available
+                          ? '${Uri.parse(danmu.requestBaseUrl).host} / token ${danmu.normalizedApiToken.isEmpty ? '默认' : '已设置'}'
+                          : '已开启，未配置弹幕服务')
+                      : '已关闭，进入后可开启和配置弹幕服务',
                   actionText: '进入',
                   onTap: () => Navigator.of(context).push(
-                    appSlideRoute(
-                        (_) => DiagnosticLogSettingsPage(store: store)),
+                    appSlideRoute((_) => DanmuSettingsPage(store: store)),
                   ),
-                ),
-                ProfileActionCard(
-                  icon: Icons.chat_bubble_outline,
-                  title: '弹幕 API',
-                  subtitle: danmu.available
-                      ? '${Uri.parse(danmu.requestBaseUrl).host} / token ${danmu.normalizedApiToken.isEmpty ? '默认' : '已设置'}'
-                      : '配置 w19996/danmu_api 弹幕服务',
-                  actionText: danmu.available ? '编辑' : '设置',
-                  onTap: () => showDanmuConfigDialog(context, store),
                 ),
                 ProfileActionCard(
                   icon: Icons.settings_outlined,
@@ -94,6 +82,18 @@ class ProfilePage extends StatelessWidget {
                   actionText: '进入',
                   onTap: () => Navigator.of(context).push(
                     appSlideRoute((_) => SyncSettingsPage(store: store)),
+                  ),
+                ),
+                ProfileActionCard(
+                  icon: Icons.bug_report_outlined,
+                  title: '诊断日志',
+                  subtitle: store.diagnosticLoggingEnabled
+                      ? '已开启，记录数据库、扫描、匹配、缓存、同步和播放事件'
+                      : '已关闭，不记录新的诊断日志',
+                  actionText: '进入',
+                  onTap: () => Navigator.of(context).push(
+                    appSlideRoute(
+                        (_) => DiagnosticLogSettingsPage(store: store)),
                   ),
                 ),
               ],
@@ -233,6 +233,96 @@ class DiagnosticLogSettingsPage extends StatelessWidget {
                   ),
                 ),
               ],
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class DanmuSettingsPage extends StatefulWidget {
+  const DanmuSettingsPage({required this.store, super.key});
+
+  final AppStore store;
+
+  @override
+  State<DanmuSettingsPage> createState() => _DanmuSettingsPageState();
+}
+
+class _DanmuSettingsPageState extends State<DanmuSettingsPage> {
+  late final TextEditingController apiBaseUrl;
+  late final TextEditingController apiToken;
+
+  @override
+  void initState() {
+    super.initState();
+    final current = widget.store.danmuConfig;
+    apiBaseUrl = TextEditingController(text: current.normalizedApiBaseUrl);
+    apiToken = TextEditingController(text: current.normalizedApiToken);
+  }
+
+  @override
+  void dispose() {
+    apiBaseUrl.dispose();
+    apiToken.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save(DanmuConfig current) async {
+    await widget.store.setDanmuConfig(
+      current.copyWith(
+        apiBaseUrl: apiBaseUrl.text.trim(),
+        apiToken: apiToken.text.trim(),
+      ),
+    );
+    if (mounted) showSnack(context, '弹幕设置已保存');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('弹幕设置')),
+      body: AnimatedBuilder(
+        animation: widget.store,
+        builder: (context, _) {
+          final current = widget.store.danmuConfig;
+          return ListView(
+            padding: const EdgeInsets.all(22),
+            children: [
+              SwitchListTile(
+                contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                secondary: const Icon(Icons.chat_bubble_outline),
+                title: const Text('启用弹幕'),
+                subtitle: Text(current.available
+                    ? '已连接到 ${Uri.parse(current.requestBaseUrl).host}'
+                    : '开启后播放时会自动匹配和加载弹幕'),
+                value: current.enabled,
+                onChanged: (value) => unawaited(
+                  widget.store.setDanmuConfig(current.copyWith(enabled: value)),
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: apiBaseUrl,
+                decoration: const InputDecoration(
+                  labelText: 'API 地址',
+                  helperText: '例如 https://danmu.example.com，不填 /api/v2',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: apiToken,
+                decoration: const InputDecoration(
+                  labelText: 'Token',
+                  helperText: '默认 87654321 可留空；自定义 TOKEN 时填写',
+                ),
+              ),
+              const SizedBox(height: 18),
+              FilledButton(
+                onPressed: () => unawaited(_save(current)),
+                child: const Text('保存'),
+              ),
             ],
           );
         },
@@ -419,64 +509,6 @@ Future<void> showTmdbConfigDialog(BuildContext context, AppStore store) async {
                     region:
                         region.text.trim().isEmpty ? 'CN' : region.text.trim(),
                     apiBaseUrl: normalizedApiBaseUrl,
-                  ),
-                );
-                if (context.mounted) Navigator.pop(context);
-              },
-              child: const Text('保存'),
-            ),
-          ],
-        );
-      },
-    ),
-  );
-}
-
-Future<void> showDanmuConfigDialog(BuildContext context, AppStore store) async {
-  final current = store.danmuConfig;
-  final apiBaseUrl = TextEditingController(text: current.normalizedApiBaseUrl);
-  final apiToken = TextEditingController(text: current.normalizedApiToken);
-
-  await showDialog<void>(
-    context: context,
-    builder: (context) => StatefulBuilder(
-      builder: (context, setDialogState) {
-        return AlertDialog(
-          title: const Text('弹幕 API'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: apiBaseUrl,
-                  decoration: const InputDecoration(
-                    labelText: 'API 地址',
-                    helperText: '例如 https://danmu.example.com，不填 /api/v2',
-                  ),
-                ),
-                TextField(
-                  controller: apiToken,
-                  decoration: const InputDecoration(
-                    labelText: 'Token',
-                    helperText: '默认 87654321 可留空；自定义 TOKEN 时填写',
-                  ),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () async {
-                final apiText = apiBaseUrl.text.trim();
-                await store.setDanmuConfig(
-                  current.copyWith(
-                    enabled: apiText.isNotEmpty,
-                    apiBaseUrl: apiText,
-                    apiToken: apiToken.text.trim(),
                   ),
                 );
                 if (context.mounted) Navigator.pop(context);

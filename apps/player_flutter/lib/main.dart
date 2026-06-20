@@ -58,7 +58,8 @@ const videoExtensions = {
   '.asf',
 };
 
-const appChannel = MethodChannel('popcorn_player/app');
+const appName = 'rplayer';
+const appChannel = MethodChannel('rplayer/app');
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();

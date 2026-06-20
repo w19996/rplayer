@@ -24,6 +24,8 @@ class _PlayerShellState extends State<PlayerShell> {
       bottomNavigationBar: NavigationBar(
         selectedIndex: index,
         height: 68,
+        backgroundColor: Colors.white,
+        surfaceTintColor: Colors.white,
         indicatorColor: Colors.transparent,
         onDestinationSelected: (value) => setState(() => index = value),
         destinations: const [

@@ -174,7 +174,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       setStateIfMounted(() {
         danmuLoading = false;
         danmuTotalCount = 0;
-        danmuStatus = '未配置弹幕 API';
+        danmuStatus = '未配置弹幕服务';
       });
       clearDanmuOverlay();
       return;
@@ -1071,7 +1071,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     if (controlsLocked) return;
     final config = widget.store.danmuConfig;
     if (!config.available) {
-      setStateIfMounted(() => danmuStatus = '请先启用并配置弹幕 API');
+      setStateIfMounted(() => danmuStatus = '请先在我的页面启用并配置弹幕设置');
       return;
     }
     controlsHideTimer?.cancel();
@@ -1937,17 +1937,6 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
                               color: Colors.white70, fontSize: 12),
                         ),
                         const SizedBox(height: 12),
-                        SwitchListTile(
-                          contentPadding: EdgeInsets.zero,
-                          title: const Text('启用弹幕',
-                              style: TextStyle(color: Colors.white)),
-                          value: config.enabled,
-                          onChanged: (value) {
-                            unawaited(widget.store.setDanmuConfig(
-                                config.copyWith(enabled: value)));
-                            if (value) unawaited(loadDanmuForCurrentItem());
-                          },
-                        ),
                         SwitchListTile(
                           contentPadding: EdgeInsets.zero,
                           title: const Text('显示弹幕',
