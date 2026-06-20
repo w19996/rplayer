@@ -812,6 +812,132 @@ class MediaMetadata {
       };
 }
 
+class TmdbSearchCandidate {
+  const TmdbSearchCandidate({
+    required this.tmdbId,
+    required this.mediaType,
+    required this.title,
+    this.originalTitle,
+    this.overview,
+    this.posterPath,
+    this.backdropPath,
+    this.releaseDate,
+    this.tmdbType,
+    this.genres = const [],
+    this.originCountry = const [],
+    this.voteAverage,
+    this.popularity,
+  });
+
+  final int tmdbId;
+  final String mediaType;
+  final String title;
+  final String? originalTitle;
+  final String? overview;
+  final String? posterPath;
+  final String? backdropPath;
+  final String? releaseDate;
+  final String? tmdbType;
+  final List<String> genres;
+  final List<String> originCountry;
+  final double? voteAverage;
+  final double? popularity;
+
+  bool get isTv => mediaType == 'tv';
+  String get mediaTypeLabel => mediaCategoryLabel(mediaCategoryKey(
+        mediaType: mediaType,
+        tmdbType: tmdbType,
+        genres: genres,
+      ));
+
+  String get displayDate =>
+      releaseDate?.trim().isNotEmpty == true ? releaseDate! : '日期未知';
+  String get displayCountry =>
+      originCountry.isEmpty ? '地区未知' : originCountry.join(' / ');
+
+  factory TmdbSearchCandidate.fromSearchJson(
+    Map<String, dynamic> json, {
+    required String mediaType,
+    String? tmdbType,
+    List<String> genres = const [],
+  }) {
+    final title =
+        mediaType == 'tv' ? json['name'] as String? : json['title'] as String?;
+    final originalTitle = mediaType == 'tv'
+        ? json['original_name'] as String?
+        : json['original_title'] as String?;
+    final date = mediaType == 'tv'
+        ? json['first_air_date'] as String?
+        : json['release_date'] as String?;
+    return TmdbSearchCandidate(
+      tmdbId: (json['id'] as num?)?.toInt() ?? 0,
+      mediaType: mediaType,
+      title: title?.trim().isNotEmpty == true
+          ? title!.trim()
+          : originalTitle?.trim() ?? '',
+      originalTitle: originalTitle,
+      overview: json['overview'] as String?,
+      posterPath: json['poster_path'] as String?,
+      backdropPath: json['backdrop_path'] as String?,
+      releaseDate: date,
+      tmdbType: tmdbType,
+      genres: genres,
+      originCountry: (json['origin_country'] as List<dynamic>? ?? const [])
+          .whereType<String>()
+          .toList(),
+      voteAverage: (json['vote_average'] as num?)?.toDouble(),
+      popularity: (json['popularity'] as num?)?.toDouble(),
+    );
+  }
+}
+
+bool mediaGenresContainAnimation(Iterable<String> genres) {
+  return genres.any((genre) {
+    final normalized = genre.trim().toLowerCase();
+    return normalized == 'animation' ||
+        normalized == '动画' ||
+        normalized == '動漫' ||
+        normalized == 'anime';
+  });
+}
+
+String mediaCategoryKey({
+  required String? mediaType,
+  String? tmdbType,
+  Iterable<String> genres = const [],
+}) {
+  if (mediaGenresContainAnimation(genres)) return 'anime';
+  final normalizedMediaType = mediaType?.trim().toLowerCase();
+  if (normalizedMediaType == 'movie') return 'movie';
+  if (normalizedMediaType != 'tv') {
+    return normalizedMediaType?.isNotEmpty == true
+        ? normalizedMediaType!
+        : 'tv';
+  }
+  return switch (tmdbType?.trim().toLowerCase()) {
+    'reality' => 'variety',
+    'talk show' => 'talk',
+    'documentary' => 'documentary',
+    'news' => 'news',
+    'video' => 'other',
+    _ => 'tv',
+  };
+}
+
+String mediaCategoryLabel(String key) {
+  return switch (key) {
+    'anime' => '动漫',
+    'tv' => '电视剧',
+    'variety' => '综艺',
+    'talk' => '访谈',
+    'documentary' => '纪录片',
+    'news' => '新闻',
+    'movie' => '电影',
+    'other' => '其他',
+    _ => key.toUpperCase(),
+  };
+}
+
 class LibraryHomeEntry {
   const LibraryHomeEntry({
     required this.folderId,
@@ -831,6 +957,7 @@ class LibraryHomeEntry {
     this.matched = false,
     this.mediaType,
     this.tmdbType,
+    this.genres = const [],
   });
 
   final int folderId;
@@ -850,6 +977,7 @@ class LibraryHomeEntry {
   final bool matched;
   final String? mediaType;
   final String? tmdbType;
+  final List<String> genres;
 
   factory LibraryHomeEntry.fromJson(Map<String, dynamic> json) {
     return LibraryHomeEntry(
@@ -870,6 +998,9 @@ class LibraryHomeEntry {
       matched: json['matched'] == true,
       mediaType: json['mediaType'] as String?,
       tmdbType: json['tmdbType'] as String?,
+      genres: (json['genres'] as List<dynamic>? ?? const [])
+          .whereType<String>()
+          .toList(),
     );
   }
 

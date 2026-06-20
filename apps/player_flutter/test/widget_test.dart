@@ -114,6 +114,40 @@ void main() {
     expect(normalizeMatchText('Low.IQ-Crime S01E01'), 'low iq crime s01e01');
   });
 
+  test('uses one media category policy for TMDB type and genres', () {
+    expect(
+      mediaCategoryLabel(mediaCategoryKey(
+        mediaType: 'tv',
+        tmdbType: 'Reality',
+        genres: const ['Comedy'],
+      )),
+      '\u7efc\u827a',
+    );
+    expect(
+      mediaCategoryLabel(mediaCategoryKey(
+        mediaType: 'tv',
+        tmdbType: 'Talk Show',
+        genres: const [],
+      )),
+      '\u8bbf\u8c08',
+    );
+    expect(
+      mediaCategoryLabel(mediaCategoryKey(
+        mediaType: 'tv',
+        tmdbType: 'Scripted',
+        genres: const ['Animation'],
+      )),
+      '\u52a8\u6f2b',
+    );
+    expect(
+      mediaCategoryLabel(mediaCategoryKey(
+        mediaType: 'movie',
+        genres: const ['\u52a8\u753b'],
+      )),
+      '\u52a8\u6f2b',
+    );
+  });
+
   test('normalizes self-hosted tmdb proxy endpoints', () {
     expect(
       normalizeTmdbApiBaseUrl('tmdb.ansky.top'),

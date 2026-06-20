@@ -178,32 +178,15 @@ class MediaLibraryPage extends StatelessWidget {
 
   String _libraryCategoryKey(LibraryHomeEntry entry) {
     if (!entry.matched) return 'other';
-    final mediaType = entry.mediaType?.trim().toLowerCase();
-    if (mediaType == 'movie') return 'movie';
-    if (mediaType != 'tv') {
-      return mediaType?.isNotEmpty == true ? mediaType! : 'tv';
-    }
-    final tmdbType = entry.tmdbType?.trim().toLowerCase();
-    return switch (tmdbType) {
-      'reality' || 'talk show' => 'variety',
-      'documentary' => 'documentary',
-      'news' => 'news',
-      'miniseries' => 'miniseries',
-      _ => 'tv',
-    };
+    return mediaCategoryKey(
+      mediaType: entry.mediaType,
+      tmdbType: entry.tmdbType,
+      genres: entry.genres,
+    );
   }
 
-  String _libraryCategoryTitle(String mediaType) {
-    return switch (mediaType) {
-      'tv' => '电视剧',
-      'miniseries' => '迷你剧',
-      'variety' => '综艺',
-      'documentary' => '纪录片',
-      'news' => '新闻',
-      'movie' => '电影',
-      _ => mediaType.toUpperCase(),
-    };
-  }
+  String _libraryCategoryTitle(String mediaType) =>
+      mediaCategoryLabel(mediaType);
 }
 
 class _LibraryCategorySection {
@@ -572,7 +555,7 @@ class _MediaGroupPageState extends State<MediaGroupPage> {
                 SafeArea(
                   bottom: false,
                   child: Padding(
-                    padding: const EdgeInsets.fromLTRB(22, 8, 22, 64),
+                    padding: const EdgeInsets.fromLTRB(22, 8, 22, 24),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -603,7 +586,7 @@ class _MediaGroupPageState extends State<MediaGroupPage> {
                             ),
                           ],
                         ),
-                        const SizedBox(height: 44),
+                        const SizedBox(height: 78),
                         Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
@@ -677,7 +660,7 @@ class _MediaGroupPageState extends State<MediaGroupPage> {
                             ),
                           ],
                         ),
-                        const SizedBox(height: 48),
+                        const SizedBox(height: 18),
                       ],
                     ),
                   ),
@@ -848,6 +831,20 @@ class _MediaGroupDbBody extends StatelessWidget {
   final AppStore store;
   final LibraryShowDetail detail;
 
+  Future<void> _openManualMatch(BuildContext context) async {
+    final changed = await Navigator.of(context).push<bool>(
+      appSlideRoute(
+        (_) => ManualTmdbMatchPage(
+          store: store,
+          detail: detail,
+        ),
+      ),
+    );
+    if (changed == true && context.mounted) {
+      showSnack(context, '手动识别已完成');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final head = detail.representative!;
@@ -895,7 +892,7 @@ class _MediaGroupDbBody extends StatelessWidget {
                 SafeArea(
                   bottom: false,
                   child: Padding(
-                    padding: const EdgeInsets.fromLTRB(22, 8, 22, 34),
+                    padding: const EdgeInsets.fromLTRB(22, 8, 22, 24),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -919,14 +916,26 @@ class _MediaGroupDbBody extends StatelessWidget {
                                 ),
                               ),
                             ),
-                            IconButton(
+                            PopupMenuButton<String>(
+                              tooltip: '更多',
                               color: Colors.white,
-                              onPressed: () {},
+                              iconColor: Colors.white,
                               icon: const Icon(Icons.more_horiz, size: 30),
+                              onSelected: (value) {
+                                if (value == 'manual-match') {
+                                  unawaited(_openManualMatch(context));
+                                }
+                              },
+                              itemBuilder: (context) => const [
+                                PopupMenuItem(
+                                  value: 'manual-match',
+                                  child: Text('手动识别'),
+                                ),
+                              ],
                             ),
                           ],
                         ),
-                        const SizedBox(height: 14),
+                        const SizedBox(height: 80),
                         Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
@@ -1000,7 +1009,7 @@ class _MediaGroupDbBody extends StatelessWidget {
                             ),
                           ],
                         ),
-                        const SizedBox(height: 28),
+                        const SizedBox(height: 18),
                       ],
                     ),
                   ),
@@ -1050,12 +1059,10 @@ class _MediaGroupDbBody extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 8),
-                Container(
-                  height: 3,
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
+                const Divider(
+                  height: 1,
+                  thickness: 1,
+                  color: Color(0x44FFFFFF),
                 ),
                 const SizedBox(height: 20),
                 SizedBox(
@@ -1124,7 +1131,9 @@ class _MediaGroupDbBody extends StatelessWidget {
                 const Divider(color: Color(0x22FFFFFF)),
                 const SizedBox(height: 16),
                 Text(
-                  dbPlaybackTitle(current, fallback: current.filename),
+                  current.filename.isEmpty
+                      ? current.relativePath
+                      : current.filename,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
@@ -1162,6 +1171,369 @@ class _MediaGroupDbBody extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class ManualTmdbMatchPage extends StatefulWidget {
+  const ManualTmdbMatchPage({
+    required this.store,
+    required this.detail,
+    super.key,
+  });
+
+  final AppStore store;
+  final LibraryShowDetail detail;
+
+  @override
+  State<ManualTmdbMatchPage> createState() => _ManualTmdbMatchPageState();
+}
+
+class _ManualTmdbMatchPageState extends State<ManualTmdbMatchPage> {
+  late final TextEditingController controller;
+  List<TmdbSearchCandidate> results = const [];
+  bool loading = false;
+  Object? error;
+  int searchSerial = 0;
+  TmdbSearchCandidate? replacing;
+
+  @override
+  void initState() {
+    super.initState();
+    controller = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _searchNow(String value) async {
+    final query = value.trim();
+    final serial = ++searchSerial;
+    if (query.isEmpty) {
+      setState(() {
+        results = const [];
+        loading = false;
+        error = null;
+      });
+      return;
+    }
+    setState(() {
+      loading = true;
+      error = null;
+    });
+    try {
+      final next = await widget.store.searchTmdbCandidates(query);
+      if (!mounted || serial != searchSerial) return;
+      setState(() {
+        results = next;
+        loading = false;
+      });
+    } catch (err) {
+      if (!mounted || serial != searchSerial) return;
+      setState(() {
+        error = err;
+        loading = false;
+      });
+    }
+  }
+
+  Future<void> _selectCandidate(TmdbSearchCandidate candidate) async {
+    setState(() => replacing = candidate);
+    try {
+      await widget.store.rematchLibraryDetail(widget.detail, candidate);
+      if (mounted) Navigator.of(context).pop(true);
+    } catch (err) {
+      if (!mounted) return;
+      setState(() => replacing = null);
+      showSnack(context, '手动识别失败：$err');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final busy = replacing != null;
+    return Scaffold(
+      backgroundColor: Colors.white,
+      body: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 14, 18, 8),
+              child: Text(
+                '搜索并匹配影片',
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      color: Colors.black,
+                      fontWeight: FontWeight.w800,
+                    ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 8, 18, 10),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: SizedBox(
+                      height: 46,
+                      child: TextField(
+                        controller: controller,
+                        enabled: !busy,
+                        autofocus: true,
+                        textInputAction: TextInputAction.search,
+                        onChanged: (_) => setState(() {}),
+                        onSubmitted: _searchNow,
+                        style: const TextStyle(color: Colors.black),
+                        decoration: InputDecoration(
+                          filled: true,
+                          fillColor: const Color(0xFFF2F2F7),
+                          prefixIcon: const Icon(
+                            Icons.search,
+                            color: Color(0xFF6E6E73),
+                          ),
+                          suffixIcon: controller.text.isEmpty
+                              ? null
+                              : IconButton(
+                                  tooltip: '清空',
+                                  icon: const Icon(
+                                    Icons.cancel,
+                                    color: Color(0xFFB0B0B6),
+                                  ),
+                                  onPressed: busy
+                                      ? null
+                                      : () {
+                                          controller.clear();
+                                          searchSerial++;
+                                          results = const [];
+                                          loading = false;
+                                          error = null;
+                                          setState(() {});
+                                        },
+                                ),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8),
+                            borderSide: BorderSide.none,
+                          ),
+                          contentPadding:
+                              const EdgeInsets.symmetric(horizontal: 12),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  TextButton(
+                    onPressed: busy ? null : () => _searchNow(controller.text),
+                    child: const Text('搜索'),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1, color: Color(0xFFE6E6EA)),
+            Expanded(
+              child: _buildResults(context),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildResults(BuildContext context) {
+    if (loading && results.isEmpty) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (error != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            '搜索失败：$error',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.black54),
+          ),
+        ),
+      );
+    }
+    if (results.isEmpty) {
+      return const Center(
+        child: Text(
+          '输入片名搜索 TMDB',
+          style: TextStyle(color: Colors.black45),
+        ),
+      );
+    }
+    return ListView.separated(
+      padding: const EdgeInsets.fromLTRB(18, 14, 18, 18),
+      itemCount: results.length + (loading ? 1 : 0),
+      separatorBuilder: (_, __) => const SizedBox(height: 12),
+      itemBuilder: (context, index) {
+        if (index >= results.length) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        final candidate = results[index];
+        return _TmdbCandidateCard(
+          store: widget.store,
+          candidate: candidate,
+          busy: replacing != null,
+          selected: replacing == candidate,
+          onTap: () => _selectCandidate(candidate),
+        );
+      },
+    );
+  }
+}
+
+class _TmdbCandidateCard extends StatelessWidget {
+  const _TmdbCandidateCard({
+    required this.store,
+    required this.candidate,
+    required this.busy,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final AppStore store;
+  final TmdbSearchCandidate candidate;
+  final bool busy;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: busy ? null : onTap,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: const Color(0xFFE4E4E8)),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: SizedBox(
+                  width: 86,
+                  height: 126,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      if (candidate.posterPath != null)
+                        CachedTmdbImage(
+                          store: store,
+                          imagePath: candidate.posterPath!,
+                          size: 'w185',
+                          fit: BoxFit.cover,
+                          fallback: const MediaPosterFallback(remote: false),
+                        )
+                      else
+                        const MediaPosterFallback(remote: false),
+                      Positioned(
+                        left: 0,
+                        top: 0,
+                        child: DecoratedBox(
+                          decoration: const BoxDecoration(
+                            color: Color(0xFF1B3C9B),
+                            borderRadius: BorderRadius.only(
+                              bottomRight: Radius.circular(4),
+                            ),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 5,
+                              vertical: 2,
+                            ),
+                            child: Text(
+                              candidate.mediaTypeLabel,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: SizedBox(
+                  height: 126,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        candidate.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.black,
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.calendar_month_outlined,
+                            size: 16,
+                            color: Color(0xFF7A7A80),
+                          ),
+                          const SizedBox(width: 4),
+                          Flexible(
+                            child: Text(
+                              '${candidate.displayDate}  |  ${candidate.displayCountry}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Color(0xFF7A7A80),
+                                fontSize: 14,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      Expanded(
+                        child: Text(
+                          candidate.overview?.trim().isNotEmpty == true
+                              ? candidate.overview!.trim()
+                              : '暂无简介',
+                          maxLines: 3,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Color(0xFF7A7A80),
+                            fontSize: 14,
+                            height: 1.35,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              if (selected) ...[
+                const SizedBox(width: 8),
+                const SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }

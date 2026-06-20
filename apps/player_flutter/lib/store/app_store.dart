@@ -705,6 +705,89 @@ class AppStore extends ChangeNotifier {
     }
   }
 
+  Future<List<TmdbSearchCandidate>> searchTmdbCandidates(String query) async {
+    if (!tmdbConfig.enabled) {
+      throw StateError('请先在设置中配置 TMDB 访问令牌');
+    }
+    final service = TmdbMetadataService(
+      tmdbConfig,
+      log: (message) => addDiagnosticLog(message, category: 'tmdb'),
+    );
+    return service.searchCandidates(query);
+  }
+
+  Future<void> rematchLibraryDetail(
+    LibraryShowDetail detail,
+    TmdbSearchCandidate candidate,
+  ) async {
+    if (!tmdbConfig.enabled) {
+      throw StateError('请先在设置中配置 TMDB 访问令牌');
+    }
+    final groupItems = detail.files
+        .map((file) => itemById(file.itemId))
+        .whereType<MediaItem>()
+        .toList()
+      ..sort(compareMediaItems);
+    if (groupItems.isEmpty) {
+      throw StateError('没有找到可替换的本地视频');
+    }
+    final representative = groupItems.first;
+    final group = MediaFolderGroup(
+      key: detail.folderKey,
+      title: candidate.title.trim().isNotEmpty
+          ? candidate.title
+          : mediaGroupDisplayTitle(representative),
+      items: groupItems,
+      representative: representative,
+      latestPlayedAt: groupItems.fold<int>(
+        0,
+        (latest, item) => math.max(latest, lastPlayedAt[item.id] ?? 0),
+      ),
+    );
+    final stopwatch = Stopwatch()..start();
+    metadataRefreshing = true;
+    tmdbLastStatus = '手动识别中：${candidate.title}';
+    addDiagnosticLog(
+      'manual TMDB rematch started: folder=${detail.folderKey}, type=${candidate.mediaType}, tmdb=${candidate.tmdbId}, items=${group.items.length}',
+      category: 'match',
+    );
+    notifyListeners();
+    try {
+      final service = TmdbMetadataService(
+        tmdbConfig,
+        log: (message) => addDiagnosticLog(message, category: 'tmdb'),
+      );
+      final values = await service.lookupGroupByCandidate(group, candidate);
+      if (values.isEmpty) {
+        throw StateError('TMDB 没有返回可写入的数据');
+      }
+      for (final item in group.items) {
+        metadata.remove(item.id);
+      }
+      var written = 0;
+      for (final entry in values.entries) {
+        metadata[entry.key] = entry.value;
+        await saveMetadataToDatabase(group.key, entry.key, entry.value);
+        written++;
+      }
+      await pruneMetadataDatabase();
+      await loadMetadataDatabase();
+      metadataRevision++;
+      tmdbLastStatus = '手动识别完成：${candidate.title}';
+      addDiagnosticLog(
+        'manual TMDB rematch finished: written=$written, elapsed=${stopwatch.elapsedMilliseconds}ms',
+        category: 'match',
+      );
+    } catch (error) {
+      tmdbLastStatus = '手动识别失败：$error';
+      addDiagnosticLog(tmdbLastStatus, category: 'match');
+      rethrow;
+    } finally {
+      metadataRefreshing = false;
+      notifyListeners();
+    }
+  }
+
   bool metadataCompleteForItem(MediaItem item, MediaMetadata value) {
     if (value.schemaVersion < currentMetadataSchemaVersion) return false;
     if (value.mediaType != 'tv') return true;

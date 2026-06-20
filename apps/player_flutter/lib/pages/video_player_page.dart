@@ -1669,10 +1669,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   }
 
   Widget buildTitleOverlay(BuildContext context, bool isLandscape) {
+    final safeTop = MediaQuery.paddingOf(context).top;
     return Positioned(
-      left: isLandscape ? 32 : 4,
-      right: isLandscape ? 24 : 92,
-      top: isLandscape ? 28 : 28,
+      left: isLandscape ? 32 : 12,
+      right: isLandscape ? 32 : 112,
+      top: safeTop + (isLandscape ? 28 : 34),
       child: Row(
         children: [
           IconButton(
@@ -1711,6 +1712,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
 
   Widget buildSideTools(
       BuildContext context, BoxConstraints constraints, bool isLandscape) {
+    final safeTop = MediaQuery.paddingOf(context).top;
     final buttons = [
       controlIconButton(
           icon: Icons.screen_rotation_alt_outlined,
@@ -1722,21 +1724,29 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
           size: isLandscape ? 24 : 21),
     ];
     return Positioned(
-      left: isLandscape ? 32 : 10,
-      top: isLandscape ? math.max(96, constraints.maxHeight * 0.35) : 76,
+      left: isLandscape ? 32 : 20,
+      top: isLandscape
+          ? math.max(96, constraints.maxHeight * 0.34)
+          : safeTop + 92,
       child: isLandscape
           ? Column(
               children: [buttons[0], const SizedBox(height: 28), buttons[1]])
-          : Row(children: [buttons[0], const SizedBox(width: 6), buttons[1]]),
+          : Row(children: [buttons[0], const SizedBox(width: 22), buttons[1]]),
     );
   }
 
-  Widget buildLockButton(BoxConstraints constraints, bool isLandscape) {
+  Widget buildLockButton(
+      BuildContext context, BoxConstraints constraints, bool isLandscape) {
+    final safeTop = MediaQuery.paddingOf(context).top;
     return Positioned(
-      right: isLandscape ? 34 : 12,
+      right: isLandscape ? 34 : 22,
       top: controlsLocked
-          ? (isLandscape ? math.max(82, constraints.maxHeight * 0.44) : 86)
-          : (isLandscape ? math.max(104, constraints.maxHeight * 0.36) : 76),
+          ? (isLandscape
+              ? math.max(82, constraints.maxHeight * 0.44)
+              : safeTop + 90)
+          : (isLandscape
+              ? math.max(104, constraints.maxHeight * 0.36)
+              : safeTop + 92),
       child: controlIconButton(
         icon: controlsLocked ? Icons.lock_outline : Icons.lock_open_outlined,
         onPressed: toggleLock,
@@ -2381,13 +2391,17 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
 
   Widget buildBottomControls(
       BuildContext context, BoxConstraints constraints, bool isLandscape) {
-    final compact = !isLandscape || constraints.maxWidth < 740;
+    final safeBottom = MediaQuery.paddingOf(context).bottom;
+    final compact = !isLandscape;
+    final denseLandscape = isLandscape && constraints.maxWidth < 740;
     final playButton = IconButton(
       color: Colors.white,
-      iconSize: compact ? 38 : 46,
+      iconSize: compact ? 40 : (denseLandscape ? 40 : 46),
       padding: EdgeInsets.zero,
       constraints: BoxConstraints.tightFor(
-          width: compact ? 46 : 54, height: compact ? 46 : 54),
+        width: compact ? 50 : (denseLandscape ? 48 : 54),
+        height: compact ? 50 : (denseLandscape ? 48 : 54),
+      ),
       onPressed: togglePlayback,
       icon: Icon(playing ? Icons.pause : Icons.play_arrow,
           shadows: controlShadows),
@@ -2395,21 +2409,21 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     final audioButton = controlIconButton(
         icon: Icons.graphic_eq,
         onPressed: showAudioTracks,
-        size: compact ? 23 : 27);
+        size: compact || denseLandscape ? 24 : 27);
     final subtitleButton = controlIconButton(
         icon: Icons.closed_caption_outlined,
         onPressed: showSubtitleTracks,
-        size: compact ? 23 : 27);
+        size: compact || denseLandscape ? 24 : 27);
     final episodeButton = controlIconButton(
       icon: Icons.format_list_bulleted_rounded,
       onPressed: openEpisodePanel,
-      size: compact ? 24 : 28,
+      size: compact || denseLandscape ? 25 : 28,
     );
 
     return Positioned(
-      left: compact ? 12 : 56,
-      right: compact ? 12 : 56,
-      bottom: compact ? 10 : 14,
+      left: compact ? 16 : 56,
+      right: compact ? 16 : 56,
+      bottom: safeBottom + (compact ? 12 : 16),
       child: IconTheme.merge(
         data: controlIconTheme,
         child: Column(
@@ -2418,9 +2432,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
             Row(
               children: [
                 SizedBox(
-                    width: compact ? 48 : 78,
+                    width: compact ? 52 : (denseLandscape ? 58 : 78),
                     child: statusText(formatDuration(position),
-                        size: compact ? 11 : 15)),
+                        size: compact ? 12 : (denseLandscape ? 13 : 15))),
                 Expanded(
                   child: SliderTheme(
                     data: SliderTheme.of(context).copyWith(
@@ -2448,57 +2462,74 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
                   ),
                 ),
                 SizedBox(
-                  width: compact ? 56 : 92,
+                  width: compact ? 58 : (denseLandscape ? 64 : 92),
                   child: Align(
                       alignment: Alignment.centerRight,
                       child: statusText(formatDuration(duration),
-                          size: compact ? 11 : 15)),
+                          size: compact ? 12 : (denseLandscape ? 13 : 15))),
                 ),
               ],
             ),
-            SizedBox(height: compact ? 6 : 12),
+            SizedBox(height: compact ? 10 : (denseLandscape ? 8 : 12)),
             if (compact) ...[
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  buildSeekButton(-10),
-                  const SizedBox(width: 6),
-                  playButton,
-                  const SizedBox(width: 6),
-                  buildSeekButton(10),
-                ],
+              SizedBox(
+                height: 52,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    buildSeekButton(-10),
+                    const SizedBox(width: 18),
+                    playButton,
+                    const SizedBox(width: 18),
+                    buildSeekButton(10),
+                  ],
+                ),
               ),
-              const SizedBox(height: 4),
-              Wrap(
-                alignment: WrapAlignment.center,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                spacing: 14,
-                runSpacing: 2,
-                children: [
-                  statusText('1.0x', size: 12),
-                  statusText(fitShortLabel, size: 12),
-                  audioButton,
-                  subtitleButton,
-                  episodeButton,
-                ],
+              const SizedBox(height: 10),
+              SizedBox(
+                height: 38,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    SizedBox(
+                        width: 48,
+                        child: Center(child: statusText('1.0x', size: 13))),
+                    SizedBox(
+                        width: 48,
+                        child:
+                            Center(child: statusText(fitShortLabel, size: 13))),
+                    audioButton,
+                    subtitleButton,
+                    episodeButton,
+                  ],
+                ),
               ),
             ] else
               Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  SizedBox(width: 60, child: statusText('1.0x', size: 14)),
                   SizedBox(
-                      width: 60, child: statusText(fitShortLabel, size: 14)),
+                      width: denseLandscape ? 48 : 60,
+                      child: Center(
+                          child: statusText('1.0x',
+                              size: denseLandscape ? 13 : 14))),
+                  SizedBox(
+                      width: denseLandscape ? 48 : 60,
+                      child: Center(
+                          child: statusText(fitShortLabel,
+                              size: denseLandscape ? 13 : 14))),
                   const Spacer(),
                   buildSeekButton(-10),
-                  const SizedBox(width: 8),
+                  SizedBox(width: denseLandscape ? 6 : 8),
                   playButton,
-                  const SizedBox(width: 8),
+                  SizedBox(width: denseLandscape ? 6 : 8),
                   buildSeekButton(10),
                   const Spacer(),
                   audioButton,
-                  const SizedBox(width: 12),
+                  SizedBox(width: denseLandscape ? 8 : 12),
                   subtitleButton,
-                  const SizedBox(width: 12),
+                  SizedBox(width: denseLandscape ? 8 : 12),
                   episodeButton,
                 ],
               ),
@@ -2553,7 +2584,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
                 if (!fullscreen && !controlsLocked)
                   buildSideTools(context, constraints, isLandscape),
                 if (!fullscreen || controlsLocked)
-                  buildLockButton(constraints, isLandscape),
+                  buildLockButton(context, constraints, isLandscape),
                 if (!fullscreen &&
                     !controlsLocked &&
                     dragPreviewPosition != null)

@@ -6,7 +6,7 @@ use std::{collections::HashSet, fs, path::Path};
 use url::Url;
 
 fn current_metadata_schema_version() -> i64 {
-    9
+    10
 }
 
 pub fn put_metadata_json(
@@ -377,6 +377,17 @@ pub fn query_home_json(db_path: &str) -> Result<String> {
         );
         insert_optional_i64(&mut object, "totalEpisodes", row.get::<_, Option<i64>>(12)?);
         insert_optional_string(&mut object, "tmdbType", row.get::<_, Option<String>>(13)?);
+        if let Some(show_id) = show_id {
+            object.insert(
+                "genres".to_string(),
+                query_show_genres(&conn, show_id).unwrap_or_else(|_| Value::Array(Vec::new())),
+            );
+        } else if let Some(movie_id) = movie_id {
+            object.insert(
+                "genres".to_string(),
+                query_movie_genres(&conn, movie_id).unwrap_or_else(|_| Value::Array(Vec::new())),
+            );
+        }
         object.insert(
             "localFileCount".to_string(),
             Value::from(row.get::<_, i64>(14)?),
@@ -853,6 +864,7 @@ fn open(db_path: &str) -> Result<Connection> {
            vote_count integer,
            popularity real,
            fetched_language text not null,
+           genres_json text,
            raw_json text,
            last_synced_at integer not null,
            created_at integer not null,
@@ -872,6 +884,7 @@ fn open(db_path: &str) -> Result<Connection> {
            vote_count integer,
            popularity real,
            fetched_language text not null,
+           genres_json text,
            raw_json text,
            last_synced_at integer not null,
            created_at integer not null,
@@ -1078,6 +1091,8 @@ fn open(db_path: &str) -> Result<Connection> {
     )?;
     add_column_if_missing(&conn, "sources", "username", "text")?;
     add_column_if_missing(&conn, "sources", "password", "text")?;
+    add_column_if_missing(&conn, "tmdb_tv_shows", "genres_json", "text")?;
+    add_column_if_missing(&conn, "tmdb_movies", "genres_json", "text")?;
     conn.execute_batch("pragma foreign_keys = on;")?;
     Ok(conn)
 }
@@ -1621,10 +1636,10 @@ fn upsert_tmdb_tv_metadata(
         "insert into tmdb_tv_shows(
            tmdb_id, name, original_name, overview, first_air_date, type,
            number_of_seasons, number_of_episodes, poster_path, backdrop_path,
-           logo_path, vote_average, fetched_language, raw_json, last_synced_at,
+           logo_path, vote_average, fetched_language, genres_json, raw_json, last_synced_at,
            created_at, updated_at
          )
-         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'unknown', ?13, ?14, ?14, ?14)
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'unknown', ?13, ?14, ?15, ?15, ?15)
          on conflict(tmdb_id) do update set
            name=excluded.name,
            original_name=excluded.original_name,
@@ -1637,6 +1652,7 @@ fn upsert_tmdb_tv_metadata(
            backdrop_path=excluded.backdrop_path,
            logo_path=excluded.logo_path,
            vote_average=excluded.vote_average,
+           genres_json=excluded.genres_json,
            raw_json=excluded.raw_json,
            last_synced_at=excluded.last_synced_at,
            updated_at=excluded.updated_at",
@@ -1653,6 +1669,7 @@ fn upsert_tmdb_tv_metadata(
             value.get("backdropPath").and_then(Value::as_str),
             value.get("logoPath").and_then(Value::as_str),
             value.get("voteAverage").and_then(Value::as_f64),
+            genres_json(value),
             title_json(value).to_string(),
             now
         ],
@@ -1840,9 +1857,9 @@ fn upsert_tmdb_movie_metadata(
         "insert into tmdb_movies(
            tmdb_id, title, original_title, overview, release_date,
            poster_path, backdrop_path, logo_path, vote_average,
-           fetched_language, raw_json, last_synced_at, created_at, updated_at
+           fetched_language, genres_json, raw_json, last_synced_at, created_at, updated_at
          )
-         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'unknown', ?10, ?11, ?11, ?11)
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'unknown', ?10, ?11, ?12, ?12, ?12)
          on conflict(tmdb_id) do update set
            title=excluded.title,
            original_title=excluded.original_title,
@@ -1852,6 +1869,7 @@ fn upsert_tmdb_movie_metadata(
            backdrop_path=excluded.backdrop_path,
            logo_path=excluded.logo_path,
            vote_average=excluded.vote_average,
+           genres_json=excluded.genres_json,
            raw_json=excluded.raw_json,
            last_synced_at=excluded.last_synced_at,
            updated_at=excluded.updated_at",
@@ -1865,6 +1883,7 @@ fn upsert_tmdb_movie_metadata(
             value.get("backdropPath").and_then(Value::as_str),
             value.get("logoPath").and_then(Value::as_str),
             value.get("voteAverage").and_then(Value::as_f64),
+            genres_json(value),
             title_json(value).to_string(),
             now
         ],
@@ -2120,6 +2139,14 @@ fn title_json(value: &Value) -> Value {
         object.remove("episodeName");
     }
     output
+}
+
+fn genres_json(value: &Value) -> String {
+    value
+        .get("genres")
+        .and_then(Value::as_array)
+        .map(|genres| Value::Array(genres.clone()).to_string())
+        .unwrap_or_else(|| "[]".to_string())
 }
 
 fn episode_json(value: &Value) -> Value {
@@ -3200,7 +3227,7 @@ mod tests {
           "episodeType": "standard",
           "episodeVoteCount": 2,
           "updatedAt": 1,
-          "schemaVersion": 9
+          "schemaVersion": 10
         }"#;
 
         put_app_state_json(db_path.to_str().unwrap(), state).unwrap();
@@ -3231,7 +3258,7 @@ mod tests {
                 .unwrap();
         let cached = &cache["local-1:D:/Shows/Show/01.mp4"];
         assert_eq!(cached["episodeName"], "Episode 1");
-        assert_eq!(cached["schemaVersion"], 9);
+        assert_eq!(cached["schemaVersion"], 10);
 
         drop(conn);
         let state_with_new_file = r#"{
@@ -3409,26 +3436,59 @@ mod tests {
 }
 
 fn query_show_genres(conn: &Connection, show_id: i64) -> Result<Value> {
-    let raw_json: Option<String> = conn
+    let (genres_json, raw_json): (Option<String>, Option<String>) = conn
         .query_row(
-            "select raw_json from tmdb_tv_shows where id=?1",
+            "select genres_json, raw_json from tmdb_tv_shows where id=?1",
             params![show_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .unwrap_or(None);
-    let Some(raw_json) = raw_json else {
-        return Ok(Value::Array(Vec::new()));
-    };
-    let value: Value = serde_json::from_str(&raw_json)?;
-    let values = value
+        .unwrap_or((None, None));
+    genres_from_json_text(genres_json.as_deref(), raw_json.as_deref())
+}
+
+fn query_movie_genres(conn: &Connection, movie_id: i64) -> Result<Value> {
+    let (genres_json, raw_json): (Option<String>, Option<String>) = conn
+        .query_row(
+            "select genres_json, raw_json from tmdb_movies where id=?1",
+            params![movie_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap_or((None, None));
+    genres_from_json_text(genres_json.as_deref(), raw_json.as_deref())
+}
+
+fn genres_from_json_text(genres_json: Option<&str>, raw_json: Option<&str>) -> Result<Value> {
+    if let Some(text) = genres_json.filter(|text| !text.trim().is_empty()) {
+        let value: Value = serde_json::from_str(text)?;
+        if let Value::Array(_) = value {
+            return Ok(normalize_genres_array(&value));
+        }
+    }
+    let value: Value = raw_json
+        .filter(|text| !text.trim().is_empty())
+        .map(serde_json::from_str)
+        .transpose()?
+        .unwrap_or(Value::Null);
+    Ok(value
         .get("genres")
-        .and_then(Value::as_array)
+        .map(normalize_genres_array)
+        .unwrap_or_else(|| Value::Array(Vec::new())))
+}
+
+fn normalize_genres_array(value: &Value) -> Value {
+    let values = value
+        .as_array()
         .into_iter()
         .flatten()
-        .filter_map(Value::as_str)
+        .filter_map(|entry| {
+            entry
+                .as_str()
+                .or_else(|| entry.get("name").and_then(Value::as_str))
+        })
+        .filter(|text| !text.trim().is_empty())
         .map(|text| Value::String(text.to_string()))
         .collect();
-    Ok(Value::Array(values))
+    Value::Array(values)
 }
 
 fn empty_to_null(value: &str) -> Option<&str> {

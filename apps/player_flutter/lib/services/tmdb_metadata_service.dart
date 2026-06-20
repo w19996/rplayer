@@ -1,6 +1,6 @@
 part of 'package:player_flutter/main.dart';
 
-const currentMetadataSchemaVersion = 9;
+const currentMetadataSchemaVersion = 10;
 
 enum _TmdbEndpointKind { search, detail }
 
@@ -84,6 +84,102 @@ class TmdbMetadataService {
 
     final metadata = await lookup(representative);
     return metadata == null ? {} : {representative.id: metadata};
+  }
+
+  Future<List<TmdbSearchCandidate>> searchCandidates(String query) async {
+    final text = query.trim();
+    if (!config.enabled || text.isEmpty) return const [];
+    const tvTypeLookupLimit = 16;
+    const movieGenreLookupLimit = 16;
+    _log('manual TMDB search query="$text"');
+    final tvResults = await _getJsonList(
+      '/search/tv',
+      {'query': text},
+      kind: _TmdbEndpointKind.search,
+    );
+    final movieResults = await _getJsonList(
+      '/search/movie',
+      {'query': text},
+      kind: _TmdbEndpointKind.search,
+    );
+    final tvCandidates = [
+      ...await Future.wait(
+        tvResults.take(tvTypeLookupLimit).map(_tvSearchCandidate),
+      ),
+      for (final result in tvResults.skip(tvTypeLookupLimit))
+        TmdbSearchCandidate.fromSearchJson(result, mediaType: 'tv'),
+    ];
+    final movieCandidates = [
+      ...await Future.wait(
+        movieResults.take(movieGenreLookupLimit).map(_movieSearchCandidate),
+      ),
+      for (final result in movieResults.skip(movieGenreLookupLimit))
+        TmdbSearchCandidate.fromSearchJson(result, mediaType: 'movie'),
+    ];
+    final candidates = [
+      ...tvCandidates,
+      ...movieCandidates,
+    ]
+        .where((candidate) =>
+            candidate.tmdbId > 0 && candidate.title.trim().isNotEmpty)
+        .toList();
+    candidates.sort((a, b) {
+      final titleA = normalizeMatchText(a.title);
+      final titleB = normalizeMatchText(b.title);
+      final queryText = normalizeMatchText(text);
+      final exactA = titleA == queryText ? 1 : 0;
+      final exactB = titleB == queryText ? 1 : 0;
+      if (exactA != exactB) return exactB.compareTo(exactA);
+      return (b.popularity ?? 0).compareTo(a.popularity ?? 0);
+    });
+    _log('manual TMDB search results=${candidates.length}');
+    return candidates.take(40).toList(growable: false);
+  }
+
+  Future<TmdbSearchCandidate> _tvSearchCandidate(
+      Map<String, dynamic> result) async {
+    final id = (result['id'] as num?)?.toInt();
+    String? tmdbType;
+    var genres = const <String>[];
+    if (id != null) {
+      final details = await _getJsonOrNull('/tv/$id', const <String, String>{});
+      tmdbType = details?['type'] as String?;
+      if (details != null) genres = _genres(details);
+    }
+    return TmdbSearchCandidate.fromSearchJson(
+      result,
+      mediaType: 'tv',
+      tmdbType: tmdbType,
+      genres: genres,
+    );
+  }
+
+  Future<TmdbSearchCandidate> _movieSearchCandidate(
+      Map<String, dynamic> result) async {
+    final id = (result['id'] as num?)?.toInt();
+    var genres = const <String>[];
+    if (id != null) {
+      final details =
+          await _getJsonOrNull('/movie/$id', const <String, String>{});
+      if (details != null) genres = _genres(details);
+    }
+    return TmdbSearchCandidate.fromSearchJson(
+      result,
+      mediaType: 'movie',
+      genres: genres,
+    );
+  }
+
+  Future<Map<String, MediaMetadata>> lookupGroupByCandidate(
+    MediaFolderGroup group,
+    TmdbSearchCandidate candidate,
+  ) {
+    _log(
+      'manual TMDB selected ${candidate.mediaType} id=${candidate.tmdbId} title="${candidate.title}" group="${group.title}"',
+    );
+    return candidate.isTv
+        ? _lookupTvGroupById(group, candidate.tmdbId)
+        : _lookupMovieGroupById(group, candidate.tmdbId);
   }
 
   Future<Map<String, MediaMetadata>> _lookupTvGroupFromCachedTitle(
