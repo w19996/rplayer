@@ -111,15 +111,29 @@ jobs:
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: player-flutter-debug-apk
+          name: app-debug-apk
           path: apps/player_flutter/build/app/outputs/flutter-apk/app-debug.apk
           if-no-files-found: error
 
-      - name: Upload Release APKs
+      - name: Upload Release APK - armeabi-v7a
         uses: actions/upload-artifact@v4
         with:
-          name: player-flutter-release-apks
-          path: apps/player_flutter/build/app/outputs/flutter-apk/*-release.apk
+          name: app-armeabi-v7a-release-apk
+          path: apps/player_flutter/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
+          if-no-files-found: error
+
+      - name: Upload Release APK - arm64-v8a
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-arm64-v8a-release-apk
+          path: apps/player_flutter/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+          if-no-files-found: error
+
+      - name: Upload Release APK - x86_64
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-x86_64-release-apk
+          path: apps/player_flutter/build/app/outputs/flutter-apk/app-x86_64-release.apk
           if-no-files-found: error
 
       - name: Upload Rust Android libraries
