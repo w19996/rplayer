@@ -47,5 +47,25 @@ jobs:
       - name: Get dependencies
         run: flutter pub get
 
-      - name: Build Android APK
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos
+
+      - name: Build Android Debug APK
         run: flutter build apk --debug --no-pub
+
+      - name: Build Android Release APKs by ABI
+        run: flutter build apk --release --split-per-abi --no-pub
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: player-flutter-debug-apk
+          path: apps/player_flutter/build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+
+      - name: Upload Release APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: player-flutter-release-apks
+          path: apps/player_flutter/build/app/outputs/flutter-apk/*-release.apk
+          if-no-files-found: error
