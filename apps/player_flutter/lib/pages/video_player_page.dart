@@ -2,6 +2,8 @@ part of 'package:player_flutter/main.dart';
 
 enum VideoFitMode { contain, cover, none, fill }
 
+enum VerticalControlKind { volume, brightness }
+
 class VideoPlayerPage extends StatefulWidget {
   const VideoPlayerPage({required this.store, required this.item, super.key});
 
@@ -21,6 +23,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   static const int _danmuMaxVisibleItems = 36;
   static const int _danmuFixedVisibleMs = 3800;
   static const double _danmuBaseTravelMs = 9500;
+  static const double _verticalControlSensitivity = 1.35;
+  static const double _verticalControlStepPixels = 12;
 
   Player? _player;
   VideoController? _controller;
@@ -30,6 +34,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   Timer? loadingHideTimer;
   Timer? controlsHideTimer;
   Timer? danmuRenderTimer;
+  Timer? verticalControlOverlayTimer;
   late final AnimationController danmuTicker;
   final danmuOverlayItems = ValueNotifier<List<RustDanmuRenderItem>>(const []);
   final controlsVisible = ValueNotifier<bool>(true);
@@ -42,6 +47,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   Duration? dragPreviewPosition;
   double dragDistance = 0;
   Duration dragStartPosition = Duration.zero;
+  VerticalControlKind? verticalControlKind;
+  double verticalControlDragRemainder = 0;
+  String? verticalControlLabel;
+  double verticalControlLevel = 0;
   int? videoWidth;
   int? videoHeight;
   bool playing = false;
@@ -611,6 +620,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     loadingHideTimer?.cancel();
     controlsHideTimer?.cancel();
     danmuRenderTimer?.cancel();
+    verticalControlOverlayTimer?.cancel();
     clearDanmuSession();
     danmuTicker.dispose();
     danmuOverlayItems.dispose();
@@ -892,6 +902,72 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     await player.seek(target);
     syncDanmuTickerState();
     scheduleControlsAutoHide();
+  }
+
+  bool get verticalControlAvailable =>
+      !controlsLocked &&
+      !episodePanelOpen &&
+      !danmuPanelOpen &&
+      !danmuSearchPanelOpen;
+
+  void beginVerticalControlDrag(DragStartDetails details, double width) {
+    if (!verticalControlAvailable || width <= 0) return;
+    verticalControlKind = details.localPosition.dx < width / 2
+        ? VerticalControlKind.volume
+        : VerticalControlKind.brightness;
+    verticalControlDragRemainder = 0;
+    markControlsInteraction();
+    unawaited(applyVerticalControlDelta(verticalControlKind!, 0));
+  }
+
+  void updateVerticalControlDrag(DragUpdateDetails details, double height) {
+    final kind = verticalControlKind;
+    if (kind == null || !verticalControlAvailable || height <= 0) return;
+    verticalControlDragRemainder += details.delta.dy;
+    if (verticalControlDragRemainder.abs() < _verticalControlStepPixels) {
+      return;
+    }
+    final delta =
+        (-verticalControlDragRemainder / height * _verticalControlSensitivity)
+            .clamp(-0.16, 0.16)
+            .toDouble();
+    verticalControlDragRemainder = 0;
+    unawaited(applyVerticalControlDelta(kind, delta));
+  }
+
+  void endVerticalControlDrag() {
+    verticalControlKind = null;
+    verticalControlDragRemainder = 0;
+  }
+
+  Future<void> applyVerticalControlDelta(
+      VerticalControlKind kind, double delta) async {
+    if (!Platform.isAndroid) return;
+    try {
+      final result = await appChannel.invokeMapMethod<String, dynamic>(
+        'adjustPlaybackControl',
+        {'kind': kind.name, 'delta': delta},
+      );
+      if (!mounted || result == null) return;
+      final value = (result['value'] as num?)?.toDouble();
+      if (value == null) return;
+      showVerticalControlOverlay(kind, value.clamp(0.0, 1.0).toDouble());
+    } catch (error) {
+      widget.store.addDiagnosticLog('playback vertical control failed: $error',
+          category: 'player');
+    }
+  }
+
+  void showVerticalControlOverlay(VerticalControlKind kind, double level) {
+    verticalControlOverlayTimer?.cancel();
+    setStateIfMounted(() {
+      verticalControlLabel = kind == VerticalControlKind.volume ? '音量' : '亮度';
+      verticalControlLevel = level;
+    });
+    verticalControlOverlayTimer = Timer(const Duration(milliseconds: 700), () {
+      if (!mounted) return;
+      setState(() => verticalControlLabel = null);
+    });
   }
 
   void togglePlayback() {
@@ -2484,6 +2560,42 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     );
   }
 
+  Widget buildVerticalControlOverlay() {
+    final label = verticalControlLabel;
+    if (label == null) return const SizedBox.shrink();
+    final percent = (verticalControlLevel * 100).round().clamp(0, 100);
+    final icon =
+        label == '音量' ? Icons.volume_up_rounded : Icons.brightness_6_rounded;
+    return IgnorePointer(
+      child: Center(
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: const Color(0xCC000000),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, color: Colors.white, size: 30),
+                const SizedBox(height: 8),
+                Text(
+                  '$label $percent%',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget buildSeekButton(int seconds) {
     return DecoratedBox(
       decoration: const BoxDecoration(
@@ -2751,6 +2863,12 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
               notifyControlsChanged();
               scheduleControlsAutoHide();
             },
+            onVerticalDragStart: (details) =>
+                beginVerticalControlDrag(details, constraints.maxWidth),
+            onVerticalDragUpdate: (details) =>
+                updateVerticalControlDrag(details, constraints.maxHeight),
+            onVerticalDragEnd: (_) => endVerticalControlDrag(),
+            onVerticalDragCancel: endVerticalControlDrag,
             onTap: toggleFullscreen,
             onDoubleTap: controlsLocked ? null : togglePlayback,
             child: Stack(
@@ -2767,6 +2885,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
                 if (error == null && loadingVisible) buildLoadingOverlay(),
                 if (error != null)
                   ErrorView(message: '$error', onRetry: init, dark: true),
+                buildVerticalControlOverlay(),
                 buildControlsOverlay(context, constraints, isLandscape),
                 if (episodePanelOpen)
                   buildEpisodePanel(constraints, isLandscape),
