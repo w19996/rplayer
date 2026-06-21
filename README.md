@@ -88,6 +88,38 @@ APK 输出路径：
 apps/player_flutter/build/app/outputs/flutter-apk/app-release.apk
 ```
 
+## Android 固定签名
+
+Android 判断“同一个应用”不仅看 `applicationId`，还看 APK 签名证书。不同机器生成的 debug keystore 不一样，所以本机包、GitHub Actions 包、不同 CI 运行产物之间可能会提示“签名不同”。要让手机可以直接覆盖安装，必须长期使用同一把 keystore。
+
+本项目支持 `apps/player_flutter/android/key.properties`：
+
+```properties
+storePassword=...
+keyPassword=...
+keyAlias=upload
+storeFile=upload-keystore.jks
+```
+
+`key.properties` 和 `*.jks` 已被 `.gitignore` 忽略，不能提交到仓库。
+
+GitHub Actions 固定签名需要配置这些 repository secrets：
+
+```text
+ANDROID_KEYSTORE_BASE64
+ANDROID_KEY_ALIAS
+ANDROID_KEY_PASSWORD
+ANDROID_STORE_PASSWORD
+```
+
+其中 `ANDROID_KEYSTORE_BASE64` 是 keystore 文件的 base64 内容。Windows PowerShell 可这样生成：
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("apps/player_flutter/android/upload-keystore.jks"))
+```
+
+配置完后，Actions 产出的 debug APK 和 release APK 都会使用同一把签名。未配置 secrets 时，CI 会回退到默认 debug 签名，只适合临时测试；这种包不能保证覆盖安装已有应用。
+
 ## 配置
 
 示例配置见 `.env.example`。常用服务：
