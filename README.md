@@ -71,7 +71,7 @@ flutter test
 生成 Android Rust native libs：
 
 ```powershell
-$env:ANDROID_NDK_HOME = "D:\Users\Desktop\player\.toolchains\android-sdk\ndk\27.3.13750724"
+$env:ANDROID_NDK_HOME = "D:\Code\rplayer\.a\ndk\27.0.12077973"
 cargo ndk -t armeabi-v7a -t arm64-v8a -o apps/player_flutter/android/app/src/main/jniLibs build -p player_core --release
 ```
 

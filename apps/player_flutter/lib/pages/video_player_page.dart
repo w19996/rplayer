@@ -32,6 +32,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   Timer? danmuRenderTimer;
   late final AnimationController danmuTicker;
   final danmuOverlayItems = ValueNotifier<List<RustDanmuRenderItem>>(const []);
+  final controlsVisible = ValueNotifier<bool>(true);
+  final controlsRevision = ValueNotifier<int>(0);
+  int lastThrottledControlsNotifyMs = 0;
   Duration position = Duration.zero;
   Duration duration = Duration.zero;
   Duration danmuClockPosition = Duration.zero;
@@ -388,7 +391,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
           return;
         }
         syncDanmuClockFromPlayer(value);
-        setStateIfMounted(() => position = value);
+        position = value;
+        notifyControlsChanged(throttle: true);
       }))
       ..add(player.stream.duration.listen((value) {
         if (!ready) {
@@ -404,7 +408,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
               'duration ignored before ready: ${value.inMilliseconds}ms');
           return;
         }
-        setStateIfMounted(() => duration = value);
+        duration = value;
+        notifyControlsChanged();
         widget.store.rememberDuration(currentItem.id, value);
       }))
       ..add(player.stream.playing.listen((value) {
@@ -413,7 +418,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
           return;
         }
         syncDanmuClock(currentDanmuPosition);
-        setStateIfMounted(() => playing = value);
+        playing = value;
+        notifyControlsChanged();
         syncDanmuTickerState();
       }))
       ..add(player.stream.buffering.listen(handleBufferingChanged))
@@ -605,6 +611,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     clearDanmuSession();
     danmuTicker.dispose();
     danmuOverlayItems.dispose();
+    controlsVisible.dispose();
+    controlsRevision.dispose();
     danmuSearchController.dispose();
     danmuSearchEpisodeController.dispose();
     SystemChrome.setPreferredOrientations(DeviceOrientation.values);
@@ -620,6 +628,17 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
 
   void setStateIfMounted(VoidCallback update) {
     if (mounted) setState(update);
+  }
+
+  void notifyControlsChanged({bool throttle = false}) {
+    if (mounted && controlsVisible.value) {
+      if (throttle) {
+        final nowMs = DateTime.now().millisecondsSinceEpoch;
+        if (nowMs - lastThrottledControlsNotifyMs < 200) return;
+        lastThrottledControlsNotifyMs = nowMs;
+      }
+      controlsRevision.value++;
+    }
   }
 
   void logVideoLoading(String message) {
@@ -816,15 +835,16 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     final offsetMs = (dragDistance / width * maxSeekMs).round();
     final nextMs = (dragStartPosition.inMilliseconds + offsetMs)
         .clamp(0, duration.inMilliseconds);
-    setStateIfMounted(
-        () => dragPreviewPosition = Duration(milliseconds: nextMs.toInt()));
+    dragPreviewPosition = Duration(milliseconds: nextMs.toInt());
+    notifyControlsChanged();
   }
 
   Future<void> endSeekDrag() async {
     if (controlsLocked) return;
     final target = seekingByDrag ? dragPreviewPosition : null;
     seekingByDrag = false;
-    setStateIfMounted(() => dragPreviewPosition = null);
+    dragPreviewPosition = null;
+    notifyControlsChanged();
     if (target != null && duration > Duration.zero) {
       syncDanmuClock(target);
       clearDanmuOverlay();
@@ -849,10 +869,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       };
 
   Future<void> toggleFullscreen() async {
-    if (controlsLocked) return;
-    final next = !fullscreen;
-    setStateIfMounted(() => fullscreen = next);
-    if (next) {
+    final nextVisible = fullscreen;
+    setControlsVisible(nextVisible);
+    if (!nextVisible) {
       controlsHideTimer?.cancel();
     } else {
       scheduleControlsAutoHide();
@@ -860,10 +879,16 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
   }
 
+  void setControlsVisible(bool visible) {
+    fullscreen = !visible;
+    if (controlsVisible.value != visible) {
+      controlsVisible.value = visible;
+    }
+  }
+
   void scheduleControlsAutoHide() {
     controlsHideTimer?.cancel();
     if (fullscreen ||
-        controlsLocked ||
         episodePanelOpen ||
         danmuPanelOpen ||
         danmuSearchPanelOpen) {
@@ -871,21 +896,17 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     }
     controlsHideTimer = Timer(const Duration(seconds: 5), () {
       if (!mounted ||
-          controlsLocked ||
           episodePanelOpen ||
           danmuPanelOpen ||
           danmuSearchPanelOpen) {
         return;
       }
-      setState(() => fullscreen = true);
+      setControlsVisible(false);
     });
   }
 
   void markControlsInteraction() {
-    if (!fullscreen &&
-        !controlsLocked &&
-        !episodePanelOpen &&
-        !danmuPanelOpen) {
+    if (!fullscreen && !episodePanelOpen && !danmuPanelOpen) {
       scheduleControlsAutoHide();
     }
   }
@@ -946,16 +967,15 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       final previous = lastRxBytes;
       lastRxBytes = rx;
       final nextBattery = (status['battery'] as num?)?.toInt();
-      setStateIfMounted(() {
-        if (nextBattery != null && nextBattery >= 0) {
-          battery = nextBattery.clamp(0, 100);
-        }
-        charging = status['charging'] == true;
-        network = status['network'] as String? ?? network;
-        if (rx != null && previous != null && rx >= previous) {
-          networkSpeed = formatNetworkSpeed(rx - previous);
-        }
-      });
+      if (nextBattery != null && nextBattery >= 0) {
+        battery = nextBattery.clamp(0, 100);
+      }
+      charging = status['charging'] == true;
+      network = status['network'] as String? ?? network;
+      if (rx != null && previous != null && rx >= previous) {
+        networkSpeed = formatNetworkSpeed(rx - previous);
+      }
+      notifyControlsChanged();
     } catch (_) {
       // Status decoration is best-effort; playback should never depend on it.
     }
@@ -1007,12 +1027,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   }
 
   void toggleLock() {
-    final unlocking = controlsLocked;
     setStateIfMounted(() {
       controlsLocked = !controlsLocked;
       if (controlsLocked) {
         controlsHideTimer?.cancel();
-        fullscreen = true;
         episodePanelOpen = false;
         episodePanelClosing = false;
         danmuPanelOpen = false;
@@ -1023,11 +1041,13 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         dragPreviewPosition = null;
         seekingByDrag = false;
       } else {
-        fullscreen = false;
-        scheduleControlsAutoHide();
+        episodePanelOpen = false;
+        danmuPanelOpen = false;
+        danmuSearchPanelOpen = false;
       }
     });
-    if (unlocking) scheduleControlsAutoHide();
+    setControlsVisible(true);
+    scheduleControlsAutoHide();
   }
 
   void openEpisodePanel() {
@@ -1556,16 +1576,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     await init();
   }
 
-  List<Shadow> get controlShadows => const [
-        Shadow(color: Color(0xCC000000), blurRadius: 8, offset: Offset(0, 1)),
-        Shadow(color: Color(0x99000000), blurRadius: 18, offset: Offset(0, 2)),
-      ];
+  List<Shadow> get controlShadows => const [];
 
   IconThemeData get controlIconTheme =>
-      const IconThemeData(color: Colors.white, shadows: [
-        Shadow(color: Color(0xCC000000), blurRadius: 8, offset: Offset(0, 1)),
-        Shadow(color: Color(0x99000000), blurRadius: 18, offset: Offset(0, 2)),
-      ]);
+      const IconThemeData(color: Colors.white, shadows: []);
 
   TextStyle get controlTextStyle =>
       TextStyle(color: Colors.white, shadows: controlShadows);
@@ -1635,9 +1649,6 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
           decoration: BoxDecoration(
             border: Border.all(color: Colors.white, width: 1.5),
             borderRadius: BorderRadius.circular(4),
-            boxShadow: const [
-              BoxShadow(color: Color(0x66000000), blurRadius: 6)
-            ],
           ),
           child: Align(
             alignment: Alignment.centerLeft,
@@ -2366,22 +2377,27 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
               child: LayoutBuilder(
                 builder: (context, constraints) {
                   final width = constraints.maxWidth;
-                  if (width <= 0) return const SizedBox.shrink();
-                  return Stack(
-                    clipBehavior: Clip.none,
-                    children: [
-                      for (final item in items)
-                        _DanmuItemView(
-                          key: ValueKey(
-                            '${item.id}:${item.timeMs}:${item.mode}:${item.text}:${config.fontSize}:${config.topPadding}',
+                  final height = constraints.maxHeight;
+                  if (width <= 0 || height <= 0) {
+                    return const SizedBox.shrink();
+                  }
+                  return RepaintBoundary(
+                    child: Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        for (final item in items)
+                          _DanmuItemView(
+                            key: ValueKey(
+                              '${item.id}:${item.timeMs}:${item.mode}:${item.text}:${config.fontSize}:${config.topPadding}',
+                            ),
+                            item: item,
+                            config: config,
+                            viewportWidth: width,
+                            ticker: danmuTicker,
+                            positionProvider: () => currentDanmuPosition,
                           ),
-                          item: item,
-                          config: config,
-                          viewportWidth: width,
-                          ticker: danmuTicker,
-                          positionProvider: () => currentDanmuPosition,
-                        ),
-                    ],
+                      ],
+                    ),
                   );
                 },
               ),
@@ -2393,17 +2409,26 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   }
 
   Widget buildSeekButton(int seconds) {
-    return IconButton(
-      color: Colors.white,
-      onPressed: () => seekRelative(seconds),
-      padding: EdgeInsets.zero,
-      constraints: const BoxConstraints.tightFor(width: 38, height: 38),
-      icon: Stack(
-        alignment: Alignment.center,
-        children: [
-          shadowIcon(seconds < 0 ? Icons.replay_10 : Icons.forward_10,
-              size: 34),
-        ],
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        color: Color(0x22000000),
+        shape: BoxShape.circle,
+      ),
+      child: IconButton(
+        color: Colors.white,
+        onPressed: () => seekRelative(seconds),
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints.tightFor(width: 42, height: 42),
+        icon: Stack(
+          alignment: Alignment.center,
+          children: [
+            shadowIcon(
+                seconds < 0
+                    ? Icons.replay_10_rounded
+                    : Icons.forward_10_rounded,
+                size: 32),
+          ],
+        ),
       ),
     );
   }
@@ -2413,17 +2438,26 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     final safeBottom = MediaQuery.paddingOf(context).bottom;
     final compact = !isLandscape;
     final denseLandscape = isLandscape && constraints.maxWidth < 740;
-    final playButton = IconButton(
-      color: Colors.white,
-      iconSize: compact ? 40 : (denseLandscape ? 40 : 46),
-      padding: EdgeInsets.zero,
-      constraints: BoxConstraints.tightFor(
-        width: compact ? 50 : (denseLandscape ? 48 : 54),
-        height: compact ? 50 : (denseLandscape ? 48 : 54),
+    final playButtonSize = compact ? 52.0 : (denseLandscape ? 50.0 : 56.0);
+    final playButton = DecoratedBox(
+      decoration: const BoxDecoration(
+        color: Color(0x22000000),
+        shape: BoxShape.circle,
       ),
-      onPressed: togglePlayback,
-      icon: Icon(playing ? Icons.pause : Icons.play_arrow,
-          shadows: controlShadows),
+      child: IconButton(
+        color: Colors.white,
+        iconSize: compact ? 38 : (denseLandscape ? 38 : 44),
+        padding: EdgeInsets.zero,
+        constraints: BoxConstraints.tightFor(
+          width: playButtonSize,
+          height: playButtonSize,
+        ),
+        onPressed: togglePlayback,
+        icon: Icon(
+          playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+          shadows: controlShadows,
+        ),
+      ),
     );
     final audioButton = controlIconButton(
         icon: Icons.graphic_eq,
@@ -2558,6 +2592,73 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     );
   }
 
+  Widget buildControlsOverlay(
+      BuildContext context, BoxConstraints constraints, bool isLandscape) {
+    return ValueListenableBuilder<bool>(
+      valueListenable: controlsVisible,
+      child: ValueListenableBuilder<int>(
+        valueListenable: controlsRevision,
+        builder: (context, _, __) {
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              if (!controlsLocked)
+                Positioned(
+                    left: 0,
+                    right: 0,
+                    top: 0,
+                    child: RepaintBoundary(
+                        child: buildStatusOverlay(isLandscape))),
+              if (!controlsLocked) buildTitleOverlay(context, isLandscape),
+              if (!controlsLocked)
+                buildSideTools(context, constraints, isLandscape),
+              buildLockButton(context, constraints, isLandscape),
+              if (!controlsLocked && dragPreviewPosition != null)
+                Center(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: const Color(0xCC000000),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 18, vertical: 10),
+                      child: Text(
+                        formatDuration(dragPreviewPosition!),
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ),
+                ),
+              if (!controlsLocked)
+                buildBottomControls(context, constraints, isLandscape),
+            ],
+          );
+        },
+      ),
+      builder: (context, visible, controlsChild) {
+        return IgnorePointer(
+          ignoring: !visible,
+          child: TickerMode(
+            enabled: visible,
+            child: Visibility(
+              visible: visible,
+              maintainState: true,
+              maintainAnimation: true,
+              maintainSize: true,
+              maintainSemantics: false,
+              maintainInteractivity: false,
+              child: controlsChild ?? const SizedBox.shrink(),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -2573,11 +2674,12 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
             onHorizontalDragEnd: (_) => endSeekDrag(),
             onHorizontalDragCancel: () {
               seekingByDrag = false;
-              setStateIfMounted(() => dragPreviewPosition = null);
+              dragPreviewPosition = null;
+              notifyControlsChanged();
               scheduleControlsAutoHide();
             },
             onTap: toggleFullscreen,
-            onDoubleTap: togglePlayback,
+            onDoubleTap: controlsLocked ? null : togglePlayback,
             child: Stack(
               fit: StackFit.expand,
               children: [
@@ -2592,42 +2694,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
                 if (error == null && loadingVisible) buildLoadingOverlay(),
                 if (error != null)
                   ErrorView(message: '$error', onRetry: init, dark: true),
-                if (!fullscreen && !controlsLocked)
-                  Positioned(
-                      left: 0,
-                      right: 0,
-                      top: 0,
-                      child: buildStatusOverlay(isLandscape)),
-                if (!fullscreen && !controlsLocked)
-                  buildTitleOverlay(context, isLandscape),
-                if (!fullscreen && !controlsLocked)
-                  buildSideTools(context, constraints, isLandscape),
-                if (!fullscreen || controlsLocked)
-                  buildLockButton(context, constraints, isLandscape),
-                if (!fullscreen &&
-                    !controlsLocked &&
-                    dragPreviewPosition != null)
-                  Center(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: const Color(0xCC000000),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 18, vertical: 10),
-                        child: Text(
-                          formatDuration(dragPreviewPosition!),
-                          style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600),
-                        ),
-                      ),
-                    ),
-                  ),
-                if (!fullscreen && !controlsLocked)
-                  buildBottomControls(context, constraints, isLandscape),
+                buildControlsOverlay(context, constraints, isLandscape),
                 if (episodePanelOpen)
                   buildEpisodePanel(constraints, isLandscape),
                 if (danmuPanelOpen) buildDanmuPanel(constraints, isLandscape),
