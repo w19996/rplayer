@@ -61,6 +61,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   bool controlsLocked = false;
   bool episodePanelOpen = false;
   bool episodePanelClosing = false;
+  bool autoAdvancingEpisode = false;
   bool danmuPanelOpen = false;
   bool danmuPanelClosing = false;
   bool danmuSearchPanelOpen = false;
@@ -424,6 +425,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       }))
       ..add(player.stream.buffering.listen(handleBufferingChanged))
       ..add(player.stream.bufferingPercentage.listen(handleBufferingPercentage))
+      ..add(player.stream.completed.listen(handlePlaybackCompleted))
       ..add(player.stream.width.listen((value) {
         videoWidth = value;
         applyVideoOrientation();
@@ -1510,6 +1512,13 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
 
   LibraryFileEntry? get currentDbFile => dbFileForItem(currentItem);
 
+  MediaItem? get nextEpisodeItem {
+    final items = episodeItems;
+    final index = items.indexWhere((item) => item.id == currentItem.id);
+    if (index < 0 || index + 1 >= items.length) return null;
+    return items[index + 1];
+  }
+
   String playbackTitleFor(MediaItem item) {
     final file = dbFileForItem(item);
     if (file == null) return item.title;
@@ -1530,15 +1539,42 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     return dbSeasonLabel(file);
   }
 
-  Future<void> playEpisode(MediaItem item) async {
+  Future<void> handlePlaybackCompleted(bool completed) async {
+    if (!completed || autoAdvancingEpisode || !mediaOpenCompleted) return;
+    final next = nextEpisodeItem;
+    final completedPosition = duration > Duration.zero ? duration : position;
+    setStateIfMounted(() {
+      position = completedPosition;
+      playing = false;
+    });
+    if (next == null) {
+      logVideoLoading('playback completed: no next episode');
+      await widget.store
+          .updateProgress(currentItem.id, completedPosition, duration);
+      notifyControlsChanged();
+      syncDanmuTickerState();
+      return;
+    }
+
+    autoAdvancingEpisode = true;
+    logVideoLoading(
+        'playback completed: auto next from ${currentItem.id} to ${next.id}');
+    try {
+      await playEpisode(next, resume: false);
+    } finally {
+      autoAdvancingEpisode = false;
+    }
+  }
+
+  Future<void> playEpisode(MediaItem item, {bool resume = true}) async {
     if (item.id == currentItem.id) {
       closeEpisodePanel();
       return;
     }
     controlsHideTimer?.cancel();
     await widget.store.updateProgress(currentItem.id, position, duration);
-    final saved = rememberedPositionMsFor(item);
-    final rememberedDuration = rememberedDurationMsFor(item);
+    final saved = resume ? rememberedPositionMsFor(item) : 0;
+    final rememberedDuration = resume ? rememberedDurationMsFor(item) : 0;
     syncDanmuClock(saved > 0 ? Duration(milliseconds: saved) : Duration.zero);
     clearDanmuOverlay();
     clearDanmuSession();
