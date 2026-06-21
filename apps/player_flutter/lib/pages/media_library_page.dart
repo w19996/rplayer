@@ -74,7 +74,7 @@ class MediaLibraryPage extends StatelessWidget {
                   ),
                   SliverToBoxAdapter(
                     child: SizedBox(
-                      height: 214,
+                      height: 176,
                       child: ListView.separated(
                         padding: const EdgeInsets.symmetric(horizontal: 22),
                         scrollDirection: Axis.horizontal,
@@ -97,7 +97,7 @@ class MediaLibraryPage extends StatelessWidget {
                       ),
                     ),
                   ),
-                  const SliverToBoxAdapter(child: SizedBox(height: 24)),
+                  const SliverToBoxAdapter(child: SizedBox(height: 10)),
                 ],
                 for (final section in _libraryCategorySections(data.home))
                   ..._libraryGridSection(
@@ -389,16 +389,99 @@ class _RecentDbTile extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           SizedBox(
-            height: 44,
-            child: Text(
+            height: 22,
+            child: _AutoScrollingSingleLineText(
               recent.displayTitle,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
               style: const TextStyle(
-                  fontSize: 14, fontWeight: FontWeight.w700, height: 1.35),
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                height: 1.35,
+              ),
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _AutoScrollingSingleLineText extends StatefulWidget {
+  const _AutoScrollingSingleLineText(this.text, {required this.style});
+
+  final String text;
+  final TextStyle style;
+
+  @override
+  State<_AutoScrollingSingleLineText> createState() =>
+      _AutoScrollingSingleLineTextState();
+}
+
+class _AutoScrollingSingleLineTextState
+    extends State<_AutoScrollingSingleLineText> {
+  final ScrollController controller = ScrollController();
+  bool running = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => start());
+  }
+
+  @override
+  void didUpdateWidget(covariant _AutoScrollingSingleLineText oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.text != widget.text) {
+      running = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) => start(reset: true));
+    }
+  }
+
+  Future<void> start({bool reset = false}) async {
+    if (!mounted || running || !controller.hasClients) return;
+    if (reset) controller.jumpTo(0);
+    if (controller.position.maxScrollExtent <= 0) return;
+    running = true;
+    while (mounted && controller.hasClients && running) {
+      await Future<void>.delayed(const Duration(milliseconds: 900));
+      if (!mounted || !controller.hasClients || !running) break;
+      final max = controller.position.maxScrollExtent;
+      if (max <= 0) break;
+      await controller.animateTo(
+        max,
+        duration: Duration(milliseconds: (max * 42).clamp(1800, 5200).round()),
+        curve: Curves.easeInOut,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      if (!mounted || !controller.hasClients || !running) break;
+      await controller.animateTo(
+        0,
+        duration: Duration(milliseconds: (max * 30).clamp(1200, 3600).round()),
+        curve: Curves.easeInOut,
+      );
+    }
+    running = false;
+  }
+
+  @override
+  void dispose() {
+    running = false;
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRect(
+      child: SingleChildScrollView(
+        controller: controller,
+        scrollDirection: Axis.horizontal,
+        physics: const NeverScrollableScrollPhysics(),
+        child: Text(
+          widget.text,
+          maxLines: 1,
+          softWrap: false,
+          style: widget.style,
+        ),
       ),
     );
   }
@@ -533,6 +616,7 @@ class _MediaGroupPageState extends State<MediaGroupPage> {
                       imagePath: backdropPath,
                       size: 'w780',
                       fit: BoxFit.cover,
+                      alignment: Alignment.topCenter,
                       fallback: const SizedBox.shrink(),
                     ),
                   ),
@@ -555,7 +639,7 @@ class _MediaGroupPageState extends State<MediaGroupPage> {
                 SafeArea(
                   bottom: false,
                   child: Padding(
-                    padding: const EdgeInsets.fromLTRB(22, 8, 22, 24),
+                    padding: const EdgeInsets.fromLTRB(22, 8, 22, 34),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -586,7 +670,7 @@ class _MediaGroupPageState extends State<MediaGroupPage> {
                             ),
                           ],
                         ),
-                        const SizedBox(height: 78),
+                        const SizedBox(height: 126),
                         Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
@@ -879,6 +963,7 @@ class _MediaGroupDbBody extends StatelessWidget {
                       imagePath: head.backdropPath!,
                       size: 'w780',
                       fit: BoxFit.cover,
+                      alignment: Alignment.topCenter,
                       fallback: const SizedBox.shrink(),
                     ),
                   ),
@@ -901,7 +986,7 @@ class _MediaGroupDbBody extends StatelessWidget {
                 SafeArea(
                   bottom: false,
                   child: Padding(
-                    padding: const EdgeInsets.fromLTRB(22, 8, 22, 24),
+                    padding: const EdgeInsets.fromLTRB(22, 8, 22, 34),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -950,7 +1035,7 @@ class _MediaGroupDbBody extends StatelessWidget {
                             ),
                           ],
                         ),
-                        const SizedBox(height: 80),
+                        const SizedBox(height: 128),
                         Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [

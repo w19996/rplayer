@@ -679,14 +679,20 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   }
 
   void maybeMarkPlaybackReady({int? attempt}) {
-    if (!mounted || ready || error != null) return;
+    if (!mounted || ready) return;
     if (attempt != null && attempt != openAttempt) return;
     if (!mediaOpenCompleted || buffering || pausedForCache) return;
     if (mpvLoadingPropertiesUsable && !voConfigured) return;
     if (!hasRenderableVideo) return;
     if (!playbackPositionConfirmed) return;
+    final currentError = error;
+    if (currentError != null &&
+        !(isRecoverableNetworkReadError(currentError) && playbackLooksAlive)) {
+      return;
+    }
     final state = player.state;
     setState(() {
+      error = null;
       ready = true;
       playing = state.playing;
       position = state.position;
@@ -711,6 +717,22 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   bool canRetryTransientCodec(Object value) =>
       isTransientCodecError(value) && transientCodecRetryCount < 2;
 
+  bool isRecoverableNetworkReadError(Object value) {
+    final text = value.toString().toLowerCase();
+    return text.contains('ffurl_read returned') ||
+        text.contains('tcp:') ||
+        text.contains('connection timed out') ||
+        text.contains('operation timed out');
+  }
+
+  bool get playbackLooksAlive {
+    final state = player.state;
+    final hasPosition =
+        position > Duration.zero || state.position > Duration.zero;
+    return hasRenderableVideo &&
+        (ready || playing || state.playing || hasPosition);
+  }
+
   Future<void> retryTransientCodec(int attempt) async {
     transientCodecRetryCount++;
     softwareDecoderFallback = true;
@@ -727,6 +749,14 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     if (canRetryTransientCodec(value)) {
       logVideoLoading('player stream error retryable attempt=$attempt: $value');
       await retryTransientCodec(attempt);
+      return;
+    }
+    if (isRecoverableNetworkReadError(value) && playbackLooksAlive) {
+      logVideoLoading(
+          'player stream recoverable during active playback attempt=$attempt: $value');
+      if (attempt == openAttempt && error != null) {
+        setStateIfMounted(() => error = null);
+      }
       return;
     }
     logVideoLoading('player stream error attempt=$attempt: $value');

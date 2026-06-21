@@ -11,9 +11,20 @@ class AppBrand extends StatelessWidget {
           width: 30,
           height: 30,
           decoration: BoxDecoration(
-              color: const Color(0xFFFFD95C),
-              borderRadius: BorderRadius.circular(8)),
-          child: const Icon(Icons.local_movies, color: Color(0xFF2F5FA8)),
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(8),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x1A000000),
+                blurRadius: 6,
+                offset: Offset(0, 2),
+              ),
+            ],
+          ),
+          child: const Padding(
+            padding: EdgeInsets.all(5),
+            child: CustomPaint(painter: _PlayStyleLogoPainter()),
+          ),
         ),
         const SizedBox(width: 8),
         const Text(appName,
@@ -21,6 +32,56 @@ class AppBrand extends StatelessWidget {
       ],
     );
   }
+}
+
+class _PlayStyleLogoPainter extends CustomPainter {
+  const _PlayStyleLogoPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final scale = size.shortestSide / 20;
+    final stroke = 5.2 * scale;
+    final strokePaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+
+    final leftTop = Offset(5 * scale, 4 * scale);
+    final leftBottom = Offset(5 * scale, 16 * scale);
+    final right = Offset(16 * scale, 10 * scale);
+
+    canvas.drawLine(
+      leftTop,
+      leftBottom,
+      strokePaint..color = const Color(0xFF1A73E8),
+    );
+    canvas.drawLine(
+      leftTop,
+      right,
+      strokePaint..color = const Color(0xFF1DB954),
+    );
+    canvas.drawLine(
+      right,
+      Offset(13.2 * scale, 11.6 * scale),
+      strokePaint..color = const Color(0xFFFFC107),
+    );
+    canvas.drawLine(
+      Offset(13.2 * scale, 11.6 * scale),
+      leftBottom,
+      strokePaint..color = const Color(0xFFFF2B20),
+    );
+
+    final cutout = Path()
+      ..moveTo(8.4 * scale, 6.5 * scale)
+      ..lineTo(14.0 * scale, 10 * scale)
+      ..lineTo(8.4 * scale, 13.5 * scale)
+      ..close();
+    canvas.drawPath(cutout, Paint()..color = Colors.white);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 class MediaTile extends StatelessWidget {
@@ -240,6 +301,7 @@ class CachedTmdbImage extends StatefulWidget {
     required this.size,
     required this.fit,
     required this.fallback,
+    this.alignment = Alignment.center,
     super.key,
   });
 
@@ -248,6 +310,7 @@ class CachedTmdbImage extends StatefulWidget {
   final String size;
   final BoxFit fit;
   final Widget fallback;
+  final Alignment alignment;
 
   @override
   State<CachedTmdbImage> createState() => _CachedTmdbImageState();
@@ -286,6 +349,7 @@ class _CachedTmdbImageState extends State<CachedTmdbImage> {
           return Image.memory(
             bytes,
             fit: widget.fit,
+            alignment: widget.alignment,
             gaplessPlayback: true,
             errorBuilder: (_, __, ___) => widget.fallback,
           );
