@@ -1,18 +1,88 @@
+# Local configuration
+.env
+.env.*
+!.env.example
+local.properties
+**/local.properties
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+*.bak
+*.orig
+dashboard-vite*.log
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+
+# Flutter and Dart
 .dart_tool/
 .flutter-plugins
 .flutter-plugins-dependencies
 .packages
+.pub-cache/
+.pub/
+**/doc/api/
+coverage/
+**/coverage/
 build/
+**/build/
+app.*.symbols
+app.*.map.json
 
-target/
+# Android and Gradle
+**/.gradle/
+**/.kotlin/
+**/.cxx/
+**/captures/
+*.apk
+*.aab
+*.ap_
+*.idsig
+key.properties
+**/*.keystore
+**/*.jks
+
+# Rust and native build outputs
 Cargo.lock
+target/
+**/target/
+*.rlib
+*.rmeta
+*.pdb
+*.exe
+*.dll
+*.dylib
+*.so
+*.a
+*.lib
+apps/player_flutter/android/app/src/main/jniLibs/
+
+# Local toolchains and generated SDK mirrors
 .toolchains/
 .a/
 
-.env
-.env.*
-!.env.example
+# Code analysis / agent generated artifacts
+.understand-anything/
+graphify-out/
+.graphify/
+.codex/
+.agents/
+.claude/
 
-*.log
-*.tmp
-*.swp
+# Generated databases and user media state
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal

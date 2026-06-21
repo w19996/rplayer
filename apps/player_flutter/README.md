@@ -1,17 +1,30 @@
-# player_flutter
+# rplayer Flutter app
 
-A new Flutter project.
+这是 rplayer 的 Flutter 前端。根目录 README 说明完整项目、构建流程和产物约定；本文件只记录 Flutter 子项目相关内容。
 
-## Getting Started
+## 主要页面
 
-This project is a starting point for a Flutter application.
+- `MediaLibraryPage`：媒体库首页、最近播放、分类海报墙、详情页、手动 TMDB 识别。
+- `VideoPlayerPage`：media_kit 播放器、加载状态、横竖屏、字幕/音轨、弹幕渲染。
+- `SourceLibraryPage`：本地和 WebDAV 资源管理、目录浏览、已添加目录管理。
+- `ProfilePage`：TMDB、弹幕、WebDAV 同步、诊断日志、配置导入导出。
 
-A few resources to get you started if this is your first Flutter project:
+## 常用命令
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+```powershell
+flutter analyze
+flutter test
+flutter build apk --release
+```
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+如果 Android native Rust 库不存在，先在仓库根目录生成：
+
+```powershell
+cargo ndk -t armeabi-v7a -t arm64-v8a -o apps/player_flutter/android/app/src/main/jniLibs build -p player_core --release
+```
+
+## 产物约定
+
+- `build/`、`.dart_tool/`、`.gradle/` 是本地构建缓存，不提交。
+- `android/app/src/main/jniLibs/` 是 Rust 生成的 native 动态库目录，不提交。
+- release APK 输出到 `build/app/outputs/flutter-apk/app-release.apk`。
