@@ -15,7 +15,7 @@ class VideoPlayerPage extends StatefulWidget {
 class _VideoPlayerPageState extends State<VideoPlayerPage>
     with SingleTickerProviderStateMixin {
   static const Duration _danmuPositionSyncThreshold =
-      Duration(milliseconds: 650);
+      Duration(milliseconds: 120);
   static const Duration _danmuVisibleRefreshInterval =
       Duration(milliseconds: 1500);
   static const int _danmuMaxVisibleItems = 36;
@@ -252,21 +252,26 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   void startDanmuRenderTimer() {
     danmuRenderTimer?.cancel();
     danmuRenderTimer = Timer.periodic(_danmuVisibleRefreshInterval, (_) {
-      refreshVisibleDanmu();
+      if (shouldRefreshDanmuOverlay) refreshVisibleDanmu();
     });
   }
 
-  void syncDanmuTickerState() {
-    if (!mounted) return;
+  bool get canShowDanmuOverlay {
     final config = widget.store.danmuConfig;
-    final shouldAnimate = ready &&
-        playing &&
-        !buffering &&
-        !seekingByDrag &&
+    return ready &&
         danmuSessionId > 0 &&
         config.available &&
         config.visible &&
-        danmuOverlayItems.value.isNotEmpty;
+        danmuTotalCount > 0;
+  }
+
+  bool get shouldRefreshDanmuOverlay =>
+      canShowDanmuOverlay && playing && !buffering && !seekingByDrag;
+
+  void syncDanmuTickerState() {
+    if (!mounted) return;
+    final shouldAnimate =
+        shouldRefreshDanmuOverlay && danmuOverlayItems.value.isNotEmpty;
     if (shouldAnimate) {
       if (!danmuTicker.isAnimating) danmuTicker.repeat();
     } else if (danmuTicker.isAnimating) {
@@ -306,16 +311,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   }
 
   void refreshVisibleDanmu({bool force = false}) {
-    final config = widget.store.danmuConfig;
-    if (!mounted ||
-        !ready ||
-        danmuSessionId <= 0 ||
-        !config.available ||
-        !config.visible ||
-        danmuTotalCount <= 0) {
+    if (!mounted || !canShowDanmuOverlay) {
       clearDanmuOverlay();
       return;
     }
+    final config = widget.store.danmuConfig;
     if (!force && !playing && danmuOverlayItems.value.isNotEmpty) {
       return;
     }
@@ -530,7 +530,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       final native = player.platform as dynamic;
       await native.setProperty(
           'hwdec', softwareDecoderFallback ? 'no' : 'auto-safe');
-      await native.setProperty('vd-lavc-threads', '0');
+      await native.setProperty(
+          'vd-lavc-threads', softwareDecoderFallback ? '2' : '0');
       await native.setProperty('video-sync', 'audio');
       await native.setProperty('framedrop', 'vo');
     } catch (_) {
@@ -856,6 +857,43 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     scheduleControlsAutoHide();
   }
 
+  void beginSliderSeek(double value) {
+    if (controlsLocked || duration == Duration.zero) return;
+    markControlsInteraction();
+    syncDanmuClock(currentDanmuPosition);
+    setStateIfMounted(() {
+      seekingByDrag = true;
+      dragPreviewPosition = Duration(milliseconds: value.round());
+    });
+    syncDanmuTickerState();
+    notifyControlsChanged();
+  }
+
+  void updateSliderSeek(double value) {
+    if (controlsLocked || duration == Duration.zero) return;
+    markControlsInteraction();
+    setStateIfMounted(() {
+      seekingByDrag = true;
+      dragPreviewPosition = Duration(milliseconds: value.round());
+    });
+    notifyControlsChanged(throttle: true);
+  }
+
+  Future<void> endSliderSeek(double value) async {
+    if (controlsLocked || duration == Duration.zero) return;
+    final target = Duration(milliseconds: value.round());
+    setStateIfMounted(() {
+      seekingByDrag = false;
+      dragPreviewPosition = null;
+    });
+    notifyControlsChanged();
+    syncDanmuClock(target);
+    clearDanmuOverlay();
+    await player.seek(target);
+    syncDanmuTickerState();
+    scheduleControlsAutoHide();
+  }
+
   void togglePlayback() {
     if (controlsLocked) return;
     markControlsInteraction();
@@ -886,6 +924,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     if (controlsVisible.value != visible) {
       controlsVisible.value = visible;
     }
+    if (visible) unawaited(updatePlayerStatus());
   }
 
   void scheduleControlsAutoHide() {
@@ -956,11 +995,12 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   void startStatusTimer() {
     updatePlayerStatus();
     statusTimer =
-        Timer.periodic(const Duration(seconds: 1), (_) => updatePlayerStatus());
+        Timer.periodic(const Duration(seconds: 5), (_) => updatePlayerStatus());
   }
 
   Future<void> updatePlayerStatus() async {
     if (!Platform.isAndroid) return;
+    if (!controlsVisible.value || controlsLocked) return;
     try {
       final status =
           await appChannel.invokeMapMethod<String, dynamic>('playerStatus');
@@ -2056,9 +2096,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
                         _DanmuPanelSlider(
                           label: '时间偏移',
                           value: config.offsetMs / 1000,
-                          min: -10,
-                          max: 10,
-                          divisions: 40,
+                          min: -60,
+                          max: 60,
+                          divisions: 120,
                           display:
                               '${(config.offsetMs / 1000).toStringAsFixed(1)}s',
                           onChanged: (value) =>
@@ -2475,6 +2515,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     final compact = !isLandscape;
     final denseLandscape = isLandscape && constraints.maxWidth < 740;
     final playButtonSize = compact ? 52.0 : (denseLandscape ? 50.0 : 56.0);
+    final displayedPosition = dragPreviewPosition ?? position;
     final playButton = DecoratedBox(
       decoration: const BoxDecoration(
         color: Color(0x22000000),
@@ -2522,7 +2563,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
               children: [
                 SizedBox(
                     width: compact ? 52 : (denseLandscape ? 58 : 78),
-                    child: statusText(formatDuration(position),
+                    child: statusText(formatDuration(displayedPosition),
                         size: compact ? 12 : (denseLandscape ? 13 : 15))),
                 Expanded(
                   child: SliderTheme(
@@ -2534,19 +2575,15 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
                       overlayColor: const Color(0x33FFFFFF),
                     ),
                     child: Slider(
-                      value: position.inMilliseconds
+                      value: displayedPosition.inMilliseconds
                           .clamp(0, duration.inMilliseconds)
                           .toDouble(),
                       max: duration.inMilliseconds
                           .toDouble()
                           .clamp(1, double.infinity),
-                      onChanged: (value) {
-                        markControlsInteraction();
-                        final target = Duration(milliseconds: value.toInt());
-                        syncDanmuClock(target);
-                        clearDanmuOverlay();
-                        player.seek(target);
-                      },
+                      onChangeStart: beginSliderSeek,
+                      onChanged: updateSliderSeek,
+                      onChangeEnd: (value) => unawaited(endSliderSeek(value)),
                     ),
                   ),
                 ),
