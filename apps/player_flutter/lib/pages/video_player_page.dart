@@ -24,7 +24,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   static const int _danmuFixedVisibleMs = 3800;
   static const double _danmuBaseTravelMs = 9500;
   static const double _verticalControlSensitivity = 1.35;
-  static const double _verticalControlStepPixels = 12;
+  static const double _verticalControlEdgeDeadZoneRatio = 0.14;
 
   Player? _player;
   VideoController? _controller;
@@ -35,6 +35,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   Timer? controlsHideTimer;
   Timer? danmuRenderTimer;
   Timer? verticalControlOverlayTimer;
+  Timer? landscapeSensorTimer;
   late final AnimationController danmuTicker;
   final danmuOverlayItems = ValueNotifier<List<RustDanmuRenderItem>>(const []);
   final controlsVisible = ValueNotifier<bool>(true);
@@ -48,7 +49,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   double dragDistance = 0;
   Duration dragStartPosition = Duration.zero;
   VerticalControlKind? verticalControlKind;
-  double verticalControlDragRemainder = 0;
+  double playbackVolume = 100;
   String? verticalControlLabel;
   double verticalControlLevel = 0;
   int? videoWidth;
@@ -435,6 +436,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       ..add(player.stream.buffering.listen(handleBufferingChanged))
       ..add(player.stream.bufferingPercentage.listen(handleBufferingPercentage))
       ..add(player.stream.completed.listen(handlePlaybackCompleted))
+      ..add(player.stream.volume.listen((value) {
+        playbackVolume = value.clamp(0, 100).toDouble();
+      }))
       ..add(player.stream.width.listen((value) {
         videoWidth = value;
         applyVideoOrientation();
@@ -621,6 +625,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     controlsHideTimer?.cancel();
     danmuRenderTimer?.cancel();
     verticalControlOverlayTimer?.cancel();
+    landscapeSensorTimer?.cancel();
     clearDanmuSession();
     danmuTicker.dispose();
     danmuOverlayItems.dispose();
@@ -631,12 +636,27 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     SystemChrome.setPreferredOrientations(DeviceOrientation.values);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
         overlays: SystemUiOverlay.values);
+    unawaited(setNativePlaybackOrientationMode('off'));
     for (final subscription in subscriptions) {
       subscription.cancel();
     }
     unawaited(unobserveMpvLoadingProperties());
     _player?.dispose();
     super.dispose();
+  }
+
+  Future<void> setNativePlaybackOrientationMode(String mode) async {
+    if (!Platform.isAndroid) return;
+    try {
+      await appChannel.invokeMethod<void>(
+        'setPlaybackOrientationMode',
+        {'mode': mode},
+      );
+    } catch (error) {
+      widget.store.addDiagnosticLog(
+          'native playback orientation failed: $mode $error',
+          category: 'player');
+    }
   }
 
   void setStateIfMounted(VoidCallback update) {
@@ -804,26 +824,35 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     orientationLocked = true;
     final landscape = width >= height;
     await widget.store.rememberFolderOrientation(currentItem, landscape);
-    await SystemChrome.setPreferredOrientations(
-      landscape
-          ? [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]
-          : [DeviceOrientation.portraitUp, DeviceOrientation.portraitDown],
-    );
+    if (landscape) {
+      await applyLandscapeVideoOrientation();
+    } else {
+      landscapeSensorTimer?.cancel();
+      await setNativePlaybackOrientationMode('portrait');
+      await SystemChrome.setPreferredOrientations(
+          [DeviceOrientation.portraitUp]);
+    }
   }
 
   Future<void> applyRememberedOrientation() async {
     final remembered =
         widget.store.folderOrientations[mediaFolderKey(currentItem)];
-    if (remembered == null) {
-      orientationLocked = false;
-      return;
+    orientationLocked = false;
+    if (remembered == 'landscape') {
+      await applyLandscapeVideoOrientation();
+    } else {
+      landscapeSensorTimer?.cancel();
+      await setNativePlaybackOrientationMode('portrait');
+      await SystemChrome.setPreferredOrientations(
+          [DeviceOrientation.portraitUp]);
     }
-    orientationLocked = true;
+  }
+
+  Future<void> applyLandscapeVideoOrientation() async {
+    landscapeSensorTimer?.cancel();
+    await setNativePlaybackOrientationMode('landscape');
     await SystemChrome.setPreferredOrientations(
-      remembered == 'landscape'
-          ? [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight]
-          : [DeviceOrientation.portraitUp, DeviceOrientation.portraitDown],
-    );
+        [DeviceOrientation.landscapeLeft]);
   }
 
   void beginSeekDrag(DragStartDetails details) {
@@ -910,12 +939,21 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       !danmuPanelOpen &&
       !danmuSearchPanelOpen;
 
-  void beginVerticalControlDrag(DragStartDetails details, double width) {
-    if (!verticalControlAvailable || width <= 0) return;
-    verticalControlKind = details.localPosition.dx < width / 2
+  bool verticalControlPointAllowed(Offset localPosition, Size size) {
+    if (!verticalControlAvailable || size.width <= 0 || size.height <= 0) {
+      return false;
+    }
+    final deadZone =
+        (size.height * _verticalControlEdgeDeadZoneRatio).clamp(56.0, 120.0);
+    return localPosition.dy >= deadZone &&
+        localPosition.dy <= size.height - deadZone;
+  }
+
+  void beginVerticalControlDrag(DragStartDetails details, Size size) {
+    if (!verticalControlPointAllowed(details.localPosition, size)) return;
+    verticalControlKind = details.localPosition.dx < size.width / 2
         ? VerticalControlKind.volume
         : VerticalControlKind.brightness;
-    verticalControlDragRemainder = 0;
     markControlsInteraction();
     unawaited(applyVerticalControlDelta(verticalControlKind!, 0));
   }
@@ -923,25 +961,29 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   void updateVerticalControlDrag(DragUpdateDetails details, double height) {
     final kind = verticalControlKind;
     if (kind == null || !verticalControlAvailable || height <= 0) return;
-    verticalControlDragRemainder += details.delta.dy;
-    if (verticalControlDragRemainder.abs() < _verticalControlStepPixels) {
-      return;
-    }
-    final delta =
-        (-verticalControlDragRemainder / height * _verticalControlSensitivity)
-            .clamp(-0.16, 0.16)
-            .toDouble();
-    verticalControlDragRemainder = 0;
+    final delta = (-details.delta.dy / height * _verticalControlSensitivity)
+        .clamp(-0.16, 0.16)
+        .toDouble();
+    if (delta == 0) return;
     unawaited(applyVerticalControlDelta(kind, delta));
   }
 
   void endVerticalControlDrag() {
     verticalControlKind = null;
-    verticalControlDragRemainder = 0;
   }
 
   Future<void> applyVerticalControlDelta(
       VerticalControlKind kind, double delta) async {
+    if (kind == VerticalControlKind.volume) {
+      final next = (delta == 0 ? playbackVolume : playbackVolume + delta * 100)
+          .clamp(0, 100)
+          .toDouble();
+      playbackVolume = next;
+      await player.setVolume(next);
+      if (!mounted) return;
+      showVerticalControlOverlay(kind, next / 100);
+      return;
+    }
     if (!Platform.isAndroid) return;
     try {
       final result = await appChannel.invokeMapMethod<String, dynamic>(
@@ -1133,15 +1175,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   Future<void> rotateScreen(BuildContext context) async {
     if (controlsLocked) return;
     markControlsInteraction();
-    final size = MediaQuery.sizeOf(context);
-    final landscape = size.width > size.height;
-    orientationLocked = true;
-    await widget.store.rememberFolderOrientation(currentItem, !landscape);
-    await SystemChrome.setPreferredOrientations(
-      landscape
-          ? [DeviceOrientation.portraitUp, DeviceOrientation.portraitDown]
-          : [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight],
-    );
+    orientationLocked = false;
+    await applyVideoOrientation();
   }
 
   void toggleLock() {
@@ -1694,6 +1729,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     syncDanmuClock(saved > 0 ? Duration(milliseconds: saved) : Duration.zero);
     clearDanmuOverlay();
     clearDanmuSession();
+    landscapeSensorTimer?.cancel();
     setStateIfMounted(() {
       currentItem = item;
       position = saved > 0 ? Duration(milliseconds: saved) : Duration.zero;
@@ -1702,6 +1738,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
           : Duration.zero;
       videoWidth = null;
       videoHeight = null;
+      orientationLocked = false;
       ready = false;
       mediaOpenCompleted = false;
       playbackPositionConfirmed = false;
@@ -2864,7 +2901,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
               scheduleControlsAutoHide();
             },
             onVerticalDragStart: (details) =>
-                beginVerticalControlDrag(details, constraints.maxWidth),
+                beginVerticalControlDrag(details, constraints.biggest),
             onVerticalDragUpdate: (details) =>
                 updateVerticalControlDrag(details, constraints.maxHeight),
             onVerticalDragEnd: (_) => endVerticalControlDrag(),

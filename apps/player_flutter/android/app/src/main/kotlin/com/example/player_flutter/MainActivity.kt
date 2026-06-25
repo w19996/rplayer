@@ -3,18 +3,22 @@ package com.example.player_flutter
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.media.AudioManager
+import android.content.pm.ActivityInfo
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.TrafficStats
 import android.os.BatteryManager
 import android.provider.Settings
+import android.view.OrientationEventListener
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
-import kotlin.math.roundToInt
 
 class MainActivity : FlutterActivity() {
+    private var orientationListener: OrientationEventListener? = null
+    private var playbackOrientationMode: String = "off"
+    private var currentRequestedOrientation: Int? = null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "rplayer/app").setMethodCallHandler { call, result ->
@@ -26,8 +30,30 @@ class MainActivity : FlutterActivity() {
                     val delta = (call.argument<Double>("delta") ?: 0.0).toFloat()
                     result.success(adjustPlaybackControl(kind, delta))
                 }
+                "setPlaybackOrientationMode" -> {
+                    val mode = call.argument<String>("mode") ?: "off"
+                    setPlaybackOrientationMode(mode)
+                    result.success(null)
+                }
                 else -> result.notImplemented()
             }
+        }
+    }
+
+    override fun onDestroy() {
+        stopPlaybackOrientationSensor()
+        super.onDestroy()
+    }
+
+    override fun onPause() {
+        stopPlaybackOrientationSensor()
+        super.onPause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (playbackOrientationMode == "landscape") {
+            startPlaybackOrientationSensor()
         }
     }
 
@@ -65,24 +91,9 @@ class MainActivity : FlutterActivity() {
 
     private fun adjustPlaybackControl(kind: String, delta: Float): Map<String, Any> {
         return when (kind) {
-            "volume" -> adjustVolume(delta)
             "brightness" -> adjustBrightness(delta)
             else -> mapOf("kind" to kind, "value" to 0.0)
         }
-    }
-
-    private fun adjustVolume(delta: Float): Map<String, Any> {
-        val audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        val maxVolume = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
-        val current = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
-        var target = (current + delta * maxVolume).roundToInt().coerceIn(0, maxVolume)
-        if (delta > 0.0f && target <= current) target = (current + 1).coerceAtMost(maxVolume)
-        if (delta < 0.0f && target >= current) target = (current - 1).coerceAtLeast(0)
-        audio.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
-        return mapOf(
-            "kind" to "volume",
-            "value" to (target.toDouble() / maxVolume.toDouble())
-        )
     }
 
     private fun adjustBrightness(delta: Float): Map<String, Any> {
@@ -104,5 +115,56 @@ class MainActivity : FlutterActivity() {
             "kind" to "brightness",
             "value" to target.toDouble()
         )
+    }
+
+    private fun setPlaybackOrientationMode(mode: String) {
+        playbackOrientationMode = mode
+        when (mode) {
+            "landscape" -> {
+                setRequestedOrientationIfChanged(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)
+                startPlaybackOrientationSensor()
+            }
+            "portrait" -> {
+                stopPlaybackOrientationSensor()
+                setRequestedOrientationIfChanged(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
+            }
+            else -> {
+                stopPlaybackOrientationSensor()
+                currentRequestedOrientation = null
+                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            }
+        }
+    }
+
+    private fun startPlaybackOrientationSensor() {
+        if (orientationListener == null) {
+            orientationListener = object : OrientationEventListener(this) {
+                override fun onOrientationChanged(orientation: Int) {
+                    if (playbackOrientationMode != "landscape") return
+                    if (orientation == ORIENTATION_UNKNOWN) return
+                    val next = landscapeOrientationFor(orientation) ?: return
+                    setRequestedOrientationIfChanged(next)
+                }
+            }
+        }
+        orientationListener?.enable()
+    }
+
+    private fun stopPlaybackOrientationSensor() {
+        orientationListener?.disable()
+    }
+
+    private fun landscapeOrientationFor(orientation: Int): Int? {
+        return when {
+            orientation in 45..135 -> ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
+            orientation in 225..315 -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            else -> null
+        }
+    }
+
+    private fun setRequestedOrientationIfChanged(orientation: Int) {
+        if (currentRequestedOrientation == orientation) return
+        currentRequestedOrientation = orientation
+        requestedOrientation = orientation
     }
 }
