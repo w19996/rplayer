@@ -4,61 +4,75 @@ class MediaScanService {
   const MediaScanService();
 
   Future<List<MediaItem>> scanSource(MediaSourceConfig source) {
+    return scanSourceStream(source).toList();
+  }
+
+  Stream<MediaItem> scanSourceStream(MediaSourceConfig source) {
     return source.type == SourceType.local
-        ? scanLocalDirectory(source)
-        : scanWebdavSelections(source);
+        ? scanLocalDirectoryStream(source)
+        : scanWebdavSelectionsStream(source);
   }
 
   Future<List<MediaItem>> scanLocalDirectory(MediaSourceConfig source) async {
-    final items = <MediaItem>[];
+    return scanLocalDirectoryStream(source).toList();
+  }
+
+  Stream<MediaItem> scanLocalDirectoryStream(MediaSourceConfig source) async* {
     for (final path in source.selectedPaths) {
-      items.addAll(await scanLocalPath(source, path));
+      yield* scanLocalPathStream(source, path);
     }
-    return items;
   }
 
   Future<List<MediaItem>> scanLocalPath(
       MediaSourceConfig source, String path) async {
-    final items = <MediaItem>[];
+    return scanLocalPathStream(source, path).toList();
+  }
+
+  Stream<MediaItem> scanLocalPathStream(
+      MediaSourceConfig source, String path) async* {
     final file = File(path);
     if (await file.exists()) {
       if (isVideoName(path)) {
-        items.add(MediaItem.local(
+        yield MediaItem.local(
           source: source,
           path: path,
           size: await file.length(),
-        ));
+        );
       }
-      return items;
+      return;
     }
 
     final dir = Directory(path);
-    if (!await dir.exists()) return [];
+    if (!await dir.exists()) return;
 
-    return (await RustCoreService.instance.scanLocalVideosAsync(path))
-        .map((video) => MediaItem.local(
-              source: source,
-              path: video.path,
-              size: video.size,
-            ))
-        .toList();
+    await for (final entity in dir.list(recursive: true, followLinks: false)) {
+      if (entity is! File || !isVideoName(entity.path)) continue;
+      yield MediaItem.local(
+        source: source,
+        path: entity.path,
+        size: await entity.length(),
+      );
+    }
   }
 
   Future<List<MediaItem>> scanWebdavSelections(MediaSourceConfig source) async {
+    return scanWebdavSelectionsStream(source).toList();
+  }
+
+  Stream<MediaItem> scanWebdavSelectionsStream(
+      MediaSourceConfig source) async* {
     final client = WebdavClient.fromSource(source);
-    final items = <MediaItem>[];
     for (final path in source.selectedPaths) {
       if (path.endsWith('/')) {
-        final entries = await client.scanVideos(path, maxDepth: 8);
-        items.addAll(entries
-            .map((entry) => MediaItem.webdav(source: source, entry: entry)));
+        await for (final entry in client.scanVideosStream(path, maxDepth: 8)) {
+          yield MediaItem.webdav(source: source, entry: entry);
+        }
       } else if (isVideoName(path)) {
         final entry = await client.findFile(path);
         if (entry != null) {
-          items.add(MediaItem.webdav(source: source, entry: entry));
+          yield MediaItem.webdav(source: source, entry: entry);
         }
       }
     }
-    return items;
   }
 }

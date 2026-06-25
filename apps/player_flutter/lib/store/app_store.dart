@@ -353,11 +353,13 @@ class AppStore extends ChangeNotifier {
       directory: dir,
     ).copyWith(selectedPaths: [dir]);
     sources.add(source);
+    notifyListeners();
     final stopwatch = Stopwatch()..start();
     var count = 0;
-    for (final item in await scanner.scanLocalPath(source, dir)) {
+    await for (final item in scanner.scanLocalPathStream(source, dir)) {
       addOrReplaceItem(item);
       count++;
+      notifyScanProgress(count);
     }
     items
         .sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
@@ -417,6 +419,7 @@ class AppStore extends ChangeNotifier {
     addDiagnosticLog('rescan all sources: ${sources.length}', category: 'scan');
     final existing = List<MediaSourceConfig>.from(sources);
     items.clear();
+    notifyListeners();
     for (final source in existing) {
       await scanSourceIntoItems(source);
     }
@@ -430,6 +433,7 @@ class AppStore extends ChangeNotifier {
   Future<void> rescanSource(MediaSourceConfig source) async {
     addDiagnosticLog('rescan source: ${source.name}', category: 'scan');
     items.removeWhere((item) => item.sourceId == source.id);
+    notifyListeners();
     await scanSourceIntoItems(source);
     metadata
         .removeWhere((itemId, _) => !items.any((item) => item.id == itemId));
@@ -442,9 +446,10 @@ class AppStore extends ChangeNotifier {
     final stopwatch = Stopwatch()..start();
     addDiagnosticLog('scan source started: ${source.name}', category: 'scan');
     var count = 0;
-    for (final item in await scanner.scanSource(source)) {
+    await for (final item in scanner.scanSourceStream(source)) {
       addOrReplaceItem(item);
       count++;
+      notifyScanProgress(count);
     }
     items
         .sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
@@ -466,12 +471,16 @@ class AppStore extends ChangeNotifier {
 
     if (entry.isDir) {
       final client = WebdavClient.fromSource(updated);
-      final entries = await client.scanVideos(entry.path, maxDepth: 8);
-      for (final video in entries) {
+      var count = 0;
+      await for (final video
+          in client.scanVideosStream(entry.path, maxDepth: 8)) {
         addOrReplaceItem(MediaItem.webdav(source: updated, entry: video));
+        count++;
+        notifyScanProgress(count);
       }
     } else if (isVideoName(entry.name)) {
       addOrReplaceItem(MediaItem.webdav(source: updated, entry: entry));
+      notifyScanProgress(1);
     }
     items
         .sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
@@ -490,12 +499,16 @@ class AppStore extends ChangeNotifier {
     replaceSource(updated);
 
     if (entry.isDir) {
-      final found = await scanner.scanLocalPath(updated, entry.path);
-      for (final item in found) {
+      var count = 0;
+      await for (final item
+          in scanner.scanLocalPathStream(updated, entry.path)) {
         addOrReplaceItem(item);
+        count++;
+        notifyScanProgress(count);
       }
     } else if (isVideoName(entry.name)) {
       addOrReplaceItem(MediaItem.local(source: updated, path: entry.path));
+      notifyScanProgress(1);
     }
     items
         .sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
@@ -587,6 +600,14 @@ class AppStore extends ChangeNotifier {
   void addOrReplaceItem(MediaItem item) {
     items.removeWhere((value) => value.id == item.id);
     items.add(item);
+  }
+
+  void notifyScanProgress(int count) {
+    if (count == 1 || count % 10 == 0) {
+      items.sort(
+          (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+      notifyListeners();
+    }
   }
 
   bool sourcePathAdded(

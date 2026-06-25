@@ -13,20 +13,23 @@ class WebdavClient {
 
   Future<List<WebdavEntry>> scanVideos(String path,
       {required int maxDepth}) async {
-    final found = <WebdavEntry>[];
-    Future<void> walk(String current, int depth) async {
+    return scanVideosStream(path, maxDepth: maxDepth).toList();
+  }
+
+  Stream<WebdavEntry> scanVideosStream(String path,
+      {required int maxDepth}) async* {
+    Stream<WebdavEntry> walk(String current, int depth) async* {
       final entries = await list(current);
       for (final entry in entries) {
         if (entry.isDir && depth < maxDepth) {
-          await walk(entry.path, depth + 1);
+          yield* walk(entry.path, depth + 1);
         } else if (!entry.isDir && isVideoName(entry.name)) {
-          found.add(entry);
+          yield entry;
         }
       }
     }
 
-    await walk(path, 0);
-    return found;
+    yield* walk(path, 0);
   }
 
   Future<WebdavEntry?> findFile(String path) async {

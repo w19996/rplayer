@@ -53,13 +53,13 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+          targets: aarch64-linux-android
 
       - name: Set up Android NDK
         id: setup-ndk
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r26d
+          ndk-version: r27c
           add-to-path: true
 
       - name: Cache Cargo
@@ -81,7 +81,7 @@ jobs:
             cargo install cargo-ndk --locked
           fi
 
-      - name: Build Rust core for Android
+      - name: Build Rust/C++ core for Android arm64-v8a
         working-directory: .
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
@@ -89,12 +89,22 @@ jobs:
         run: |
           rm -rf apps/player_flutter/android/app/src/main/jniLibs
           cargo ndk \
-            -t armeabi-v7a \
+            --link-libcxx-shared \
             -t arm64-v8a \
-            -t x86_64 \
             -o apps/player_flutter/android/app/src/main/jniLibs \
             build -p player_core --release
-          find apps/player_flutter/android/app/src/main/jniLibs -name "libplayer_core.so" -print
+          test -f apps/player_flutter/android/app/src/main/jniLibs/arm64-v8a/libplayer_core.so
+          test -f apps/player_flutter/android/app/src/main/jniLibs/arm64-v8a/libc++_shared.so
+
+      - name: Strip Android native libraries
+        working-directory: .
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          LLVM_STRIP="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          find apps/player_flutter/android/app/src/main/jniLibs -name "*.so" -print \
+            -exec "$LLVM_STRIP" --strip-unneeded {} \;
+          find apps/player_flutter/android/app/src/main/jniLibs -name "*.so" -printf "%p %s bytes\n"
 
       - name: Get dependencies
         run: flutter pub get
@@ -126,10 +136,10 @@ jobs:
             > android/key.properties
 
       - name: Build Android Debug APK
-        run: flutter build apk --debug --no-pub
+        run: flutter build apk --debug --target-platform android-arm64 --no-pub
 
-      - name: Build Android Release APKs by ABI
-        run: flutter build apk --release --split-per-abi --no-pub
+      - name: Build Android Release APK
+        run: flutter build apk --release --target-platform android-arm64 --no-pub
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
@@ -138,30 +148,18 @@ jobs:
           path: apps/player_flutter/build/app/outputs/flutter-apk/app-debug.apk
           if-no-files-found: error
 
-      - name: Upload Release APK - armeabi-v7a
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-armeabi-v7a-release-apk
-          path: apps/player_flutter/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
-          if-no-files-found: error
-
       - name: Upload Release APK - arm64-v8a
         uses: actions/upload-artifact@v4
         with:
           name: app-arm64-v8a-release-apk
-          path: apps/player_flutter/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
-          if-no-files-found: error
-
-      - name: Upload Release APK - x86_64
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-x86_64-release-apk
-          path: apps/player_flutter/build/app/outputs/flutter-apk/app-x86_64-release.apk
+          path: apps/player_flutter/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
 
       - name: Upload Rust Android libraries
         uses: actions/upload-artifact@v4
         with:
           name: player-core-android-libs
-          path: apps/player_flutter/android/app/src/main/jniLibs/**/libplayer_core.so
+          path: |
+            apps/player_flutter/android/app/src/main/jniLibs/**/libplayer_core.so
+            apps/player_flutter/android/app/src/main/jniLibs/**/libc++_shared.so
           if-no-files-found: error

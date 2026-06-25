@@ -1463,6 +1463,10 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
                 now
             ],
         )?;
+        conn.execute(
+            "update source_folders set selected=0, updated_at=?2 where source_id=?1",
+            params![source_id, now],
+        )?;
 
         let selected_paths: Vec<String> = source
             .get("selectedPaths")
@@ -1479,7 +1483,14 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
             } else {
                 (normalize_folder_path(&normalized), None)
             };
-            upsert_source_folder(conn, source_id, &folder_path, search_hint.as_deref(), now)?;
+            upsert_source_folder(
+                conn,
+                source_id,
+                &folder_path,
+                search_hint.as_deref(),
+                true,
+                now,
+            )?;
             live_folder_keys.insert(format!("{source_id}\n{folder_path}"));
         }
     }
@@ -1500,6 +1511,7 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
             source_id,
             &folder_path,
             item.get("matchTitle").and_then(Value::as_str),
+            false,
             now,
         )?;
         live_folder_keys.insert(format!("{source_id}\n{folder_path}"));
@@ -1572,7 +1584,7 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
             continue;
         };
         if let Some((source_id, path)) = folder_preference_key_parts(&folder_key) {
-            let folder_id = upsert_source_folder(conn, &source_id, &path, None, now)?;
+            let folder_id = upsert_source_folder(conn, &source_id, &path, None, false, now)?;
             live_folder_keys.insert(format!("{source_id}\n{path}"));
             conn.execute(
                 "insert into folder_preferences(folder_id, preferred_orientation, updated_at)
@@ -2181,16 +2193,23 @@ fn upsert_source_folder(
     source_id: &str,
     path: &str,
     search_hint: Option<&str>,
+    selected: bool,
     now: i64,
 ) -> Result<i64> {
     conn.execute(
         "insert into source_folders(source_id, path, selected, search_hint, created_at, updated_at)
-         values (?1, ?2, 1, ?3, ?4, ?4)
+         values (?1, ?2, ?3, ?4, ?5, ?5)
          on conflict(source_id, path) do update set
-           selected=1,
+           selected=max(source_folders.selected, excluded.selected),
            search_hint=coalesce(excluded.search_hint, source_folders.search_hint),
            updated_at=excluded.updated_at",
-        params![source_id, normalize_folder_path(path), search_hint, now],
+        params![
+            source_id,
+            normalize_folder_path(path),
+            selected as i64,
+            search_hint,
+            now
+        ],
     )?;
     Ok(conn.query_row(
         "select id from source_folders where source_id=?1 and path=?2",
@@ -3319,6 +3338,73 @@ mod tests {
         assert_eq!(count_rows(&conn, "sources"), 0);
         assert_eq!(count_rows(&conn, "source_folders"), 0);
         assert_eq!(count_rows(&conn, "media_files"), 0);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn source_folder_is_removed_when_selection_and_files_are_empty() {
+        let db_path = std::env::temp_dir().join(format!(
+            "player_core_unselect_empty_folder_{}.sqlite",
+            now_ms()
+        ));
+        let initial_state = r#"{
+          "version": 1,
+          "sources": [
+            {
+              "id": "source-1",
+              "name": "My WebDAV",
+              "type": "webdav",
+              "directory": "/dav/",
+              "baseUrl": "https://example.com/dav",
+              "selectedPaths": ["/dav/Show/"]
+            }
+          ],
+          "items": [
+            {
+              "id": "source-1:/Show/01.mp4",
+              "sourceId": "source-1",
+              "sourceName": "My WebDAV",
+              "type": "webdav",
+              "title": "01",
+              "uri": "https://example.com/dav/Show/01.mp4",
+              "folderTitle": "Show",
+              "matchTitle": "Show",
+              "season": 1,
+              "episode": 1,
+              "mediaKind": "TV",
+              "size": 1234
+            }
+          ]
+        }"#;
+        put_app_state_json(db_path.to_str().unwrap(), initial_state).unwrap();
+
+        let empty_selection_state = r#"{
+          "version": 1,
+          "sources": [
+            {
+              "id": "source-1",
+              "name": "My WebDAV",
+              "type": "webdav",
+              "directory": "/dav/",
+              "baseUrl": "https://example.com/dav",
+              "selectedPaths": []
+            }
+          ],
+          "items": []
+        }"#;
+        put_app_state_json(db_path.to_str().unwrap(), empty_selection_state).unwrap();
+
+        let conn = open(db_path.to_str().unwrap()).unwrap();
+        assert_eq!(count_rows(&conn, "sources"), 1);
+        assert_eq!(count_rows(&conn, "source_folders"), 0);
+        assert_eq!(count_rows(&conn, "media_files"), 0);
+        let exported: Value =
+            serde_json::from_str(&get_app_state_json(db_path.to_str().unwrap()).unwrap()).unwrap();
+        assert!(exported["sources"][0]["selectedPaths"]
+            .as_array()
+            .unwrap()
+            .is_empty());
 
         let _ = std::fs::remove_file(db_path);
     }

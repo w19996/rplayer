@@ -14,13 +14,13 @@
 ```powershell
 flutter analyze
 flutter test
-flutter build apk --release
+flutter build apk --release --target-platform android-arm64
 ```
 
 如果 Android native Rust 库不存在，先在仓库根目录生成：
 
 ```powershell
-cargo ndk -t armeabi-v7a -t arm64-v8a -o apps/player_flutter/android/app/src/main/jniLibs build -p player_core --release
+cargo ndk --link-libcxx-shared -t arm64-v8a -o apps/player_flutter/android/app/src/main/jniLibs build -p player_core --release
 ```
 
 ## 产物约定

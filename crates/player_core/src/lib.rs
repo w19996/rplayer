@@ -12,7 +12,10 @@ pub use danmu::{
     clear_danmu_session_json, load_danmu_session_json, visible_danmu_json, DanmuClient, DanmuEvent,
     DanmuMatchRequest,
 };
-pub use media::{parse_media_identity, MediaIdentity, MediaKind};
+pub use media::{
+    media_series_title_json, parse_media_identity, parse_media_identity_json, MediaIdentity,
+    MediaKind,
+};
 pub use metadata_cache::{
     cache_images_json, get_all_metadata_json, get_app_state_json, get_cached_image_json,
     prune_metadata_json, put_app_state_json, put_cached_image_json, put_metadata_json,
@@ -52,8 +55,19 @@ pub extern "C" fn player_core_parse_media_identity_json(
     ffi_result(|| {
         let folder_name = read_c_string(folder_name)?;
         let file_name = read_c_string(file_name)?;
-        serde_json::to_string(&parse_media_identity(&folder_name, &file_name))
-            .map_err(anyhow::Error::from)
+        parse_media_identity_json(&folder_name, &file_name)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn player_core_media_series_title_json(
+    source_type: *const c_char,
+    path: *const c_char,
+) -> *mut c_char {
+    ffi_result(|| {
+        let source_type = read_c_string(source_type)?;
+        let path = read_c_string(path)?;
+        media_series_title_json(&source_type, &path)
     })
 }
 

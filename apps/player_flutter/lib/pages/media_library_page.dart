@@ -19,6 +19,8 @@ class MediaLibraryPage extends StatelessWidget {
         future: _loadLibraryPageData(store),
         builder: (context, snapshot) {
           final data = snapshot.data;
+          final home = data?.home ?? const <LibraryHomeEntry>[];
+          final pendingGroups = _pendingMediaGroups(store, home);
           return CustomScrollView(
             slivers: [
               SliverToBoxAdapter(
@@ -28,21 +30,19 @@ class MediaLibraryPage extends StatelessWidget {
                     children: [
                       const AppBrand(),
                       const Spacer(),
-                      IconButton(
-                        tooltip: '刷新',
-                        onPressed: store.rescanAll,
-                        icon: const Icon(Icons.refresh, size: 26),
-                      ),
+                      _LibraryRefreshButton(store: store),
                     ],
                   ),
                 ),
               ),
-              if (snapshot.connectionState == ConnectionState.waiting)
+              if (snapshot.connectionState == ConnectionState.waiting &&
+                  store.items.isEmpty)
                 const SliverFillRemaining(
                   child: Center(child: CircularProgressIndicator()),
                 )
-              else if (data == null ||
-                  (data.home.isEmpty && store.items.isEmpty))
+              else if (store.items.isEmpty &&
+                  home.isEmpty &&
+                  pendingGroups.isEmpty)
                 SliverFillRemaining(
                   child: EmptyState(
                     icon: Icons.video_library_outlined,
@@ -55,7 +55,7 @@ class MediaLibraryPage extends StatelessWidget {
                     ),
                   ),
                 )
-              else if (data.home.isEmpty)
+              else if (home.isEmpty && pendingGroups.isEmpty)
                 const SliverFillRemaining(
                   child: EmptyState(
                     icon: Icons.image_search_outlined,
@@ -65,11 +65,11 @@ class MediaLibraryPage extends StatelessWidget {
                   ),
                 )
               else ...[
-                if (data.recent.isNotEmpty) ...[
+                if (data?.recent.isNotEmpty == true) ...[
                   SliverToBoxAdapter(
                     child: SectionHeader(
                       title: '最近播放',
-                      count: data.recent.length,
+                      count: data!.recent.length,
                     ),
                   ),
                   SliverToBoxAdapter(
@@ -99,13 +99,15 @@ class MediaLibraryPage extends StatelessWidget {
                   ),
                   const SliverToBoxAdapter(child: SizedBox(height: 10)),
                 ],
-                for (final section in _libraryCategorySections(data.home))
+                for (final section in _libraryCategorySections(home))
                   ..._libraryGridSection(
                     context,
                     store,
                     section.title,
                     section.entries,
                   ),
+                if (pendingGroups.isNotEmpty)
+                  ..._pendingGridSection(context, store, pendingGroups),
                 const SliverToBoxAdapter(child: SizedBox(height: 24)),
               ],
             ],
@@ -153,6 +155,43 @@ class MediaLibraryPage extends StatelessWidget {
     ];
   }
 
+  List<Widget> _pendingGridSection(
+    BuildContext context,
+    AppStore store,
+    List<MediaFolderGroup> groups,
+  ) {
+    return [
+      SliverToBoxAdapter(
+        child: SectionHeader(title: '正在匹配', count: groups.length),
+      ),
+      SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: 22),
+        sliver: SliverGrid.builder(
+          itemCount: groups.length,
+          gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+            maxCrossAxisExtent: 126,
+            crossAxisSpacing: 18,
+            mainAxisSpacing: 22,
+            childAspectRatio: 0.42,
+          ),
+          itemBuilder: (context, index) {
+            final group = groups[index];
+            final current = currentGroupItem(group, store);
+            return MediaTile(
+              item: current,
+              store: store,
+              metadata: mediaGroupMetadata(group, store.metadata),
+              progressMs: store.progress[current.id] ?? 0,
+              displayTitle: group.title,
+              itemCount: group.items.length,
+              onTap: () {},
+            );
+          },
+        ),
+      ),
+    ];
+  }
+
   List<_LibraryCategorySection> _libraryCategorySections(
     List<LibraryHomeEntry> entries,
   ) {
@@ -187,6 +226,58 @@ class MediaLibraryPage extends StatelessWidget {
 
   String _libraryCategoryTitle(String mediaType) =>
       mediaCategoryLabel(mediaType);
+}
+
+List<MediaFolderGroup> _pendingMediaGroups(
+  AppStore store,
+  List<LibraryHomeEntry> home,
+) {
+  final matched = home.map(_libraryEntryResourceKey).toSet();
+  return mediaFolderGroups(
+    store.items.where(
+      (item) => !matched.contains(_mediaGroupResourceKey(mediaFolderKey(item))),
+    ),
+    lastPlayedAt: store.lastPlayedAt,
+  );
+}
+
+String _libraryEntryResourceKey(LibraryHomeEntry entry) {
+  return '${entry.sourceId}:${normalizeMediaResourcePath(entry.folderPath)}';
+}
+
+String _mediaGroupResourceKey(String groupKey) {
+  final sourceSeparator = groupKey.indexOf(':');
+  if (sourceSeparator < 0) return groupKey;
+  final typeSeparator = groupKey.indexOf(':', sourceSeparator + 1);
+  if (typeSeparator < 0) return groupKey;
+  final sourceId = groupKey.substring(0, sourceSeparator);
+  final path = groupKey.substring(typeSeparator + 1);
+  return '$sourceId:${normalizeMediaResourcePath(path)}';
+}
+
+class _LibraryRefreshButton extends StatelessWidget {
+  const _LibraryRefreshButton({required this.store});
+
+  final AppStore store;
+
+  @override
+  Widget build(BuildContext context) {
+    final refreshing = store.metadataRefreshing;
+    return IconButton(
+      tooltip: refreshing ? 'TMDB 刷新中' : '刷新',
+      onPressed: refreshing ? null : () => unawaited(store.rescanAll()),
+      icon: SizedBox(
+        width: 26,
+        height: 26,
+        child: refreshing
+            ? const Padding(
+                padding: EdgeInsets.all(3),
+                child: CircularProgressIndicator(strokeWidth: 2.4),
+              )
+            : const Icon(Icons.refresh, size: 26),
+      ),
+    );
+  }
 }
 
 class _LibraryCategorySection {

@@ -71,15 +71,15 @@ flutter test
 生成 Android Rust native libs：
 
 ```powershell
-$env:ANDROID_NDK_HOME = "D:\Code\rplayer\.a\ndk\27.0.12077973"
-cargo ndk -t armeabi-v7a -t arm64-v8a -o apps/player_flutter/android/app/src/main/jniLibs build -p player_core --release
+$env:ANDROID_NDK_HOME = "D:\Code\rplayer\.toolchains\android-sdk\ndk\27.3.13750724"
+cargo ndk --link-libcxx-shared -t arm64-v8a -o apps/player_flutter/android/app/src/main/jniLibs build -p player_core --release
 ```
 
 构建 release APK：
 
 ```powershell
 cd apps/player_flutter
-flutter build apk --release
+flutter build apk --release --target-platform android-arm64
 ```
 
 APK 输出路径：

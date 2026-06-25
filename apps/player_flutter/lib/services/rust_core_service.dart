@@ -26,6 +26,7 @@ class RustCoreService {
   _RustStringDart? _scanLocalVideosJson;
   _RustStringDart? _listLocalDirectoryJson;
   _RustTwoStringDart? _parseMediaIdentityJson;
+  _RustTwoStringDart? _mediaSeriesTitleJson;
   _RustTwoStringDart? _tmdbGetJson;
   _RustStringDart? _danmuLoadJson;
   _RustStringDart? _danmuVisibleJson;
@@ -52,6 +53,7 @@ class RustCoreService {
       _scanLocalVideosJson != null &&
       _listLocalDirectoryJson != null &&
       _parseMediaIdentityJson != null &&
+      _mediaSeriesTitleJson != null &&
       _tmdbGetJson != null &&
       _metadataPutJson != null &&
       _metadataCacheImagesJson != null &&
@@ -107,6 +109,13 @@ class RustCoreService {
     _ensureAvailable();
     final text = _callTwoString(_parseMediaIdentityJson, folderName, fileName);
     return RustMediaIdentity.fromJson(jsonDecode(text) as Map<String, dynamic>);
+  }
+
+  String mediaSeriesTitle(SourceType sourceType, String path) {
+    _ensureAvailable();
+    final source = sourceType == SourceType.webdav ? 'webdav' : 'local';
+    final text = _callTwoString(_mediaSeriesTitleJson, source, path);
+    return jsonDecode(text) as String? ?? '';
   }
 
   String tmdbGetJson(String url, String accessToken) {
@@ -391,9 +400,7 @@ class RustCoreService {
     if (_library != null && _bindingsReady) return true;
     if (_loadError != null) return false;
     try {
-      _library ??= Platform.isAndroid
-          ? ffi.DynamicLibrary.open('libplayer_core.so')
-          : ffi.DynamicLibrary.open(_desktopLibraryName);
+      _library ??= _openNativeLibrary();
       _scanLocalVideosJson = _library!
           .lookupFunction<_RustStringFn, _RustStringDart>(
               'player_core_scan_local_videos_json');
@@ -403,6 +410,8 @@ class RustCoreService {
       _parseMediaIdentityJson = _library!
           .lookupFunction<_RustTwoStringFn, _RustTwoStringDart>(
               'player_core_parse_media_identity_json');
+      _mediaSeriesTitleJson =
+          _lookupOptionalTwoString('player_core_media_series_title_json');
       _tmdbGetJson = _library!
           .lookupFunction<_RustTwoStringFn, _RustTwoStringDart>(
               'player_core_tmdb_get_json');
@@ -470,9 +479,43 @@ class RustCoreService {
     return 'libplayer_core.so';
   }
 
+  ffi.DynamicLibrary _openNativeLibrary() {
+    if (Platform.isAndroid) {
+      return ffi.DynamicLibrary.open('libplayer_core.so');
+    }
+
+    final name = _desktopLibraryName;
+    final cwd = Directory.current.path;
+    final candidates = [
+      name,
+      p.join(cwd, name),
+      p.normalize(p.join(cwd, '..', '..', 'target', 'debug', name)),
+      p.normalize(p.join(cwd, '..', '..', 'target', 'release', name)),
+    ];
+
+    Object? lastError;
+    for (final candidate in candidates) {
+      try {
+        return ffi.DynamicLibrary.open(candidate);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw ArgumentError('Failed to load dynamic library $name: $lastError');
+  }
+
   _RustStringDart? _lookupOptionalString(String name) {
     try {
       return _library!.lookupFunction<_RustStringFn, _RustStringDart>(name);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  _RustTwoStringDart? _lookupOptionalTwoString(String name) {
+    try {
+      return _library!
+          .lookupFunction<_RustTwoStringFn, _RustTwoStringDart>(name);
     } catch (_) {
       return null;
     }

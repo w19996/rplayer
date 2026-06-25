@@ -242,25 +242,15 @@ String mediaFolderTitle(MediaItem item) {
 }
 
 String mediaSeriesTitleFromLocalPath(String path) {
-  final dir = p.dirname(path);
-  final folder = p.basename(dir);
-  if (looksLikeSeasonFolderName(folder)) {
-    return p.basename(p.dirname(dir));
-  }
-  return folder;
+  return RustCoreService.instance
+      .mediaSeriesTitle(SourceType.local, path)
+      .trim();
 }
 
 String mediaSeriesTitleFromRemotePath(String path) {
-  final folder = remoteParentName(path);
-  if (!looksLikeSeasonFolderName(folder)) return folder;
-  final parent = parentPath(path);
-  final grandParent = parentPath(parent.substring(0, parent.length - 1));
-  return grandParent
-          .trimRight()
-          .split('/')
-          .where((part) => part.isNotEmpty)
-          .lastOrNull ??
-      folder;
+  return RustCoreService.instance
+      .mediaSeriesTitle(SourceType.webdav, path)
+      .trim();
 }
 
 String mediaIdentityFileName(MediaItem item) {
