@@ -545,9 +545,10 @@ class AppStore extends ChangeNotifier {
             ? normalizeRemoteDir(selectedPath)
             : sourcePathIdentity(source, selectedPath);
     final pathIsDir = sourceStoredPathIsDir(source, normalizedPath);
-    final exactSelected = source.selectedPaths.contains(normalizedPath);
-    final selectedPaths =
-        source.selectedPaths.where((path) => path != normalizedPath).toList();
+    final removedSelectedPaths = selectedPathsCoveredBy(source, normalizedPath);
+    final selectedPaths = source.selectedPaths
+        .where((path) => !removedSelectedPaths.contains(path))
+        .toList();
     final updated = source.copyWith(
       selectedPaths: selectedPaths..sort(),
     );
@@ -565,7 +566,7 @@ class AppStore extends ChangeNotifier {
           )) {
         return false;
       }
-      if (exactSelected &&
+      if (removedSelectedPaths.isNotEmpty &&
           updated.selectedPaths.any(
             (path) => sourcePathCovers(
               updated,

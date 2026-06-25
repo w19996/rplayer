@@ -87,6 +87,27 @@ void main() {
     );
   });
 
+  test('webdav parent removal covers descendant selections', () {
+    final source = MediaSourceConfig.webdav(
+      id: 'source',
+      name: 'WebDAV',
+      baseUrl: 'https://example.com/dav',
+      username: '',
+      password: '',
+      directory: '/',
+      selectedPaths: const [
+        '/Shows/A/',
+        '/Shows/B/01.mp4',
+        '/Other/C/',
+      ],
+    );
+
+    expect(
+      selectedPathsCoveredBy(source, '/Shows/'),
+      {'/Shows/A/', '/Shows/B/01.mp4'},
+    );
+  });
+
   test('imports database folder orientation keys for playback lookup', () {
     final store = AppStore();
     store.importMediaStateJson(const {

@@ -72,6 +72,28 @@ bool sourcePathCovers(
   return targetPath.startsWith(prefix);
 }
 
+Set<String> selectedPathsCoveredBy(
+  MediaSourceConfig source,
+  String selectedPath,
+) {
+  final normalizedPath =
+      source.type == SourceType.webdav && selectedPath.endsWith('/')
+          ? normalizeRemoteDir(selectedPath)
+          : sourcePathIdentity(source, selectedPath);
+  final pathIsDir = sourceStoredPathIsDir(source, normalizedPath);
+  return source.selectedPaths
+      .where(
+        (path) => sourcePathCovers(
+          source,
+          normalizedPath,
+          path,
+          containerIsDir: pathIsDir,
+          targetIsDir: sourceStoredPathIsDir(source, path),
+        ),
+      )
+      .toSet();
+}
+
 String sourceItemPath(MediaSourceConfig source, MediaItem item) {
   if (source.type == SourceType.webdav) {
     final prefix = '${source.id}:';
