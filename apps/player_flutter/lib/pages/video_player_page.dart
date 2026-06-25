@@ -82,6 +82,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   bool buffering = false;
   bool loadingVisible = false;
   bool danmuLoading = false;
+  bool inPictureInPicture = false;
   VideoFitMode fitMode = VideoFitMode.contain;
   Tracks availableTracks = const Tracks();
   Track selectedTrack = const Track();
@@ -126,7 +127,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     danmuSearchEpisodeController = TextEditingController();
     lastDanmuVisualSignature = danmuVisualSignature(widget.store.danmuConfig);
     widget.store.addListener(handleStoreChanged);
+    appChannel.setMethodCallHandler(handleAppChannelCall);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    unawaited(setNativePlaybackPipEnabled(true));
+    unawaited(setNativePlaybackPipPlaybackState(playing));
     startStatusTimer();
     startDanmuRenderTimer();
     unawaited(loadCurrentLibraryDetail());
@@ -268,7 +272,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
 
   bool get canShowDanmuOverlay {
     final config = widget.store.danmuConfig;
-    return ready &&
+    return !inPictureInPicture &&
+        ready &&
         danmuSessionId > 0 &&
         config.available &&
         config.visible &&
@@ -424,12 +429,13 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         widget.store.rememberDuration(currentItem.id, value);
       }))
       ..add(player.stream.playing.listen((value) {
+        playing = value;
+        unawaited(setNativePlaybackPipPlaybackState(value));
         if (!ready) {
           logVideoLoading('playing ignored before ready: $value');
           return;
         }
         syncDanmuClock(currentDanmuPosition);
-        playing = value;
         notifyControlsChanged();
         syncDanmuTickerState();
       }))
@@ -636,6 +642,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     SystemChrome.setPreferredOrientations(DeviceOrientation.values);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
         overlays: SystemUiOverlay.values);
+    appChannel.setMethodCallHandler(null);
+    unawaited(setNativePlaybackPipEnabled(false));
     unawaited(setNativePlaybackOrientationMode('off'));
     for (final subscription in subscriptions) {
       subscription.cancel();
@@ -657,6 +665,76 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
           'native playback orientation failed: $mode $error',
           category: 'player');
     }
+  }
+
+  Future<void> setNativePlaybackPipEnabled(bool enabled) async {
+    if (!Platform.isAndroid) return;
+    try {
+      await appChannel.invokeMethod<void>(
+        'setPlaybackPipEnabled',
+        {'enabled': enabled},
+      );
+    } catch (error) {
+      widget.store.addDiagnosticLog(
+          'native playback pip failed: $enabled $error',
+          category: 'player');
+    }
+  }
+
+  Future<void> setNativePlaybackPipPlaybackState(bool isPlaying) async {
+    if (!Platform.isAndroid) return;
+    try {
+      await appChannel.invokeMethod<void>(
+        'setPlaybackPipPlaybackState',
+        {'playing': isPlaying},
+      );
+    } catch (error) {
+      widget.store.addDiagnosticLog(
+          'native playback pip state failed: $isPlaying $error',
+          category: 'player');
+    }
+  }
+
+  Future<dynamic> handleAppChannelCall(MethodCall call) async {
+    switch (call.method) {
+      case 'pipModeChanged':
+        final arguments = call.arguments;
+        final enabled = arguments == true ||
+            arguments is Map && arguments['enabled'] == true;
+        handlePictureInPictureModeChanged(enabled);
+        return null;
+      case 'pipTogglePlayback':
+        await togglePlaybackFromPip();
+        return null;
+      default:
+        throw MissingPluginException(call.method);
+    }
+  }
+
+  void handlePictureInPictureModeChanged(bool enabled) {
+    controlsHideTimer?.cancel();
+    verticalControlOverlayTimer?.cancel();
+    if (enabled) {
+      setControlsVisible(false);
+      clearDanmuOverlay();
+    }
+    setStateIfMounted(() {
+      inPictureInPicture = enabled;
+      if (enabled) {
+        episodePanelOpen = false;
+        episodePanelClosing = false;
+        danmuPanelOpen = false;
+        danmuPanelClosing = false;
+        danmuSearchPanelOpen = false;
+        danmuSearchPanelClosing = false;
+        loadingVisible = false;
+        dragPreviewPosition = null;
+        seekingByDrag = false;
+        verticalControlKind = null;
+        verticalControlLabel = null;
+      }
+    });
+    syncDanmuTickerState();
   }
 
   void setStateIfMounted(VoidCallback update) {
@@ -934,6 +1012,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   }
 
   bool get verticalControlAvailable =>
+      !inPictureInPicture &&
       !controlsLocked &&
       !episodePanelOpen &&
       !danmuPanelOpen &&
@@ -1016,7 +1095,19 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     if (controlsLocked) return;
     markControlsInteraction();
     syncDanmuClock(currentDanmuPosition);
+    unawaited(setNativePlaybackPipPlaybackState(!playing));
     playing ? player.pause() : player.play();
+  }
+
+  Future<void> togglePlaybackFromPip() async {
+    syncDanmuClock(currentDanmuPosition);
+    final nextPlaying = !playing;
+    if (playing) {
+      await player.pause();
+    } else {
+      await player.play();
+    }
+    unawaited(setNativePlaybackPipPlaybackState(nextPlaying));
   }
 
   BoxFit get videoFit => switch (fitMode) {
@@ -2890,24 +2981,35 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
           final isLandscape = constraints.maxWidth >= constraints.maxHeight;
           return GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onHorizontalDragStart: beginSeekDrag,
-            onHorizontalDragUpdate: (details) =>
-                updateSeekDrag(details, constraints.maxWidth),
-            onHorizontalDragEnd: (_) => endSeekDrag(),
-            onHorizontalDragCancel: () {
-              seekingByDrag = false;
-              dragPreviewPosition = null;
-              notifyControlsChanged();
-              scheduleControlsAutoHide();
-            },
-            onVerticalDragStart: (details) =>
-                beginVerticalControlDrag(details, constraints.biggest),
-            onVerticalDragUpdate: (details) =>
-                updateVerticalControlDrag(details, constraints.maxHeight),
-            onVerticalDragEnd: (_) => endVerticalControlDrag(),
-            onVerticalDragCancel: endVerticalControlDrag,
-            onTap: toggleFullscreen,
-            onDoubleTap: controlsLocked ? null : togglePlayback,
+            onHorizontalDragStart: inPictureInPicture ? null : beginSeekDrag,
+            onHorizontalDragUpdate: inPictureInPicture
+                ? null
+                : (details) => updateSeekDrag(details, constraints.maxWidth),
+            onHorizontalDragEnd:
+                inPictureInPicture ? null : (_) => endSeekDrag(),
+            onHorizontalDragCancel: inPictureInPicture
+                ? null
+                : () {
+                    seekingByDrag = false;
+                    dragPreviewPosition = null;
+                    notifyControlsChanged();
+                    scheduleControlsAutoHide();
+                  },
+            onVerticalDragStart: inPictureInPicture
+                ? null
+                : (details) =>
+                    beginVerticalControlDrag(details, constraints.biggest),
+            onVerticalDragUpdate: inPictureInPicture
+                ? null
+                : (details) =>
+                    updateVerticalControlDrag(details, constraints.maxHeight),
+            onVerticalDragEnd:
+                inPictureInPicture ? null : (_) => endVerticalControlDrag(),
+            onVerticalDragCancel:
+                inPictureInPicture ? null : endVerticalControlDrag,
+            onTap: inPictureInPicture ? null : toggleFullscreen,
+            onDoubleTap:
+                inPictureInPicture || controlsLocked ? null : togglePlayback,
             child: Stack(
               fit: StackFit.expand,
               children: [
@@ -2918,16 +3020,19 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
                     controls: NoVideoControls,
                   ),
                 ),
-                buildDanmuOverlay(),
-                if (error == null && loadingVisible) buildLoadingOverlay(),
-                if (error != null)
+                if (!inPictureInPicture) buildDanmuOverlay(),
+                if (!inPictureInPicture && error == null && loadingVisible)
+                  buildLoadingOverlay(),
+                if (!inPictureInPicture && error != null)
                   ErrorView(message: '$error', onRetry: init, dark: true),
-                buildVerticalControlOverlay(),
-                buildControlsOverlay(context, constraints, isLandscape),
-                if (episodePanelOpen)
+                if (!inPictureInPicture) buildVerticalControlOverlay(),
+                if (!inPictureInPicture)
+                  buildControlsOverlay(context, constraints, isLandscape),
+                if (!inPictureInPicture && episodePanelOpen)
                   buildEpisodePanel(constraints, isLandscape),
-                if (danmuPanelOpen) buildDanmuPanel(constraints, isLandscape),
-                if (danmuSearchPanelOpen)
+                if (!inPictureInPicture && danmuPanelOpen)
+                  buildDanmuPanel(constraints, isLandscape),
+                if (!inPictureInPicture && danmuSearchPanelOpen)
                   buildDanmuSearchPanel(constraints, isLandscape),
               ],
             ),

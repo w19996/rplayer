@@ -1,27 +1,52 @@
 package com.example.player_flutter
 
+import android.app.PendingIntent
+import android.app.PictureInPictureParams
+import android.app.RemoteAction
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ActivityInfo
+import android.content.res.Configuration
+import android.graphics.drawable.Icon
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.TrafficStats
 import android.os.BatteryManager
+import android.os.Build
 import android.provider.Settings
+import android.util.Rational
 import android.view.OrientationEventListener
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    companion object {
+        private const val ACTION_PIP_TOGGLE_PLAYBACK = "com.example.player_flutter.PIP_TOGGLE_PLAYBACK"
+    }
+
     private var orientationListener: OrientationEventListener? = null
     private var playbackOrientationMode: String = "off"
     private var currentRequestedOrientation: Int? = null
+    private var playbackPipEnabled: Boolean = false
+    private var pipPlaybackPlaying: Boolean = false
+    private var pipActionReceiverRegistered: Boolean = false
+    private var appChannel: MethodChannel? = null
+    private val pipActionReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == ACTION_PIP_TOGGLE_PLAYBACK) {
+                appChannel?.invokeMethod("pipTogglePlayback", null)
+            }
+        }
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "rplayer/app").setMethodCallHandler { call, result ->
+        registerPipActionReceiver()
+        appChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "rplayer/app")
+        appChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "appFilesDir" -> result.success(filesDir.absolutePath)
                 "playerStatus" -> result.success(playerStatus())
@@ -35,6 +60,15 @@ class MainActivity : FlutterActivity() {
                     setPlaybackOrientationMode(mode)
                     result.success(null)
                 }
+                "setPlaybackPipEnabled" -> {
+                    playbackPipEnabled = call.argument<Boolean>("enabled") == true
+                    result.success(null)
+                }
+                "setPlaybackPipPlaybackState" -> {
+                    pipPlaybackPlaying = call.argument<Boolean>("playing") == true
+                    updatePictureInPictureParamsIfNeeded()
+                    result.success(null)
+                }
                 else -> result.notImplemented()
             }
         }
@@ -42,6 +76,7 @@ class MainActivity : FlutterActivity() {
 
     override fun onDestroy() {
         stopPlaybackOrientationSensor()
+        unregisterPipActionReceiver()
         super.onDestroy()
     }
 
@@ -55,6 +90,26 @@ class MainActivity : FlutterActivity() {
         if (playbackOrientationMode == "landscape") {
             startPlaybackOrientationSensor()
         }
+    }
+
+    override fun onUserLeaveHint() {
+        if (!tryEnterPlaybackPictureInPicture()) {
+            super.onUserLeaveHint()
+        }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (tryEnterPlaybackPictureInPicture()) return
+        super.onBackPressed()
+    }
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        notifyFlutterPipMode(isInPictureInPictureMode)
     }
 
     private fun playerStatus(): Map<String, Any> {
@@ -166,5 +221,77 @@ class MainActivity : FlutterActivity() {
         if (currentRequestedOrientation == orientation) return
         currentRequestedOrientation = orientation
         requestedOrientation = orientation
+    }
+
+    private fun tryEnterPlaybackPictureInPicture(): Boolean {
+        if (!playbackPipEnabled) return false
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
+        if (isInPictureInPictureMode) return false
+        val params = buildPictureInPictureParams()
+        notifyFlutterPipMode(true)
+        return try {
+            val entered = enterPictureInPictureMode(params)
+            if (!entered) notifyFlutterPipMode(false)
+            entered
+        } catch (_: Throwable) {
+            notifyFlutterPipMode(false)
+            false
+        }
+    }
+
+    private fun buildPictureInPictureParams(): PictureInPictureParams {
+        val builder = PictureInPictureParams.Builder()
+            .setAspectRatio(Rational(16, 9))
+        val title = if (pipPlaybackPlaying) "暂停" else "播放"
+        val iconRes = if (pipPlaybackPlaying) {
+            android.R.drawable.ic_media_pause
+        } else {
+            android.R.drawable.ic_media_play
+        }
+        val intent = Intent(ACTION_PIP_TOGGLE_PLAYBACK).setPackage(packageName)
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        val pendingIntent = PendingIntent.getBroadcast(this, 0, intent, flags)
+        val action = RemoteAction(
+            Icon.createWithResource(this, iconRes),
+            title,
+            title,
+            pendingIntent
+        )
+        builder.setActions(listOf(action))
+        return builder.build()
+    }
+
+    private fun updatePictureInPictureParamsIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        if (!isInPictureInPictureMode) return
+        try {
+            setPictureInPictureParams(buildPictureInPictureParams())
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun notifyFlutterPipMode(enabled: Boolean) {
+        appChannel?.invokeMethod("pipModeChanged", enabled)
+    }
+
+    private fun registerPipActionReceiver() {
+        if (pipActionReceiverRegistered) return
+        val filter = IntentFilter(ACTION_PIP_TOGGLE_PLAYBACK)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(pipActionReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(pipActionReceiver, filter)
+        }
+        pipActionReceiverRegistered = true
+    }
+
+    private fun unregisterPipActionReceiver() {
+        if (!pipActionReceiverRegistered) return
+        try {
+            unregisterReceiver(pipActionReceiver)
+        } catch (_: Throwable) {
+        }
+        pipActionReceiverRegistered = false
     }
 }
