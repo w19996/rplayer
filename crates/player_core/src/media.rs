@@ -294,6 +294,22 @@ mod tests {
     }
 
     #[test]
+    fn treats_extras_directory_as_named_version() {
+        let candidates = parse_media_path_candidates(
+            "webdav",
+            "/夸克1/来自：分享/去有风的地方/花絮/彩蛋.mp4",
+        )
+        .unwrap();
+
+        assert_eq!(candidates[0].title, "去有风的地方");
+        assert_eq!(candidates[0].version_name, "花絮");
+        assert_eq!(
+            candidates[0].version_dir_path,
+            "夸克1/来自：分享/去有风的地方/花絮"
+        );
+    }
+
+    #[test]
     fn treats_regex_quality_directory_as_version_context() {
         let candidates =
             parse_media_path_candidates("local", "D:/Shows/Example Show/4K.H.265/01.mkv").unwrap();

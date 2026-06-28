@@ -230,6 +230,21 @@ bool is_common_dir_name(const std::string& text) {
     return std::find(zh.begin(), zh.end(), text) != zh.end();
 }
 
+bool is_named_version_common_dir_name(const std::string& text) {
+    const std::string lower = lower_ascii(trim(text));
+    static const std::vector<std::string> common_versions = {
+        "extras", "extra", "bonus", "special features", "featurettes",
+        "behind the scenes", "behind-the-scenes", "bts", "trailers", "trailer",
+    };
+    if (std::find(common_versions.begin(), common_versions.end(), lower) != common_versions.end()) {
+        return true;
+    }
+    static const std::vector<std::string> zh = {
+        "片头尾", "花絮", "特典", "番外", "彩蛋", "预告", "幕后",
+    };
+    return std::find(zh.begin(), zh.end(), text) != zh.end();
+}
+
 std::string common_dir_media_hint(const std::string& text) {
     const std::string lower = lower_ascii(trim(text));
     if (lower == "movie" || lower == "movies" || text == "电影") {
@@ -823,6 +838,12 @@ std::vector<SearchCandidate> parse_path_candidates(const std::string& source_typ
                 continue;
             }
             if (dir_info.is_pure_season_dir || dir_info.is_common_dir) {
+                if (dir_info.is_common_dir && !context.has_value &&
+                    index + 2 == parts.size() && is_named_version_common_dir_name(trim(dir_name))) {
+                    context.has_value = true;
+                    context.version_name = dir_name;
+                    context.version_dir_path = dir_path;
+                }
                 if (dir_info.is_pure_season_dir && !file_info.has_season) {
                     file_info.has_season = true;
                     file_info.season = dir_info.season;

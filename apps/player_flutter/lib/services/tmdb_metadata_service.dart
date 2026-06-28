@@ -194,13 +194,17 @@ class TmdbMetadataService {
   Future<Map<String, MediaMetadata>> _lookupTvGroupFromCachedTitle(
       MediaFolderGroup group, MediaMetadata cachedTitle) async {
     final id = cachedTitle.tmdbId;
-    final seasons = <int, Map<String, dynamic>?>{};
-    for (final season
-        in group.items.map(inferredSeasonNumber).whereType<int>().toSet()) {
-      _log(
-          'GET /tv/$id/season/$season for new episodes, title cache="${cachedTitle.title}"');
-      seasons[season] = await _getSeasonJson(id, season, group.items);
-    }
+    final seasons = Map<int, Map<String, dynamic>?>.fromEntries(
+      await Future.wait(group.items
+          .map(inferredSeasonNumber)
+          .whereType<int>()
+          .toSet()
+          .map((season) async {
+        _log(
+            'GET /tv/$id/season/$season for new episodes, title cache="${cachedTitle.title}"');
+        return MapEntry(season, await _getSeasonJson(id, season, group.items));
+      })),
+    );
     return {
       for (final item in group.items)
         item.id: _tvMetadataFromCachedTitle(
@@ -271,12 +275,16 @@ class TmdbMetadataService {
       '/tv/$id',
       {'append_to_response': 'images,aggregate_credits'},
     );
-    final seasons = <int, Map<String, dynamic>?>{};
-    for (final season
-        in group.items.map(inferredSeasonNumber).whereType<int>().toSet()) {
-      _log('GET /tv/$id/season/$season once for group="${group.title}"');
-      seasons[season] = await _getSeasonJson(id, season, group.items);
-    }
+    final seasons = Map<int, Map<String, dynamic>?>.fromEntries(
+      await Future.wait(group.items
+          .map(inferredSeasonNumber)
+          .whereType<int>()
+          .toSet()
+          .map((season) async {
+        _log('GET /tv/$id/season/$season once for group="${group.title}"');
+        return MapEntry(season, await _getSeasonJson(id, season, group.items));
+      })),
+    );
     return {
       for (final item in group.items)
         item.id: _tvMetadata(

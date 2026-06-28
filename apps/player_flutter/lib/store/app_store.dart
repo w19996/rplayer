@@ -26,6 +26,7 @@ class AppStore extends ChangeNotifier {
   Future<void> _diagnosticLogWriteChain = Future.value();
   Future<void> _metadataDatabaseWriteChain = Future.value();
   final Map<String, Uint8List?> _imageCache = {};
+  final Set<String> _imageCacheMetadataWriteKeys = {};
   int _lastScanNotifyMs = 0;
   int _pathParseLogCount = 0;
   static const int _diagnosticLogPreviewLimit = 100;
@@ -224,21 +225,12 @@ class AppStore extends ChangeNotifier {
         'database write metadata core finished: item=$itemId, bytes=${metadataJson.length}',
         category: 'database',
       );
-      if (value.posterPath?.trim().isNotEmpty == true) {
-        addDiagnosticLog(
-          'database write image cache metadata started: item=$itemId, poster=${value.posterPath}',
-          category: 'database',
-        );
-        await RustCoreService.instance.metadataCacheImagesAsync(
-          db.path,
-          homeImageJson,
-          tmdbConfig.imageBaseUrl,
-        );
-        addDiagnosticLog(
-          'database write image cache metadata finished: item=$itemId, bytes=${homeImageJson.length}',
-          category: 'database',
-        );
-      }
+      _cacheHomePosterInBackground(
+        dbPath: db.path,
+        itemId: itemId,
+        value: value,
+        metadataJson: homeImageJson,
+      );
       addDiagnosticLog(
         'database write metadata finished: item=$itemId, elapsed=${stopwatch.elapsedMilliseconds}ms',
         category: 'database',
@@ -252,6 +244,45 @@ class AppStore extends ChangeNotifier {
   Map<String, dynamic> homeImageCacheMetadata(MediaMetadata value) => {
         'posterPath': value.posterPath,
       };
+
+  void _cacheHomePosterInBackground({
+    required String dbPath,
+    required String itemId,
+    required MediaMetadata value,
+    required String metadataJson,
+  }) {
+    final posterPath = value.posterPath?.trim();
+    if (posterPath?.isNotEmpty != true) return;
+    final cacheKey = 'w500:${_normalizedImagePath(posterPath!)}';
+    if (!_imageCacheMetadataWriteKeys.add(cacheKey)) return;
+    addDiagnosticLog(
+      'database write image cache metadata queued: item=$itemId, poster=${value.posterPath}',
+      category: 'database',
+    );
+    unawaited(() async {
+      try {
+        await RustCoreService.instance.metadataCacheImagesAsync(
+          dbPath,
+          metadataJson,
+          tmdbConfig.imageBaseUrl,
+        );
+        addDiagnosticLog(
+          'database write image cache metadata finished: item=$itemId, jsonBytes=${metadataJson.length}',
+          category: 'database',
+        );
+      } catch (error) {
+        addDiagnosticLog(
+          'database write image cache metadata failed: item=$itemId - $error',
+          category: 'database',
+        );
+      }
+    }());
+  }
+
+  String _normalizedImagePath(String value) {
+    final trimmed = value.trim();
+    return trimmed.startsWith('/') ? trimmed : '/$trimmed';
+  }
 
   Future<void> reloadDatabaseBackedState() async {
     addDiagnosticLog('database backed state reload requested',
@@ -843,7 +874,8 @@ class AppStore extends ChangeNotifier {
             continue;
           }
           if (values.isNotEmpty) {
-            for (final entry in values.entries) {
+            final entries = values.entries.toList(growable: false);
+            for (final entry in entries) {
               metadata[entry.key] = entry.value;
               metadataRevision++;
               matched++;
@@ -851,6 +883,14 @@ class AppStore extends ChangeNotifier {
                 'TMDB matched item=${entry.key} tmdb=${entry.value.tmdbId} type=${entry.value.mediaType} episode=${entry.value.episodeName} poster=${entry.value.posterPath} still=${entry.value.stillPath}',
                 category: 'match',
               );
+            }
+            if (entries.isNotEmpty) {
+              final first = entries.first;
+              await saveMetadataToDatabase(group.key, first.key, first.value);
+              notifyListeners();
+              await Future<void>.delayed(Duration.zero);
+            }
+            for (final entry in entries.skip(1)) {
               await saveMetadataToDatabase(group.key, entry.key, entry.value);
             }
           } else {
@@ -886,7 +926,7 @@ class AppStore extends ChangeNotifier {
 
   int _tmdbMatchWorkerCount(int groupCount, bool force) {
     if (groupCount <= 0) return 0;
-    final maxWorkers = force ? 3 : 2;
+    final maxWorkers = force ? 8 : 6;
     return math.min(maxWorkers, groupCount);
   }
 
