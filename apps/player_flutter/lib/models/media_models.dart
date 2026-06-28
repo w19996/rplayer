@@ -133,17 +133,18 @@ class MediaItem {
     this.season,
     this.episode,
     this.mediaKind = 'Unknown',
+    this.groupPath = '',
+    this.versionName = '',
+    this.versionDirPath = '',
     this.size,
   });
 
   factory MediaItem.local(
       {required MediaSourceConfig source, required String path, int? size}) {
     final title = p.basenameWithoutExtension(path);
-    final folderTitle = mediaSeriesTitleFromLocalPath(path);
-    final identity = RustCoreService.instance.tryParseMediaIdentity(
-      folderTitle,
-      p.basename(path),
-    );
+    final candidate = RustCoreService.instance
+        .tryParseMediaPathCandidate(SourceType.local, path);
+    final folderTitle = candidate?.title ?? mediaSeriesTitleFromLocalPath(path);
     return MediaItem(
       id: '${source.id}:$path',
       sourceId: source.id,
@@ -152,11 +153,18 @@ class MediaItem {
       title: title,
       uri: path,
       folderTitle: folderTitle,
-      matchTitle: identity?.normalizedTitle ?? title,
-      matchYear: identity?.year,
-      season: identity?.season,
-      episode: identity?.episode,
-      mediaKind: identity?.kind ?? 'Unknown',
+      matchTitle: candidate?.title ?? title,
+      matchYear: candidate?.year,
+      season: candidate?.seasonNumber,
+      episode: candidate?.episodeNumber,
+      mediaKind: candidate?.mediaTypeHint == 'tv'
+          ? 'TvEpisode'
+          : candidate?.mediaTypeHint == 'movie'
+              ? 'Movie'
+              : 'Unknown',
+      groupPath: candidate?.sourcePath ?? '',
+      versionName: candidate?.versionName ?? '',
+      versionDirPath: candidate?.versionDirPath ?? '',
       size: size,
     );
   }
@@ -164,11 +172,10 @@ class MediaItem {
   factory MediaItem.webdav(
       {required MediaSourceConfig source, required WebdavEntry entry}) {
     final title = p.basenameWithoutExtension(entry.name);
-    final folderTitle = mediaSeriesTitleFromRemotePath(entry.path);
-    final identity = RustCoreService.instance.tryParseMediaIdentity(
-      folderTitle,
-      entry.name,
-    );
+    final candidate = RustCoreService.instance
+        .tryParseMediaPathCandidate(SourceType.webdav, entry.path);
+    final folderTitle =
+        candidate?.title ?? mediaSeriesTitleFromRemotePath(entry.path);
     return MediaItem(
       id: '${source.id}:${entry.path}',
       sourceId: source.id,
@@ -177,11 +184,18 @@ class MediaItem {
       title: title,
       uri: entry.url,
       folderTitle: folderTitle,
-      matchTitle: identity?.normalizedTitle ?? title,
-      matchYear: identity?.year,
-      season: identity?.season,
-      episode: identity?.episode,
-      mediaKind: identity?.kind ?? 'Unknown',
+      matchTitle: candidate?.title ?? title,
+      matchYear: candidate?.year,
+      season: candidate?.seasonNumber,
+      episode: candidate?.episodeNumber,
+      mediaKind: candidate?.mediaTypeHint == 'tv'
+          ? 'TvEpisode'
+          : candidate?.mediaTypeHint == 'movie'
+              ? 'Movie'
+              : 'Unknown',
+      groupPath: candidate?.sourcePath ?? '',
+      versionName: candidate?.versionName ?? '',
+      versionDirPath: candidate?.versionDirPath ?? '',
       size: entry.size,
     );
   }
@@ -198,6 +212,9 @@ class MediaItem {
   final int? season;
   final int? episode;
   final String mediaKind;
+  final String groupPath;
+  final String versionName;
+  final String versionDirPath;
   final int? size;
 
   MediaItem copyWith({
@@ -213,6 +230,9 @@ class MediaItem {
     int? season,
     int? episode,
     String? mediaKind,
+    String? groupPath,
+    String? versionName,
+    String? versionDirPath,
     int? size,
   }) {
     return MediaItem(
@@ -228,34 +248,10 @@ class MediaItem {
       season: season ?? this.season,
       episode: episode ?? this.episode,
       mediaKind: mediaKind ?? this.mediaKind,
+      groupPath: groupPath ?? this.groupPath,
+      versionName: versionName ?? this.versionName,
+      versionDirPath: versionDirPath ?? this.versionDirPath,
       size: size ?? this.size,
-    );
-  }
-
-  MediaItem withFreshIdentity() {
-    final folder = mediaFolderTitle(this);
-    final fileName = mediaIdentityFileName(this);
-    final identity = RustCoreService.instance.tryParseMediaIdentity(
-      folder,
-      fileName,
-    );
-    if (identity == null) return this;
-    return MediaItem(
-      id: id,
-      sourceId: sourceId,
-      sourceName: sourceName,
-      type: type,
-      title: title,
-      uri: uri,
-      folderTitle: folder.isEmpty ? folderTitle : folder,
-      matchTitle: identity.normalizedTitle.isEmpty
-          ? matchTitle
-          : identity.normalizedTitle,
-      matchYear: identity.year,
-      season: identity.season,
-      episode: identity.episode,
-      mediaKind: identity.kind,
-      size: size,
     );
   }
 
@@ -274,6 +270,9 @@ class MediaItem {
         season: (json['season'] as num?)?.toInt(),
         episode: (json['episode'] as num?)?.toInt(),
         mediaKind: json['mediaKind'] as String? ?? 'Unknown',
+        groupPath: json['groupPath'] as String? ?? '',
+        versionName: json['versionName'] as String? ?? '',
+        versionDirPath: json['versionDirPath'] as String? ?? '',
         size: (json['size'] as num?)?.toInt(),
       );
 
@@ -290,6 +289,9 @@ class MediaItem {
         'season': season,
         'episode': episode,
         'mediaKind': mediaKind,
+        'groupPath': groupPath,
+        'versionName': versionName,
+        'versionDirPath': versionDirPath,
         'size': size,
       };
 }
@@ -1086,6 +1088,8 @@ class LibraryFileEntry {
     this.episodeAirDate,
     this.runtime,
     this.stillPath,
+    this.versionName,
+    this.versionDirPath,
   });
 
   final int fileId;
@@ -1118,6 +1122,8 @@ class LibraryFileEntry {
   final String? episodeAirDate;
   final int? runtime;
   final String? stillPath;
+  final String? versionName;
+  final String? versionDirPath;
 
   factory LibraryFileEntry.fromJson(Map<String, dynamic> json) {
     return LibraryFileEntry(
@@ -1151,6 +1157,8 @@ class LibraryFileEntry {
       episodeAirDate: json['episodeAirDate'] as String?,
       runtime: (json['runtime'] as num?)?.toInt(),
       stillPath: json['stillPath'] as String?,
+      versionName: json['versionName'] as String?,
+      versionDirPath: json['versionDirPath'] as String?,
     );
   }
 
@@ -1161,6 +1169,14 @@ class LibraryFileEntry {
 
   int? get displayEpisode => episodeNumber ?? guessEpisode;
   int? get displaySeason => seasonNumber ?? guessSeason;
+  String get versionKey => versionDirPath?.trim().isNotEmpty == true
+      ? versionDirPath!.trim()
+      : (versionName?.trim().isNotEmpty == true ? versionName!.trim() : '默认');
+  String get versionLabel => versionName?.trim().isNotEmpty == true
+      ? versionName!.trim()
+      : (versionDirPath?.trim().isNotEmpty == true
+          ? versionDirPath!.split('/').where((part) => part.isNotEmpty).last
+          : '默认');
 }
 
 class LibraryRecentEntry {

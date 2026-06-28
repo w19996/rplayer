@@ -62,6 +62,9 @@ class DanmuService {
     _log('danmu manual episode search: $searchUri');
     final searchResponse =
         await http.get(searchUri, headers: {'accept': 'application/json'});
+    _log(
+      'danmu manual episode response: status=${searchResponse.statusCode} body=${_shortLogBody(searchResponse.body)}',
+    );
     if (searchResponse.statusCode < 200 || searchResponse.statusCode >= 300) {
       throw StateError('搜索失败：HTTP ${searchResponse.statusCode}');
     }
@@ -72,6 +75,7 @@ class DanmuService {
       fallbackEpisodeNumber: episode,
     );
     if (episodeResults.isNotEmpty) {
+      _log('danmu manual episode results=${episodeResults.length}');
       return _sortDanmuSearchResults(
         episodeResults,
         preferredEpisode: episode,
@@ -83,6 +87,9 @@ class DanmuService {
     _log('danmu manual anime fallback: $animeSearchUri');
     final animeSearchResponse =
         await http.get(animeSearchUri, headers: {'accept': 'application/json'});
+    _log(
+      'danmu manual anime response: status=${animeSearchResponse.statusCode} body=${_shortLogBody(animeSearchResponse.body)}',
+    );
     if (animeSearchResponse.statusCode < 200 ||
         animeSearchResponse.statusCode >= 300) {
       return const [];
@@ -110,6 +117,9 @@ class DanmuService {
       _log('danmu manual bangumi: $bangumiUri');
       final bangumiResponse =
           await http.get(bangumiUri, headers: {'accept': 'application/json'});
+      _log(
+        'danmu manual bangumi response: animeId=$animeId status=${bangumiResponse.statusCode} body=${_shortLogBody(bangumiResponse.body)}',
+      );
       if (bangumiResponse.statusCode < 200 ||
           bangumiResponse.statusCode >= 300) {
         continue;
@@ -146,12 +156,19 @@ class DanmuService {
         ));
       }
     }
+    _log('danmu manual search results=${results.length}');
     return _sortDanmuSearchResults(results, preferredEpisode: episode);
   }
 
   void _log(String message) {
     log?.call(message);
   }
+}
+
+String _shortLogBody(String body) {
+  const limit = 2000;
+  if (body.length <= limit) return body;
+  return '${body.substring(0, limit)}...<truncated ${body.length - limit} chars>';
 }
 
 class DanmuSearchResult {

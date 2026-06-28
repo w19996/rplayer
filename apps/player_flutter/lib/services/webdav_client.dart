@@ -124,81 +124,12 @@ class WebdavClient {
 
 List<WebdavEntry> parseWebdavEntries(
     String body, MediaSourceConfig source, Uri requestUri, String currentPath) {
-  try {
-    return RustCoreService.instance.parseWebdavEntries(
-      body: body,
-      baseUrl: source.baseUrl,
-      requestUrl: requestUri.toString(),
-      currentPath: currentPath,
-    );
-  } catch (_) {
-    // Keep the Dart parser as a compatibility fallback for platforms where the
-    // Rust core is not packaged yet, or for unusual server responses.
-  }
-
-  final doc = XmlDocument.parse(body);
-  final entries = <WebdavEntry>[];
-  final baseUri = Uri.parse(
-      source.baseUrl.endsWith('/') ? source.baseUrl : '${source.baseUrl}/');
-  final basePath = Uri.decodeComponent(
-      baseUri.path.endsWith('/') ? baseUri.path : '${baseUri.path}/');
-  final current = normalizeRemoteDir(currentPath);
-
-  final responses = doc.descendants
-      .whereType<XmlElement>()
-      .where((node) => node.name.local == 'response');
-  for (final response in responses) {
-    final href = response.descendants
-        .whereType<XmlElement>()
-        .where((node) => node.name.local == 'href')
-        .firstOrNull
-        ?.innerText;
-    if (href == null || href.isEmpty) continue;
-    final resolved = requestUri.resolve(href);
-    final decodedPath = Uri.decodeComponent(resolved.path);
-    var remotePath = decodedPath.startsWith(basePath)
-        ? '/${decodedPath.substring(basePath.length)}'
-        : decodedPath;
-    if (remotePath.isEmpty) remotePath = '/';
-    final isDir = response.descendants
-        .whereType<XmlElement>()
-        .any((node) => node.name.local == 'collection');
-    if (isDir) remotePath = normalizeRemoteDir(remotePath);
-    if (remotePath == '/' ||
-        remotePath == current ||
-        decodedPath == Uri.decodeComponent(requestUri.path)) {
-      continue;
-    }
-
-    final displayName = response.descendants
-        .whereType<XmlElement>()
-        .where((node) => node.name.local == 'displayname')
-        .firstOrNull
-        ?.innerText;
-    final sizeText = response.descendants
-        .whereType<XmlElement>()
-        .where((node) => node.name.local == 'getcontentlength')
-        .firstOrNull
-        ?.innerText;
-    final name = (displayName == null || displayName.isEmpty)
-        ? (remotePath.split('/').where((part) => part.isNotEmpty).lastOrNull ??
-            remotePath)
-        : displayName;
-    entries.add(
-      WebdavEntry(
-        name: name,
-        path: remotePath,
-        url: resolved.toString(),
-        isDir: isDir,
-        size: int.tryParse(sizeText ?? ''),
-      ),
-    );
-  }
-  entries.sort((a, b) {
-    if (a.isDir != b.isDir) return a.isDir ? -1 : 1;
-    return a.name.toLowerCase().compareTo(b.name.toLowerCase());
-  });
-  return entries;
+  return RustCoreService.instance.parseWebdavEntries(
+    body: body,
+    baseUrl: source.baseUrl,
+    requestUrl: requestUri.toString(),
+    currentPath: currentPath,
+  );
 }
 
 extension FirstOrNull<T> on Iterable<T> {

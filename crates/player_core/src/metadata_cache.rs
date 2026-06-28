@@ -5,8 +5,10 @@ use serde_json::{Map, Value};
 use std::{collections::HashSet, fs, path::Path};
 use url::Url;
 
+use crate::media::parse_media_path_candidates;
+
 fn current_metadata_schema_version() -> i64 {
-    10
+    11
 }
 
 pub fn put_metadata_json(
@@ -415,11 +417,17 @@ pub fn query_home_json(db_path: &str) -> Result<String> {
 
 pub fn query_show_detail_json(db_path: &str, folder_key: &str) -> Result<String> {
     let conn = open(db_path)?;
-    let (source_id, group_path) = parse_group_key(folder_key).unwrap_or_default();
-    let like = if group_path.ends_with('/') {
-        format!("{group_path}%")
-    } else {
-        format!("{group_path}/%")
+    let folder_id = match parse_group_key(folder_key) {
+        Some((source_id, group_path)) => match conn.query_row(
+            "select id from source_folders where source_id=?1 and path=?2",
+            params![source_id, group_path],
+            |row| row.get::<_, i64>(0),
+        ) {
+            Ok(id) => id,
+            Err(rusqlite::Error::QueryReturnedNoRows) => -1,
+            Err(error) => return Err(error.into()),
+        },
+        None => -1,
     };
     let mut stmt = conn.prepare(
         "select
@@ -455,7 +463,9 @@ pub fn query_show_detail_json(db_path: &str, folder_key: &str) -> Result<String>
            e.still_path,
            m.id,
            case when m.id is not null then 'movie' when s.id is not null then 'tv' end,
-           s.type
+           s.type,
+           mf.parsed_version_name,
+           mf.parsed_version_dir_path
          from media_files mf
          left join playback_progress pp on pp.file_id = mf.id
          left join media_file_matches mfm on mfm.file_id = mf.id
@@ -464,13 +474,12 @@ pub fn query_show_detail_json(db_path: &str, folder_key: &str) -> Result<String>
          left join media_file_movie_matches mfmm on mfmm.file_id = mf.id
          left join tmdb_movies m on m.id = mfmm.movie_id
          where mf.scan_status = 'active'
-           and (?1 = '' or mf.source_id = ?1)
-           and (?2 = '' or mf.relative_path = ?2 or mf.relative_path like ?3)
+           and mf.folder_id = ?1
          order by coalesce(e.season_number, mf.guess_season, 1),
                   coalesce(e.episode_number, mf.guess_episode, 999999),
                   mf.filename",
     )?;
-    let rows = stmt.query_map(params![source_id, group_path, like], |row| {
+    let rows = stmt.query_map(params![folder_id], |row| {
         let mut object = Map::new();
         object.insert("fileId".to_string(), Value::from(row.get::<_, i64>(0)?));
         object.insert("itemId".to_string(), Value::from(row.get::<_, String>(1)?));
@@ -539,6 +548,16 @@ pub fn query_show_detail_json(db_path: &str, folder_key: &str) -> Result<String>
         insert_optional_i64(&mut object, "movieId", row.get::<_, Option<i64>>(30)?);
         insert_optional_string(&mut object, "mediaType", row.get::<_, Option<String>>(31)?);
         insert_optional_string(&mut object, "tmdbType", row.get::<_, Option<String>>(32)?);
+        insert_optional_string(
+            &mut object,
+            "versionName",
+            row.get::<_, Option<String>>(33)?,
+        );
+        insert_optional_string(
+            &mut object,
+            "versionDirPath",
+            row.get::<_, Option<String>>(34)?,
+        );
         Ok(Value::Object(object))
     })?;
     let mut files = Vec::new();
@@ -789,6 +808,18 @@ fn open(db_path: &str) -> Result<Connection> {
            guess_season integer,
            guess_episode integer,
            guess_quality text,
+           show_id integer,
+           season_id integer,
+           episode_id integer,
+           movie_id integer,
+           media_type text,
+           version_id integer,
+           parse_source text,
+           parse_confidence real,
+           parse_warnings_json text,
+           parsed_version_name text,
+           parsed_version_tags_json text,
+           parsed_version_dir_path text,
            media_kind_hint text,
            scan_status text not null default 'active',
            created_at integer not null,
@@ -929,6 +960,27 @@ fn open(db_path: &str) -> Result<Connection> {
            foreign key(show_id) references tmdb_tv_shows(id) on delete cascade,
            foreign key(season_id) references tmdb_tv_seasons(id) on delete cascade
          );
+         create table if not exists media_versions(
+           id integer primary key autoincrement,
+           media_type text not null default 'tv',
+           show_id integer,
+           movie_id integer,
+           source_id text,
+           version_name text not null,
+           version_dir_path text,
+           resolution text,
+           quality_tag text,
+           source_tag text,
+           codec text,
+           audio_tag text,
+           subtitle_tag text,
+           extra_tags_json text,
+           created_at integer not null,
+           updated_at integer not null,
+           unique(media_type, show_id, movie_id, source_id, version_dir_path),
+           foreign key(show_id) references tmdb_tv_shows(id) on delete cascade,
+           foreign key(movie_id) references tmdb_movies(id) on delete cascade
+         );
          create table if not exists source_folder_matches(
            id integer primary key autoincrement,
            folder_id integer not null,
@@ -938,6 +990,10 @@ fn open(db_path: &str) -> Result<Connection> {
            search_query text,
            selected_tmdb_id integer not null,
            matched_by text,
+           title_dir_path text,
+           normalized_title text,
+           parse_source text,
+           parse_warnings_json text,
            created_at integer not null,
            updated_at integer not null,
            unique(folder_id, provider),
@@ -953,6 +1009,10 @@ fn open(db_path: &str) -> Result<Connection> {
            search_query text,
            selected_tmdb_id integer not null,
            matched_by text,
+           title_dir_path text,
+           normalized_title text,
+           parse_source text,
+           parse_warnings_json text,
            created_at integer not null,
            updated_at integer not null,
            unique(folder_id, provider),
@@ -971,13 +1031,18 @@ fn open(db_path: &str) -> Result<Connection> {
            search_query text,
            selected_tmdb_id integer,
            matched_by text,
+           version_id integer,
+           parse_source text,
+           parse_confidence real,
+           parse_warnings_json text,
            created_at integer not null,
            updated_at integer not null,
            unique(file_id),
            foreign key(file_id) references media_files(id) on delete cascade,
            foreign key(show_id) references tmdb_tv_shows(id) on delete cascade,
            foreign key(season_id) references tmdb_tv_seasons(id) on delete set null,
-           foreign key(episode_id) references tmdb_tv_episodes(id) on delete set null
+           foreign key(episode_id) references tmdb_tv_episodes(id) on delete set null,
+           foreign key(version_id) references media_versions(id) on delete set null
          );
          create table if not exists media_file_movie_matches(
            id integer primary key autoincrement,
@@ -989,11 +1054,16 @@ fn open(db_path: &str) -> Result<Connection> {
            search_query text,
            selected_tmdb_id integer,
            matched_by text,
+           version_id integer,
+           parse_source text,
+           parse_confidence real,
+           parse_warnings_json text,
            created_at integer not null,
            updated_at integer not null,
            unique(file_id),
            foreign key(file_id) references media_files(id) on delete cascade,
-           foreign key(movie_id) references tmdb_movies(id) on delete cascade
+           foreign key(movie_id) references tmdb_movies(id) on delete cascade,
+           foreign key(version_id) references media_versions(id) on delete set null
          );
          create table if not exists tmdb_images(
            id integer primary key autoincrement,
@@ -1072,13 +1142,23 @@ fn open(db_path: &str) -> Result<Connection> {
          create index if not exists idx_media_files_folder on media_files(folder_id);
          create index if not exists idx_media_files_source_path on media_files(source_id, relative_path);
          create index if not exists idx_media_files_guess on media_files(guess_title, guess_season, guess_episode);
+         create index if not exists idx_media_files_show_season_version on media_files(show_id, guess_season, version_id);
+         create index if not exists idx_media_files_episode_version on media_files(show_id, season_id, episode_id, version_id);
+         create index if not exists idx_media_versions_tv on media_versions(media_type, show_id);
+         create index if not exists idx_media_versions_movie on media_versions(media_type, movie_id);
+         create index if not exists idx_media_versions_tv_source on media_versions(media_type, show_id, source_id);
+         create index if not exists idx_media_versions_movie_source on media_versions(media_type, movie_id, source_id);
          create index if not exists idx_playback_recent on playback_progress(last_played_at desc);
          create index if not exists idx_folder_matches_folder on source_folder_matches(folder_id);
          create index if not exists idx_folder_matches_show on source_folder_matches(show_id);
+         create index if not exists idx_source_folder_matches_title_dir on source_folder_matches(title_dir_path);
          create index if not exists idx_folder_movie_matches_folder on source_folder_movie_matches(folder_id);
          create index if not exists idx_folder_movie_matches_movie on source_folder_movie_matches(movie_id);
+         create index if not exists idx_source_folder_movie_matches_title_dir on source_folder_movie_matches(title_dir_path);
          create index if not exists idx_file_matches_episode on media_file_matches(episode_id);
+         create index if not exists idx_media_file_matches_version on media_file_matches(version_id);
          create index if not exists idx_file_movie_matches_movie on media_file_movie_matches(movie_id);
+         create index if not exists idx_media_file_movie_matches_version on media_file_movie_matches(version_id);
          create index if not exists idx_tmdb_episodes_lookup on tmdb_tv_episodes(show_id, season_number, episode_number);
           create index if not exists idx_image_cache_path_size on image_cache(provider, file_path, size);",
     )?;
@@ -1086,6 +1166,61 @@ fn open(db_path: &str) -> Result<Connection> {
     add_column_if_missing(&conn, "sources", "password", "text")?;
     add_column_if_missing(&conn, "tmdb_tv_shows", "genres_json", "text")?;
     add_column_if_missing(&conn, "tmdb_movies", "genres_json", "text")?;
+    for (column, ty) in [
+        ("show_id", "integer"),
+        ("season_id", "integer"),
+        ("episode_id", "integer"),
+        ("movie_id", "integer"),
+        ("media_type", "text"),
+        ("version_id", "integer"),
+        ("parse_source", "text"),
+        ("parse_confidence", "real"),
+        ("parse_warnings_json", "text"),
+        ("parsed_version_name", "text"),
+        ("parsed_version_tags_json", "text"),
+        ("parsed_version_dir_path", "text"),
+    ] {
+        add_column_if_missing(&conn, "media_files", column, ty)?;
+    }
+    for (column, ty) in [("media_type", "text"), ("movie_id", "integer")] {
+        add_column_if_missing(&conn, "media_versions", column, ty)?;
+    }
+    conn.execute(
+        "update media_versions set media_type='tv' where media_type is null or media_type=''",
+        [],
+    )?;
+    for (column, ty) in [
+        ("title_dir_path", "text"),
+        ("normalized_title", "text"),
+        ("parse_source", "text"),
+        ("parse_warnings_json", "text"),
+    ] {
+        add_column_if_missing(&conn, "source_folder_matches", column, ty)?;
+    }
+    for (column, ty) in [
+        ("title_dir_path", "text"),
+        ("normalized_title", "text"),
+        ("parse_source", "text"),
+        ("parse_warnings_json", "text"),
+    ] {
+        add_column_if_missing(&conn, "source_folder_movie_matches", column, ty)?;
+    }
+    for (column, ty) in [
+        ("version_id", "integer"),
+        ("parse_source", "text"),
+        ("parse_confidence", "real"),
+        ("parse_warnings_json", "text"),
+    ] {
+        add_column_if_missing(&conn, "media_file_matches", column, ty)?;
+    }
+    for (column, ty) in [
+        ("version_id", "integer"),
+        ("parse_source", "text"),
+        ("parse_confidence", "real"),
+        ("parse_warnings_json", "text"),
+    ] {
+        add_column_if_missing(&conn, "media_file_movie_matches", column, ty)?;
+    }
     drop_column_if_exists(&conn, "tmdb_tv_shows", "raw_json")?;
     drop_column_if_exists(&conn, "tmdb_movies", "raw_json")?;
     drop_column_if_exists(&conn, "match_candidates", "raw_json")?;
@@ -1123,6 +1258,7 @@ fn reset_incompatible_legacy_schema(conn: &Connection) -> Result<()> {
          drop table if exists tmdb_images;
          drop table if exists media_file_movie_matches;
          drop table if exists media_file_matches;
+         drop table if exists media_versions;
          drop table if exists source_folder_movie_matches;
          drop table if exists source_folder_matches;
          drop table if exists match_candidates;
@@ -1233,9 +1369,11 @@ fn export_library_state_json(conn: &Connection) -> Result<String> {
         "select mf.item_id, mf.source_id, s.name, s.type,
                 coalesce(s.base_url, ''), mf.relative_path, mf.filename,
                 coalesce(mf.guess_title, ''), mf.guess_season, mf.guess_episode,
-                coalesce(mf.media_kind_hint, 'Unknown'), mf.size
+                coalesce(mf.media_kind_hint, 'Unknown'), mf.size, sf.path,
+                mf.parsed_version_name, mf.parsed_version_dir_path
          from media_files mf
          join sources s on s.id = mf.source_id
+         join source_folders sf on sf.id = mf.folder_id
          where mf.scan_status='active'
          order by mf.created_at, mf.id",
     )?;
@@ -1253,6 +1391,9 @@ fn export_library_state_json(conn: &Connection) -> Result<String> {
             row.get::<_, Option<i64>>(9)?,
             row.get::<_, String>(10)?,
             row.get::<_, Option<i64>>(11)?,
+            row.get::<_, String>(12)?,
+            row.get::<_, Option<String>>(13)?,
+            row.get::<_, Option<String>>(14)?,
         ))
     })?;
     for row in rows {
@@ -1269,6 +1410,9 @@ fn export_library_state_json(conn: &Connection) -> Result<String> {
             guess_episode,
             media_kind,
             size,
+            group_path,
+            version_name,
+            version_dir_path,
         ) = row?;
         let uri = if source_type == "webdav" {
             webdav_uri(&base_url, &relative_path)
@@ -1293,6 +1437,9 @@ fn export_library_state_json(conn: &Connection) -> Result<String> {
         insert_optional_i64(&mut object, "season", guess_season);
         insert_optional_i64(&mut object, "episode", guess_episode);
         object.insert("mediaKind".to_string(), Value::String(media_kind));
+        object.insert("groupPath".to_string(), Value::String(group_path));
+        insert_optional_string(&mut object, "versionName", version_name);
+        insert_optional_string(&mut object, "versionDirPath", version_dir_path);
         insert_optional_i64(&mut object, "size", size);
         items.push(Value::Object(object));
     }
@@ -1505,24 +1652,53 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
         let item_type = item.get("type").and_then(Value::as_str).unwrap_or("local");
         let uri = item.get("uri").and_then(Value::as_str).unwrap_or("");
         let relative_path = item_relative_path(item_type, uri);
-        let folder_path = parent_path(&relative_path);
-        let folder_id = upsert_source_folder(
-            conn,
-            source_id,
-            &folder_path,
-            item.get("matchTitle").and_then(Value::as_str),
-            false,
-            now,
-        )?;
+        let parsed_candidates =
+            parse_media_path_candidates(item_type, &relative_path).unwrap_or_default();
+        let parsed = parsed_candidates.first();
+        let guess_title = parsed
+            .map(|candidate| candidate.title.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| item.get("matchTitle").and_then(Value::as_str))
+            .or_else(|| item.get("title").and_then(Value::as_str));
+        let guess_season = parsed
+            .and_then(|candidate| candidate.season_number.map(i64::from))
+            .or_else(|| item.get("season").and_then(Value::as_i64));
+        let guess_episode = parsed
+            .and_then(|candidate| candidate.episode_number.map(i64::from))
+            .or_else(|| item.get("episode").and_then(Value::as_i64));
+        let parse_source = parsed.map(|candidate| candidate.source_type.as_str());
+        let parse_confidence = parsed.map(|candidate| candidate.confidence);
+        let parse_warnings_json = parsed
+            .map(|candidate| serde_json::to_string(&candidate.warnings))
+            .transpose()?;
+        let parsed_version_name = parsed.map(|candidate| candidate.version_name.as_str());
+        let parsed_version_tags_json = parsed
+            .map(|candidate| serde_json::to_string(&candidate.version_tags))
+            .transpose()?;
+        let parsed_version_dir_path = parsed
+            .map(|candidate| candidate.version_dir_path.as_str())
+            .filter(|value| !value.trim().is_empty());
+        let media_type_hint = parsed
+            .map(|candidate| candidate.media_type_hint.as_str())
+            .filter(|value| *value == "tv" || *value == "movie");
+        let folder_path = parsed
+            .map(|candidate| parsed_source_folder_path(&relative_path, &candidate.source_path))
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| parent_path(&relative_path));
+        let folder_id =
+            upsert_source_folder(conn, source_id, &folder_path, guess_title, false, now)?;
         live_folder_keys.insert(format!("{source_id}\n{folder_path}"));
         live_item_ids.insert(item_id.to_string());
         conn.execute(
             "insert into media_files(
                item_id, source_id, folder_id, relative_path, filename, file_ext,
                size, guess_title, guess_season, guess_episode, guess_quality,
+               media_type,
+               parse_source, parse_confidence, parse_warnings_json,
+               parsed_version_name, parsed_version_tags_json, parsed_version_dir_path,
                media_kind_hint, scan_status, created_at, updated_at
              )
-             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'active', ?13, ?13)
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, 'active', ?20, ?20)
              on conflict(item_id) do update set
                source_id=excluded.source_id,
                folder_id=excluded.folder_id,
@@ -1534,6 +1710,13 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
                guess_season=excluded.guess_season,
                guess_episode=excluded.guess_episode,
                guess_quality=excluded.guess_quality,
+               media_type=coalesce(excluded.media_type, media_files.media_type),
+               parse_source=excluded.parse_source,
+               parse_confidence=excluded.parse_confidence,
+               parse_warnings_json=excluded.parse_warnings_json,
+               parsed_version_name=excluded.parsed_version_name,
+               parsed_version_tags_json=excluded.parsed_version_tags_json,
+               parsed_version_dir_path=excluded.parsed_version_dir_path,
                media_kind_hint=excluded.media_kind_hint,
                scan_status='active',
                updated_at=excluded.updated_at",
@@ -1545,12 +1728,17 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
                 file_name(&relative_path),
                 file_ext(&relative_path),
                 item.get("size").and_then(Value::as_i64),
-                item.get("matchTitle")
-                    .and_then(Value::as_str)
-                    .or_else(|| item.get("title").and_then(Value::as_str)),
-                item.get("season").and_then(Value::as_i64),
-                item.get("episode").and_then(Value::as_i64),
+                guess_title,
+                guess_season,
+                guess_episode,
                 guess_quality(&relative_path),
+                media_type_hint,
+                parse_source,
+                parse_confidence,
+                parse_warnings_json,
+                parsed_version_name,
+                parsed_version_tags_json,
+                parsed_version_dir_path,
                 item.get("mediaKind").and_then(Value::as_str),
                 now
             ],
@@ -1704,8 +1892,19 @@ fn upsert_tmdb_tv_metadata(
         Ok(file_id) => file_id,
         Err(_) => return Ok(()),
     };
-    let (folder_id, season, episode, guess_title) = conn.query_row(
-        "select folder_id, guess_season, guess_episode, guess_title from media_files where id=?1",
+    let (
+        folder_id,
+        season,
+        episode,
+        guess_title,
+        parse_source,
+        parse_confidence,
+        parse_warnings_json,
+        title_dir_path,
+    ) = conn.query_row(
+        "select folder_id, guess_season, guess_episode, guess_title,
+                parse_source, parse_confidence, parse_warnings_json, parsed_version_dir_path
+         from media_files where id=?1",
         params![file_id],
         |row| {
             Ok((
@@ -1713,6 +1912,10 @@ fn upsert_tmdb_tv_metadata(
                 row.get::<_, Option<i64>>(1)?,
                 row.get::<_, Option<i64>>(2)?,
                 row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<f64>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
             ))
         },
     )?;
@@ -1724,17 +1927,32 @@ fn upsert_tmdb_tv_metadata(
         conn.execute(
             "insert into source_folder_matches(
                folder_id, show_id, match_status, search_query, selected_tmdb_id,
-               matched_by, created_at, updated_at
+               matched_by, title_dir_path, normalized_title, parse_source, parse_warnings_json,
+               created_at, updated_at
              )
-             values (?1, ?2, 'auto', ?3, ?4, 'tmdb-api', ?5, ?5)
+             values (?1, ?2, 'auto', ?3, ?4, 'tmdb-api', ?5, ?6, ?7, ?8, ?9, ?9)
              on conflict(folder_id, provider) do update set
                show_id=excluded.show_id,
                match_status=excluded.match_status,
                search_query=excluded.search_query,
                selected_tmdb_id=excluded.selected_tmdb_id,
                matched_by=excluded.matched_by,
+               title_dir_path=excluded.title_dir_path,
+               normalized_title=excluded.normalized_title,
+               parse_source=excluded.parse_source,
+               parse_warnings_json=excluded.parse_warnings_json,
                updated_at=excluded.updated_at",
-            params![folder_id, show_id, guess_title, tmdb_id, now],
+            params![
+                folder_id,
+                show_id,
+                guess_title,
+                tmdb_id,
+                title_dir_path,
+                guess_title,
+                parse_source,
+                parse_warnings_json,
+                now
+            ],
         )?;
     }
 
@@ -1818,12 +2036,15 @@ fn upsert_tmdb_tv_metadata(
         "delete from media_file_movie_matches where file_id=?1",
         params![file_id],
     )?;
+    let version_id = ensure_media_version(conn, file_id, "tv", Some(show_id), None, now)?;
     conn.execute(
         "insert into media_file_matches(
            file_id, show_id, season_id, episode_id, match_status, match_score,
-           search_query, selected_tmdb_id, matched_by, created_at, updated_at
+           search_query, selected_tmdb_id, matched_by, version_id,
+           parse_source, parse_confidence, parse_warnings_json,
+           created_at, updated_at
          )
-         values (?1, ?2, ?3, ?4, ?5, 1.0, ?6, ?7, 'tmdb-api', ?8, ?8)
+         values (?1, ?2, ?3, ?4, ?5, 1.0, ?6, ?7, 'tmdb-api', ?8, ?9, ?10, ?11, ?12, ?12)
          on conflict(file_id) do update set
            show_id=excluded.show_id,
            season_id=excluded.season_id,
@@ -1833,6 +2054,10 @@ fn upsert_tmdb_tv_metadata(
            search_query=excluded.search_query,
            selected_tmdb_id=excluded.selected_tmdb_id,
            matched_by=excluded.matched_by,
+           version_id=excluded.version_id,
+           parse_source=excluded.parse_source,
+           parse_confidence=excluded.parse_confidence,
+           parse_warnings_json=excluded.parse_warnings_json,
            updated_at=excluded.updated_at",
         params![
             file_id,
@@ -1846,8 +2071,19 @@ fn upsert_tmdb_tv_metadata(
             },
             title_key,
             tmdb_id,
+            version_id,
+            parse_source,
+            parse_confidence,
+            parse_warnings_json,
             now
         ],
+    )?;
+    conn.execute(
+        "update media_files
+         set media_type='tv', show_id=?2, season_id=?3, episode_id=?4, movie_id=null,
+             version_id=?5, updated_at=?6
+         where id=?1",
+        params![file_id, show_id, season_id, episode_id, version_id, now],
     )?;
     Ok(())
 }
@@ -1907,13 +2143,26 @@ fn upsert_tmdb_movie_metadata(
         Ok(file_id) => file_id,
         Err(_) => return Ok(()),
     };
-    let (folder_id, guess_title) = conn.query_row(
-        "select folder_id, guess_title from media_files where id=?1",
+    let (
+        folder_id,
+        guess_title,
+        parse_source,
+        parse_confidence,
+        parse_warnings_json,
+        title_dir_path,
+    ) = conn.query_row(
+        "select folder_id, guess_title, parse_source, parse_confidence,
+                parse_warnings_json, parsed_version_dir_path
+         from media_files where id=?1",
         params![file_id],
         |row| {
             Ok((
                 row.get::<_, Option<i64>>(0)?,
                 row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<f64>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
             ))
         },
     )?;
@@ -1925,29 +2174,46 @@ fn upsert_tmdb_movie_metadata(
         conn.execute(
             "insert into source_folder_movie_matches(
                folder_id, movie_id, match_status, search_query, selected_tmdb_id,
-               matched_by, created_at, updated_at
+               matched_by, title_dir_path, normalized_title, parse_source, parse_warnings_json,
+               created_at, updated_at
              )
-             values (?1, ?2, 'auto', ?3, ?4, 'tmdb-api', ?5, ?5)
+             values (?1, ?2, 'auto', ?3, ?4, 'tmdb-api', ?5, ?6, ?7, ?8, ?9, ?9)
              on conflict(folder_id, provider) do update set
                movie_id=excluded.movie_id,
                match_status=excluded.match_status,
                search_query=excluded.search_query,
                selected_tmdb_id=excluded.selected_tmdb_id,
                matched_by=excluded.matched_by,
+               title_dir_path=excluded.title_dir_path,
+               normalized_title=excluded.normalized_title,
+               parse_source=excluded.parse_source,
+               parse_warnings_json=excluded.parse_warnings_json,
                updated_at=excluded.updated_at",
-            params![folder_id, movie_id, guess_title, tmdb_id, now],
+            params![
+                folder_id,
+                movie_id,
+                guess_title,
+                tmdb_id,
+                title_dir_path,
+                guess_title,
+                parse_source,
+                parse_warnings_json,
+                now
+            ],
         )?;
     }
     conn.execute(
         "delete from media_file_matches where file_id=?1",
         params![file_id],
     )?;
+    let version_id = ensure_media_version(conn, file_id, "movie", None, Some(movie_id), now)?;
     conn.execute(
         "insert into media_file_movie_matches(
            file_id, movie_id, match_status, match_score, search_query,
-           selected_tmdb_id, matched_by, created_at, updated_at
+           selected_tmdb_id, matched_by, version_id, parse_source, parse_confidence,
+           parse_warnings_json, created_at, updated_at
          )
-         values (?1, ?2, 'auto', 1.0, ?3, ?4, 'tmdb-api', ?5, ?5)
+         values (?1, ?2, 'auto', 1.0, ?3, ?4, 'tmdb-api', ?5, ?6, ?7, ?8, ?9, ?9)
          on conflict(file_id) do update set
            movie_id=excluded.movie_id,
            match_status=excluded.match_status,
@@ -1955,8 +2221,29 @@ fn upsert_tmdb_movie_metadata(
            search_query=excluded.search_query,
            selected_tmdb_id=excluded.selected_tmdb_id,
            matched_by=excluded.matched_by,
+           version_id=excluded.version_id,
+           parse_source=excluded.parse_source,
+           parse_confidence=excluded.parse_confidence,
+           parse_warnings_json=excluded.parse_warnings_json,
            updated_at=excluded.updated_at",
-        params![file_id, movie_id, title_key, tmdb_id, now],
+        params![
+            file_id,
+            movie_id,
+            title_key,
+            tmdb_id,
+            version_id,
+            parse_source,
+            parse_confidence,
+            parse_warnings_json,
+            now
+        ],
+    )?;
+    conn.execute(
+        "update media_files
+         set media_type='movie', movie_id=?2, show_id=null, season_id=null, episode_id=null,
+             version_id=?3, updated_at=?4
+         where id=?1",
+        params![file_id, movie_id, version_id, now],
     )?;
     Ok(())
 }
@@ -2226,6 +2513,120 @@ fn media_file_id(conn: &Connection, item_id: &str) -> Result<i64> {
     )?)
 }
 
+fn ensure_media_version(
+    conn: &Connection,
+    file_id: i64,
+    media_type: &str,
+    show_id: Option<i64>,
+    movie_id: Option<i64>,
+    now: i64,
+) -> Result<i64> {
+    let (source_id, version_name, version_dir_path, tags_json): (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = conn.query_row(
+        "select source_id, parsed_version_name, parsed_version_dir_path, parsed_version_tags_json
+         from media_files where id=?1",
+        params![file_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    let normalized_name = version_name
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "Original".to_string());
+    let normalized_dir = version_dir_path
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_default();
+    match media_type {
+        "tv" => {
+            let Some(show_id) = show_id else {
+                anyhow::bail!("tv media version requires show_id");
+            };
+            let existing = conn.query_row(
+                "select id from media_versions
+                 where media_type='tv' and show_id=?1 and source_id=?2 and version_dir_path=?3
+                 limit 1",
+                params![show_id, source_id, normalized_dir],
+                |row| row.get(0),
+            );
+            match existing {
+                Ok(version_id) => {
+                    conn.execute(
+                        "update media_versions
+                         set version_name=?2, extra_tags_json=?3, updated_at=?4
+                         where id=?1",
+                        params![version_id, normalized_name, tags_json, now],
+                    )?;
+                    Ok(version_id)
+                }
+                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    conn.execute(
+                        "insert into media_versions(
+                           media_type, show_id, movie_id, source_id, version_name,
+                           version_dir_path, extra_tags_json, created_at, updated_at
+                         )
+                         values ('tv', ?1, null, ?2, ?3, ?4, ?5, ?6, ?6)",
+                        params![
+                            show_id,
+                            source_id,
+                            normalized_name,
+                            normalized_dir,
+                            tags_json,
+                            now
+                        ],
+                    )?;
+                    Ok(conn.last_insert_rowid())
+                }
+                Err(error) => Err(error.into()),
+            }
+        }
+        "movie" => {
+            let Some(movie_id) = movie_id else {
+                anyhow::bail!("movie media version requires movie_id");
+            };
+            let existing = conn.query_row(
+                "select id from media_versions
+                 where media_type='movie' and movie_id=?1 and source_id=?2 and version_dir_path=?3
+                 limit 1",
+                params![movie_id, source_id, normalized_dir],
+                |row| row.get(0),
+            );
+            match existing {
+                Ok(version_id) => {
+                    conn.execute(
+                        "update media_versions
+                         set version_name=?2, extra_tags_json=?3, updated_at=?4
+                         where id=?1",
+                        params![version_id, normalized_name, tags_json, now],
+                    )?;
+                    Ok(version_id)
+                }
+                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    conn.execute(
+                        "insert into media_versions(
+                           media_type, show_id, movie_id, source_id, version_name,
+                           version_dir_path, extra_tags_json, created_at, updated_at
+                         )
+                         values ('movie', null, ?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                        params![
+                            movie_id,
+                            source_id,
+                            normalized_name,
+                            normalized_dir,
+                            tags_json,
+                            now
+                        ],
+                    )?;
+                    Ok(conn.last_insert_rowid())
+                }
+                Err(error) => Err(error.into()),
+            }
+        }
+        _ => anyhow::bail!("unsupported media version type: {media_type}"),
+    }
+}
+
 fn auto_bind_media_file_to_cached_tmdb(conn: &Connection, file_id: i64, now: i64) -> Result<()> {
     let already_matched: i64 = conn.query_row(
         "select
@@ -2276,12 +2677,27 @@ fn auto_bind_media_file_to_cached_tmdb(conn: &Connection, file_id: i64, now: i64
         );
         match tv_match {
             Ok((show_id, tmdb_id, season_id, episode_id)) => {
+                let version_id =
+                    ensure_media_version(conn, file_id, "tv", Some(show_id), None, now)?;
+                let (parse_source, parse_confidence, parse_warnings_json) = conn.query_row(
+                    "select parse_source, parse_confidence, parse_warnings_json from media_files where id=?1",
+                    params![file_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, Option<f64>>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                        ))
+                    },
+                )?;
                 conn.execute(
                     "insert into media_file_matches(
                        file_id, show_id, season_id, episode_id, match_status, match_score,
-                       search_query, selected_tmdb_id, matched_by, created_at, updated_at
+                       search_query, selected_tmdb_id, matched_by, version_id,
+                       parse_source, parse_confidence, parse_warnings_json,
+                       created_at, updated_at
                      )
-                     values (?1, ?2, ?3, ?4, 'auto', 1.0, ?5, ?6, 'cached-tmdb', ?7, ?7)
+                     values (?1, ?2, ?3, ?4, 'auto', 1.0, ?5, ?6, 'cached-tmdb', ?7, ?8, ?9, ?10, ?11, ?11)
                      on conflict(file_id) do update set
                        show_id=excluded.show_id,
                        season_id=excluded.season_id,
@@ -2291,6 +2707,10 @@ fn auto_bind_media_file_to_cached_tmdb(conn: &Connection, file_id: i64, now: i64
                        search_query=excluded.search_query,
                        selected_tmdb_id=excluded.selected_tmdb_id,
                        matched_by=excluded.matched_by,
+                       version_id=excluded.version_id,
+                       parse_source=excluded.parse_source,
+                       parse_confidence=excluded.parse_confidence,
+                       parse_warnings_json=excluded.parse_warnings_json,
                        updated_at=excluded.updated_at",
                     params![
                         file_id,
@@ -2299,8 +2719,19 @@ fn auto_bind_media_file_to_cached_tmdb(conn: &Connection, file_id: i64, now: i64
                         episode_id,
                         guess_title,
                         tmdb_id,
+                        version_id,
+                        parse_source,
+                        parse_confidence,
+                        parse_warnings_json,
                         now
                     ],
+                )?;
+                conn.execute(
+                    "update media_files
+                     set media_type='tv', show_id=?2, season_id=?3, episode_id=?4, movie_id=null,
+                         version_id=?5, updated_at=?6
+                     where id=?1",
+                    params![file_id, show_id, season_id, episode_id, version_id, now],
                 )?;
                 return Ok(());
             }
@@ -2319,12 +2750,26 @@ fn auto_bind_media_file_to_cached_tmdb(conn: &Connection, file_id: i64, now: i64
     );
     match movie_match {
         Ok((movie_id, tmdb_id)) => {
+            let version_id =
+                ensure_media_version(conn, file_id, "movie", None, Some(movie_id), now)?;
+            let (parse_source, parse_confidence, parse_warnings_json) = conn.query_row(
+                "select parse_source, parse_confidence, parse_warnings_json from media_files where id=?1",
+                params![file_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<f64>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )?;
             conn.execute(
                 "insert into media_file_movie_matches(
                    file_id, movie_id, match_status, match_score, search_query,
-                   selected_tmdb_id, matched_by, created_at, updated_at
+                   selected_tmdb_id, matched_by, version_id, parse_source, parse_confidence,
+                   parse_warnings_json, created_at, updated_at
                  )
-                 values (?1, ?2, 'auto', 1.0, ?3, ?4, 'cached-tmdb', ?5, ?5)
+                 values (?1, ?2, 'auto', 1.0, ?3, ?4, 'cached-tmdb', ?5, ?6, ?7, ?8, ?9, ?9)
                  on conflict(file_id) do update set
                    movie_id=excluded.movie_id,
                    match_status=excluded.match_status,
@@ -2332,8 +2777,29 @@ fn auto_bind_media_file_to_cached_tmdb(conn: &Connection, file_id: i64, now: i64
                    search_query=excluded.search_query,
                    selected_tmdb_id=excluded.selected_tmdb_id,
                    matched_by=excluded.matched_by,
+                   version_id=excluded.version_id,
+                   parse_source=excluded.parse_source,
+                   parse_confidence=excluded.parse_confidence,
+                   parse_warnings_json=excluded.parse_warnings_json,
                    updated_at=excluded.updated_at",
-                params![file_id, movie_id, guess_title, tmdb_id, now],
+                params![
+                    file_id,
+                    movie_id,
+                    guess_title,
+                    tmdb_id,
+                    version_id,
+                    parse_source,
+                    parse_confidence,
+                    parse_warnings_json,
+                    now
+                ],
+            )?;
+            conn.execute(
+                "update media_files
+                 set media_type='movie', movie_id=?2, show_id=null, season_id=null, episode_id=null,
+                     version_id=?3, updated_at=?4
+                 where id=?1",
+                params![file_id, movie_id, version_id, now],
             )?;
         }
         Err(rusqlite::Error::QueryReturnedNoRows) => {}
@@ -2526,6 +2992,19 @@ fn cleanup_orphan_tmdb(conn: &Connection) -> Result<()> {
         [],
     )?;
     conn.execute(
+        "delete from media_versions
+         where not exists (
+           select 1 from media_files mf where mf.version_id=media_versions.id
+         )
+         and not exists (
+           select 1 from media_file_matches mfm where mfm.version_id=media_versions.id
+         )
+         and not exists (
+           select 1 from media_file_movie_matches mfmm where mfmm.version_id=media_versions.id
+         )",
+        [],
+    )?;
+    conn.execute(
         "delete from tmdb_tv_episodes
          where not exists (
            select 1 from media_file_matches mfm where mfm.episode_id=tmdb_tv_episodes.id
@@ -2640,6 +3119,14 @@ fn parent_path(path: &str) -> String {
         None => ".".to_string(),
     };
     normalize_folder_path(&path)
+}
+
+fn parsed_source_folder_path(relative_path: &str, parsed_source_path: &str) -> String {
+    let mut value = normalize_resource_path(parsed_source_path);
+    if relative_path.starts_with('/') && !value.starts_with('/') {
+        value = format!("/{value}");
+    }
+    normalize_folder_path(&value)
 }
 
 fn file_name(path: &str) -> String {
@@ -2890,6 +3377,7 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["sourceId"], "source-1");
         assert_eq!(items[0]["uri"], "https://example.com/dav/media/Show/01.mp4");
+        assert_eq!(items[0]["groupPath"], "/media/Show/");
         assert_eq!(items[0]["size"], 1234);
         assert_eq!(exported["progress"]["source-1:/media/Show/01.mp4"], 5000);
         assert_eq!(exported["durations"]["source-1:/media/Show/01.mp4"], 60000);
@@ -2901,6 +3389,46 @@ mod tests {
 
         let conn = open(db_path.to_str().unwrap()).unwrap();
         assert!(!table_exists(&conn, "app_state"));
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn show_detail_does_not_include_child_folder_files() {
+        let db_path =
+            std::env::temp_dir().join(format!("player_core_exact_folder_{}.sqlite", now_ms()));
+        let conn = open(db_path.to_str().unwrap()).unwrap();
+        let now = now_ms();
+        conn.execute(
+            "insert into sources(id, name, type, root_path, created_at, updated_at)
+             values ('local-1', 'Local', 'local', 'D:/Root', ?1, ?1)",
+            params![now],
+        )
+        .unwrap();
+        let parent_id =
+            upsert_source_folder(&conn, "local-1", "D:/Root/", None, true, now).unwrap();
+        let child_id =
+            upsert_source_folder(&conn, "local-1", "D:/Root/Show/", Some("Show"), false, now)
+                .unwrap();
+        assert_ne!(parent_id, child_id);
+        conn.execute(
+            "insert into media_files(
+               item_id, source_id, folder_id, relative_path, filename, scan_status,
+               created_at, updated_at
+             )
+             values ('local-1:D:/Root/Show/01.mp4', 'local-1', ?1,
+                     'D:/Root/Show/01.mp4', '01.mp4', 'active', ?2, ?2)",
+            params![child_id, now],
+        )
+        .unwrap();
+        drop(conn);
+
+        let detail: Value = serde_json::from_str(
+            &query_show_detail_json(db_path.to_str().unwrap(), "local-1:db:D:/Root/").unwrap(),
+        )
+        .unwrap();
+        let files = detail["files"].as_array().unwrap();
+        assert!(files.is_empty());
+
         let _ = std::fs::remove_file(db_path);
     }
 
@@ -3081,6 +3609,68 @@ mod tests {
         assert_eq!(count_rows(&conn, "media_file_matches"), 0);
         assert_eq!(count_rows(&conn, "media_file_movie_matches"), 1);
         assert_eq!(count_rows(&conn, "tmdb_movies"), 1);
+        assert_eq!(count_rows(&conn, "media_versions"), 1);
+        assert_eq!(
+            conn.query_row("select media_type from media_versions limit 1", [], |row| {
+                row.get::<_, String>(0)
+            },)
+                .unwrap(),
+            "movie"
+        );
+
+        drop(conn);
+        let state_with_new_file = r#"{
+          "version": 1,
+          "sources": [
+            {
+              "id": "local-1",
+              "name": "Local",
+              "type": "local",
+              "directory": "D:/Movies",
+              "selectedPaths": ["D:/Movies/Films"]
+            }
+          ],
+          "items": [
+            {
+              "id": "local-1:D:/Movies/Films/Movie.mp4",
+              "sourceId": "local-1",
+              "sourceName": "Local",
+              "type": "local",
+              "title": "Movie",
+              "uri": "D:/Movies/Films/Movie.mp4",
+              "folderTitle": "Films",
+              "matchTitle": "Movie",
+              "mediaKind": "Movie",
+              "size": 1234
+            },
+            {
+              "id": "local-1:D:/Movies/Films/Movie 1080p.mp4",
+              "sourceId": "local-1",
+              "sourceName": "Local",
+              "type": "local",
+              "title": "Movie 1080p",
+              "uri": "D:/Movies/Films/Movie 1080p.mp4",
+              "folderTitle": "Films",
+              "matchTitle": "Movie",
+              "mediaKind": "Movie",
+              "size": 2345
+            }
+          ]
+        }"#;
+        put_app_state_json(db_path.to_str().unwrap(), state_with_new_file).unwrap();
+        let conn = open(db_path.to_str().unwrap()).unwrap();
+        assert_eq!(count_rows(&conn, "tmdb_movies"), 1);
+        assert_eq!(count_rows(&conn, "media_file_movie_matches"), 2);
+        assert_eq!(
+            conn.query_row(
+                "select count(*) from media_files
+                 where media_type='movie' and movie_id is not null and version_id is not null",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            2
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -3188,7 +3778,7 @@ mod tests {
           "episodeType": "standard",
           "episodeVoteCount": 2,
           "updatedAt": 1,
-          "schemaVersion": 10
+          "schemaVersion": 11
         }"#;
 
         put_app_state_json(db_path.to_str().unwrap(), state).unwrap();
@@ -3204,6 +3794,14 @@ mod tests {
         assert_eq!(count_rows(&conn, "tmdb_tv_seasons"), 2);
         assert_eq!(count_rows(&conn, "tmdb_tv_episodes"), 2);
         assert_eq!(count_rows(&conn, "media_file_matches"), 1);
+        assert_eq!(count_rows(&conn, "media_versions"), 1);
+        assert_eq!(
+            conn.query_row("select media_type from media_versions limit 1", [], |row| {
+                row.get::<_, String>(0)
+            },)
+                .unwrap(),
+            "tv"
+        );
         assert_eq!(
             conn.query_row(
                 "select count(*) from tmdb_images where owner_type='episode'",
@@ -3219,7 +3817,7 @@ mod tests {
                 .unwrap();
         let cached = &cache["local-1:D:/Shows/Show/01.mp4"];
         assert_eq!(cached["episodeName"], "Episode 1");
-        assert_eq!(cached["schemaVersion"], 10);
+        assert_eq!(cached["schemaVersion"], 11);
 
         drop(conn);
         let state_with_new_file = r#"{

@@ -26,6 +26,7 @@ class RustCoreService {
   _RustStringDart? _scanLocalVideosJson;
   _RustStringDart? _listLocalDirectoryJson;
   _RustTwoStringDart? _parseMediaIdentityJson;
+  _RustTwoStringDart? _parseMediaPathCandidatesJson;
   _RustTwoStringDart? _mediaSeriesTitleJson;
   _RustTwoStringDart? _tmdbGetJson;
   _RustStringDart? _danmuLoadJson;
@@ -53,6 +54,7 @@ class RustCoreService {
       _scanLocalVideosJson != null &&
       _listLocalDirectoryJson != null &&
       _parseMediaIdentityJson != null &&
+      _parseMediaPathCandidatesJson != null &&
       _mediaSeriesTitleJson != null &&
       _tmdbGetJson != null &&
       _metadataPutJson != null &&
@@ -109,6 +111,18 @@ class RustCoreService {
     _ensureAvailable();
     final text = _callTwoString(_parseMediaIdentityJson, folderName, fileName);
     return RustMediaIdentity.fromJson(jsonDecode(text) as Map<String, dynamic>);
+  }
+
+  List<RustSearchCandidate> parseMediaPathCandidates(
+      SourceType sourceType, String path) {
+    _ensureAvailable();
+    final source = sourceType == SourceType.webdav ? 'webdav' : 'local';
+    final text = _callTwoString(_parseMediaPathCandidatesJson, source, path);
+    final data = jsonDecode(text) as List<dynamic>;
+    return data
+        .map((value) =>
+            RustSearchCandidate.fromJson(value as Map<String, dynamic>))
+        .toList(growable: false);
   }
 
   String mediaSeriesTitle(SourceType sourceType, String path) {
@@ -396,6 +410,16 @@ class RustCoreService {
     }
   }
 
+  RustSearchCandidate? tryParseMediaPathCandidate(
+      SourceType sourceType, String path) {
+    try {
+      final candidates = parseMediaPathCandidates(sourceType, path);
+      return candidates.isEmpty ? null : candidates.first;
+    } catch (_) {
+      return null;
+    }
+  }
+
   bool _ensureLoaded() {
     if (_library != null && _bindingsReady) return true;
     if (_loadError != null) return false;
@@ -410,6 +434,9 @@ class RustCoreService {
       _parseMediaIdentityJson = _library!
           .lookupFunction<_RustTwoStringFn, _RustTwoStringDart>(
               'player_core_parse_media_identity_json');
+      _parseMediaPathCandidatesJson = _library!
+          .lookupFunction<_RustTwoStringFn, _RustTwoStringDart>(
+              'player_core_parse_media_path_candidates_json');
       _mediaSeriesTitleJson =
           _lookupOptionalTwoString('player_core_media_series_title_json');
       _tmdbGetJson = _library!
@@ -737,6 +764,57 @@ class RustMediaIdentity {
       season: (json['season'] as num?)?.toInt(),
       episode: (json['episode'] as num?)?.toInt(),
       kind: json['kind'] as String? ?? 'Unknown',
+    );
+  }
+}
+
+class RustSearchCandidate {
+  const RustSearchCandidate({
+    required this.title,
+    required this.mediaTypeHint,
+    this.year,
+    this.seasonNumber,
+    this.episodeNumber,
+    required this.versionName,
+    required this.versionTags,
+    required this.versionDirPath,
+    required this.sourceType,
+    required this.sourcePath,
+    required this.confidence,
+    required this.warnings,
+  });
+
+  final String title;
+  final String mediaTypeHint;
+  final int? year;
+  final int? seasonNumber;
+  final int? episodeNumber;
+  final String versionName;
+  final List<String> versionTags;
+  final String versionDirPath;
+  final String sourceType;
+  final String sourcePath;
+  final double confidence;
+  final List<String> warnings;
+
+  factory RustSearchCandidate.fromJson(Map<String, dynamic> json) {
+    return RustSearchCandidate(
+      title: json['title'] as String? ?? '',
+      mediaTypeHint: json['media_type_hint'] as String? ?? 'unknown',
+      year: (json['year'] as num?)?.toInt(),
+      seasonNumber: (json['season_number'] as num?)?.toInt(),
+      episodeNumber: (json['episode_number'] as num?)?.toInt(),
+      versionName: json['version_name'] as String? ?? '',
+      versionTags: (json['version_tags'] as List<dynamic>? ?? const [])
+          .map((value) => value.toString())
+          .toList(growable: false),
+      versionDirPath: json['version_dir_path'] as String? ?? '',
+      sourceType: json['source_type'] as String? ?? '',
+      sourcePath: json['source_path'] as String? ?? '',
+      confidence: (json['confidence'] as num?)?.toDouble() ?? 0,
+      warnings: (json['warnings'] as List<dynamic>? ?? const [])
+          .map((value) => value.toString())
+          .toList(growable: false),
     );
   }
 }

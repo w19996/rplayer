@@ -16,7 +16,6 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:path/path.dart' as p;
 import 'package:permission_handler/permission_handler.dart';
-import 'package:xml/xml.dart';
 
 part 'app/player_app.dart';
 part 'store/app_store.dart';

@@ -11,6 +11,8 @@ class AppStore extends ChangeNotifier {
   final Map<String, int> lastPlayedAt = {};
   final Map<String, String> folderOrientations = {};
   final Map<String, MediaMetadata> metadata = {};
+  final Map<String, int> _itemIndexById = {};
+  final Map<String, Set<String>> _itemPathsBySource = {};
   TmdbConfig tmdbConfig = const TmdbConfig();
   DanmuConfig danmuConfig = const DanmuConfig();
   SyncConfig? syncConfig;
@@ -22,7 +24,10 @@ class AppStore extends ChangeNotifier {
   final List<String> diagnosticLogs = [];
   int diagnosticLogCount = 0;
   Future<void> _diagnosticLogWriteChain = Future.value();
+  Future<void> _metadataDatabaseWriteChain = Future.value();
   final Map<String, Uint8List?> _imageCache = {};
+  int _lastScanNotifyMs = 0;
+  int _pathParseLogCount = 0;
   static const int _diagnosticLogPreviewLimit = 100;
 
   Future<Directory> get appFilesDirectory async {
@@ -93,7 +98,6 @@ class AppStore extends ChangeNotifier {
   }
 
   Future<void> saveMediaStateDatabase() async {
-    final text = exportMediaState();
     final stopwatch = Stopwatch()..start();
     try {
       final db = await metadataDatabaseFile;
@@ -101,19 +105,10 @@ class AppStore extends ChangeNotifier {
         'database write media state started: sources=${sources.length}, items=${items.length}',
         category: 'database',
       );
-      RustCoreService.instance.appStatePut(db.path, text);
-      final savedText = RustCoreService.instance.appStateGet(db.path);
-      final saved = jsonDecode(savedText) as Map<String, dynamic>;
-      final savedSources = (saved['sources'] as List<dynamic>? ?? const []);
-      final savedItems = (saved['items'] as List<dynamic>? ?? const []);
-      if (savedSources.length != sources.length ||
-          savedItems.length != items.length) {
-        throw StateError(
-          'media state verify failed: memory sources=${sources.length}, db sources=${savedSources.length}, memory items=${items.length}, db items=${savedItems.length}',
-        );
-      }
+      final text = await exportMediaStateAsync();
+      await RustCoreService.instance.appStatePutAsync(db.path, text);
       addDiagnosticLog(
-        'database write media state finished: db=${db.path}, sources=${savedSources.length}, items=${savedItems.length}, elapsed=${stopwatch.elapsedMilliseconds}ms',
+        'database write media state finished: db=${db.path}, sources=${sources.length}, items=${items.length}, bytes=${text.length}, elapsed=${stopwatch.elapsedMilliseconds}ms',
         category: 'database',
       );
     } catch (error) {
@@ -129,9 +124,12 @@ class AppStore extends ChangeNotifier {
       final db = await metadataDatabaseFile;
       addDiagnosticLog('database read media state started: ${db.path}',
           category: 'database');
-      final text = RustCoreService.instance.appStateGet(db.path);
+      final text = await RustCoreService.instance.appStateGetAsync(db.path);
       if (text.trim().isNotEmpty && text.trim() != '{}') {
-        importMediaStateJson(jsonDecode(text) as Map<String, dynamic>);
+        final decoded = await Isolate.run(
+          () => jsonDecode(text) as Map<String, dynamic>,
+        );
+        importMediaStateJson(decoded);
       }
       addDiagnosticLog(
         'database read media state finished: sources=${sources.length}, items=${items.length}, elapsed=${stopwatch.elapsedMilliseconds}ms',
@@ -175,18 +173,16 @@ class AppStore extends ChangeNotifier {
     final stopwatch = Stopwatch()..start();
     try {
       final liveItemIds = items.map((item) => item.id).toSet().toList();
-      final liveTitleKeys =
-          mediaFolderGroups(items).map((group) => group.key).toSet().toList();
       metadata.removeWhere((itemId, _) => !liveItemIds.contains(itemId));
       final db = await metadataDatabaseFile;
       addDiagnosticLog(
-        'database prune metadata started: liveItems=${liveItemIds.length}, liveGroups=${liveTitleKeys.length}',
+        'database prune metadata started: liveItems=${liveItemIds.length}',
         category: 'database',
       );
       await RustCoreService.instance.metadataPruneAsync(
         db.path,
         liveItemIds,
-        liveTitleKeys,
+        const [],
       );
       addDiagnosticLog(
         'database prune metadata finished: memory=${metadata.length}, elapsed=${stopwatch.elapsedMilliseconds}ms',
@@ -199,6 +195,15 @@ class AppStore extends ChangeNotifier {
   }
 
   Future<void> saveMetadataToDatabase(
+      String titleKey, String itemId, MediaMetadata value) async {
+    final write = _metadataDatabaseWriteChain.then(
+      (_) => _saveMetadataToDatabaseNow(titleKey, itemId, value),
+    );
+    _metadataDatabaseWriteChain = write.catchError((_) {});
+    await write;
+  }
+
+  Future<void> _saveMetadataToDatabaseNow(
       String titleKey, String itemId, MediaMetadata value) async {
     final stopwatch = Stopwatch()..start();
     try {
@@ -215,11 +220,23 @@ class AppStore extends ChangeNotifier {
         itemId,
         metadataJson,
       );
+      addDiagnosticLog(
+        'database write metadata core finished: item=$itemId, bytes=${metadataJson.length}',
+        category: 'database',
+      );
       if (value.posterPath?.trim().isNotEmpty == true) {
+        addDiagnosticLog(
+          'database write image cache metadata started: item=$itemId, poster=${value.posterPath}',
+          category: 'database',
+        );
         await RustCoreService.instance.metadataCacheImagesAsync(
           db.path,
           homeImageJson,
           tmdbConfig.imageBaseUrl,
+        );
+        addDiagnosticLog(
+          'database write image cache metadata finished: item=$itemId, bytes=${homeImageJson.length}',
+          category: 'database',
         );
       }
       addDiagnosticLog(
@@ -287,6 +304,19 @@ class AppStore extends ChangeNotifier {
     });
   }
 
+  Future<String> exportMediaStateAsync() {
+    final state = {
+      'version': 1,
+      'sources': sources.map((source) => source.toJson()).toList(),
+      'items': items.map((item) => item.toJson()).toList(),
+      'progress': Map<String, int>.from(progress),
+      'durations': Map<String, int>.from(durations),
+      'lastPlayedAt': Map<String, int>.from(lastPlayedAt),
+      'folderOrientations': Map<String, String>.from(folderOrientations),
+    };
+    return Isolate.run(() => const JsonEncoder.withIndent('  ').convert(state));
+  }
+
   void importSettingsJson(Map<String, dynamic> json) {
     final tmdb = json['tmdbConfig'];
     tmdbConfig = tmdb == null
@@ -315,10 +345,10 @@ class AppStore extends ChangeNotifier {
       ..clear()
       ..addAll(
         (json['items'] as List<dynamic>? ?? []).map(
-          (value) => MediaItem.fromJson(value as Map<String, dynamic>)
-              .withFreshIdentity(),
+          (value) => MediaItem.fromJson(value as Map<String, dynamic>),
         ),
       );
+    rebuildItemIndex();
     progress
       ..clear()
       ..addAll((json['progress'] as Map<String, dynamic>? ?? {})
@@ -361,8 +391,8 @@ class AppStore extends ChangeNotifier {
       count++;
       notifyScanProgress(count);
     }
-    items
-        .sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+    items.sort(compareMediaItems);
+    rebuildItemIndex();
     addDiagnosticLog(
       'add local source scanned: $dir, items=$count, elapsed=${stopwatch.elapsedMilliseconds}ms',
       category: 'scan',
@@ -410,6 +440,7 @@ class AppStore extends ChangeNotifier {
     addDiagnosticLog('remove source: ${source.name}', category: 'source');
     sources.removeWhere((value) => value.id == source.id);
     items.removeWhere((item) => item.sourceId == source.id);
+    rebuildItemIndex();
     metadata.removeWhere((itemId, _) => itemId.startsWith('${source.id}:'));
     await save();
     notifyListeners();
@@ -419,12 +450,12 @@ class AppStore extends ChangeNotifier {
     addDiagnosticLog('rescan all sources: ${sources.length}', category: 'scan');
     final existing = List<MediaSourceConfig>.from(sources);
     items.clear();
+    rebuildItemIndex();
     notifyListeners();
     for (final source in existing) {
       await scanSourceIntoItems(source);
     }
-    metadata
-        .removeWhere((itemId, _) => !items.any((item) => item.id == itemId));
+    metadata.removeWhere((itemId, _) => !_itemIndexById.containsKey(itemId));
     await save();
     notifyListeners();
     unawaited(refreshMissingMetadata());
@@ -433,10 +464,10 @@ class AppStore extends ChangeNotifier {
   Future<void> rescanSource(MediaSourceConfig source) async {
     addDiagnosticLog('rescan source: ${source.name}', category: 'scan');
     items.removeWhere((item) => item.sourceId == source.id);
+    rebuildItemIndex();
     notifyListeners();
     await scanSourceIntoItems(source);
-    metadata
-        .removeWhere((itemId, _) => !items.any((item) => item.id == itemId));
+    metadata.removeWhere((itemId, _) => !_itemIndexById.containsKey(itemId));
     await save();
     notifyListeners();
     unawaited(refreshMissingMetadata());
@@ -451,8 +482,8 @@ class AppStore extends ChangeNotifier {
       count++;
       notifyScanProgress(count);
     }
-    items
-        .sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+    items.sort(compareMediaItems);
+    rebuildItemIndex();
     addDiagnosticLog(
       'scan source finished: ${source.name}, items=$count, elapsed=${stopwatch.elapsedMilliseconds}ms',
       category: 'scan',
@@ -482,8 +513,8 @@ class AppStore extends ChangeNotifier {
       addOrReplaceItem(MediaItem.webdav(source: updated, entry: entry));
       notifyScanProgress(1);
     }
-    items
-        .sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+    items.sort(compareMediaItems);
+    rebuildItemIndex();
     await save();
     notifyListeners();
     unawaited(refreshMissingMetadata());
@@ -510,8 +541,8 @@ class AppStore extends ChangeNotifier {
       addOrReplaceItem(MediaItem.local(source: updated, path: entry.path));
       notifyScanProgress(1);
     }
-    items
-        .sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+    items.sort(compareMediaItems);
+    rebuildItemIndex();
     await save();
     notifyListeners();
     unawaited(refreshMissingMetadata());
@@ -580,14 +611,14 @@ class AppStore extends ChangeNotifier {
       removedItemIds.add(item.id);
       return true;
     });
+    rebuildItemIndex();
     for (final itemId in removedItemIds) {
       progress.remove(itemId);
       durations.remove(itemId);
       lastPlayedAt.remove(itemId);
       metadata.remove(itemId);
     }
-    final liveItemIds = items.map((item) => item.id).toSet();
-    metadata.removeWhere((itemId, _) => !liveItemIds.contains(itemId));
+    metadata.removeWhere((itemId, _) => !_itemIndexById.containsKey(itemId));
     final liveFolderKeys = mediaFolderGroups(items)
         .map((group) => normalizeMediaFolderKey(group.key))
         .toSet();
@@ -599,14 +630,56 @@ class AppStore extends ChangeNotifier {
   }
 
   void addOrReplaceItem(MediaItem item) {
-    items.removeWhere((value) => value.id == item.id);
-    items.add(item);
+    final index = _itemIndexById[item.id];
+    if (index == null) {
+      _itemIndexById[item.id] = items.length;
+      items.add(item);
+    } else {
+      items[index] = item;
+    }
+    _itemPathsBySource
+        .putIfAbsent(item.sourceId, () => <String>{})
+        .add(itemStoredPath(item));
+    logMediaPathParse(item);
+  }
+
+  void rebuildItemIndex() {
+    _itemIndexById
+      ..clear()
+      ..addEntries(
+        items.indexed.map((entry) => MapEntry(entry.$2.id, entry.$1)),
+      );
+    _itemPathsBySource.clear();
+    for (final item in items) {
+      _itemPathsBySource
+          .putIfAbsent(item.sourceId, () => <String>{})
+          .add(itemStoredPath(item));
+    }
+  }
+
+  String itemStoredPath(MediaItem item) {
+    if (item.type == SourceType.webdav) {
+      final prefix = '${item.sourceId}:';
+      return item.id.startsWith(prefix) ? item.id.substring(prefix.length) : '';
+    }
+    return item.uri.replaceAll('\\', '/');
+  }
+
+  void logMediaPathParse(MediaItem item) {
+    if (!diagnosticLoggingEnabled) return;
+    _pathParseLogCount++;
+    if (_pathParseLogCount > 20 && _pathParseLogCount % 500 != 0) return;
+    final source = item.type == SourceType.webdav ? 'webdav' : 'local';
+    addDiagnosticLog(
+      'path parse result sample=$_pathParseLogCount source=$source item=${item.id} title="${item.title}" folder="${item.folderTitle}" match="${item.matchTitle}" year=${item.matchYear} season=${item.season} episode=${item.episode} kind=${item.mediaKind} size=${item.size}',
+      category: 'parse',
+    );
   }
 
   void notifyScanProgress(int count) {
-    if (count == 1 || count % 10 == 0) {
-      items.sort(
-          (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (count == 1 || count % 250 == 0 || now - _lastScanNotifyMs >= 700) {
+      _lastScanNotifyMs = now;
       notifyListeners();
     }
   }
@@ -618,9 +691,10 @@ class AppStore extends ChangeNotifier {
   }) {
     final identity = sourcePathIdentity(source, path, isDir: isDir);
     if (source.selectedPaths.contains(identity)) return true;
-    return items.any((item) {
-      if (item.sourceId != source.id) return false;
-      final itemPath = sourceItemPath(source, item);
+    final sourcePaths = _itemPathsBySource[source.id];
+    if (sourcePaths == null || sourcePaths.isEmpty) return false;
+    if (!isDir) return sourcePaths.contains(identity);
+    return sourcePaths.any((itemPath) {
       return isDir
           ? sourcePathCovers(
               source,
@@ -634,7 +708,9 @@ class AppStore extends ChangeNotifier {
   }
 
   MediaItem? itemById(String id) {
-    return items.where((item) => item.id == id).firstOrNull;
+    final index = _itemIndexById[id];
+    if (index == null || index < 0 || index >= items.length) return null;
+    return items[index];
   }
 
   void replaceSource(MediaSourceConfig source) {
@@ -658,7 +734,7 @@ class AppStore extends ChangeNotifier {
     );
     await saveSettings();
     notifyListeners();
-    unawaited(refreshMissingMetadata(force: true));
+    unawaited(refreshMissingMetadata());
   }
 
   Future<void> setDanmuConfig(DanmuConfig config) async {
@@ -710,14 +786,24 @@ class AppStore extends ChangeNotifier {
       var failed = 0;
       var skipped = 0;
       final targetItems = <MediaItem>[];
+      var checked = 0;
       for (final item in List<MediaItem>.from(items)) {
-        addDiagnosticLog('TMDB item queued check: ${describeMediaItem(item)}',
-            category: 'match');
+        checked++;
+        if (checked <= 20 || checked % 500 == 0) {
+          addDiagnosticLog(
+            'TMDB item queued check sample=$checked: ${describeMediaItem(item)}',
+            category: 'match',
+          );
+        }
         final cached = metadata[item.id];
         if (!force && cached != null && metadataCompleteForItem(item, cached)) {
           skipped++;
-          addDiagnosticLog('TMDB skip cached: ${describeMediaItem(item)}',
-              category: 'match');
+          if (skipped <= 20 || skipped % 500 == 0) {
+            addDiagnosticLog(
+              'TMDB skip cached sample=$skipped: ${describeMediaItem(item)}',
+              category: 'match',
+            );
+          }
           continue;
         }
         targetItems.add(item);
@@ -726,12 +812,15 @@ class AppStore extends ChangeNotifier {
       final allGroupsByKey = {
         for (final group in mediaFolderGroups(items)) group.key: group,
       };
+      final workerCount = _tmdbMatchWorkerCount(targetGroups.length, force);
       addDiagnosticLog(
-        'TMDB match plan: targetItems=${targetItems.length}, targetGroups=${targetGroups.length}, workers=${math.min(4, math.max(1, targetGroups.length))}',
+        'TMDB match plan: targetItems=${targetItems.length}, targetGroups=${targetGroups.length}, workers=$workerCount',
         category: 'match',
       );
 
       var cursor = 0;
+      var processedGroups = 0;
+      var lastMetadataNotifyMs = DateTime.now().millisecondsSinceEpoch;
       Future<void> worker() async {
         while (true) {
           if (cursor >= targetGroups.length) return;
@@ -764,21 +853,24 @@ class AppStore extends ChangeNotifier {
               );
               await saveMetadataToDatabase(group.key, entry.key, entry.value);
             }
-            notifyListeners();
           } else {
             failed += group.items.length;
             tmdbLastStatus = 'TMDB no match: ${group.title}';
             addDiagnosticLog(tmdbLastStatus, category: 'match');
+          }
+          processedGroups++;
+          final now = DateTime.now().millisecondsSinceEpoch;
+          if (processedGroups % 5 == 0 || now - lastMetadataNotifyMs >= 1000) {
+            lastMetadataNotifyMs = now;
             notifyListeners();
+            await Future<void>.delayed(Duration.zero);
           }
         }
       }
 
-      final workerCount = math.min(4, math.max(1, targetGroups.length));
       await Future.wait([
         for (var i = 0; i < workerCount; i++) worker(),
       ]);
-      await save();
       metadataRevision++;
       tmdbLastStatus =
           'TMDB refresh done: $matched matched, $failed failed, $skipped skipped';
@@ -790,6 +882,12 @@ class AppStore extends ChangeNotifier {
       metadataRefreshing = false;
       notifyListeners();
     }
+  }
+
+  int _tmdbMatchWorkerCount(int groupCount, bool force) {
+    if (groupCount <= 0) return 0;
+    final maxWorkers = force ? 3 : 2;
+    return math.min(maxWorkers, groupCount);
   }
 
   Future<List<TmdbSearchCandidate>> searchTmdbCandidates(String query) async {
@@ -954,8 +1052,19 @@ class AppStore extends ChangeNotifier {
     if (value.mediaType != 'tv') return true;
     final episode = inferredEpisodeNumber(item);
     if (episode == null) return true;
-    return value.episodeName?.trim().isNotEmpty == true &&
+    final season = inferredSeasonNumber(item);
+    final hasMatchedEpisode = value.episodeTmdbId != null ||
+        value.episodeName?.trim().isNotEmpty == true ||
+        value.episodeOverview?.trim().isNotEmpty == true ||
+        value.releaseDate?.trim().isNotEmpty == true ||
         value.stillPath?.trim().isNotEmpty == true;
+    if (hasMatchedEpisode) return true;
+    return value.seasonEpisodes.any((entry) {
+      final entryEpisode = (entry['episodeNumber'] as num?)?.toInt();
+      if (entryEpisode != episode) return false;
+      final entrySeason = (entry['seasonNumber'] as num?)?.toInt();
+      return season == null || entrySeason == null || entrySeason == season;
+    });
   }
 
   void addDiagnosticLog(String message, {String category = 'app'}) {

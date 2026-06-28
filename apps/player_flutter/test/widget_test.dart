@@ -87,6 +87,71 @@ void main() {
     );
   });
 
+  test('groups different quality directories under one show folder', () {
+    const sourceId = 'source';
+    const items = [
+      MediaItem(
+        id: '$sourceId:/夸克/来自：分享/小城大事/4K HDR/01.mkv',
+        sourceId: sourceId,
+        sourceName: 'WebDAV',
+        type: SourceType.webdav,
+        title: '01',
+        uri: 'https://example.com/dav/夸克/来自：分享/小城大事/4K%20HDR/01.mkv',
+        folderTitle: '小城大事',
+        matchTitle: '小城大事',
+        groupPath: '夸克/来自：分享/小城大事',
+        versionName: '4K HDR',
+        versionDirPath: '夸克/来自：分享/小城大事/4K HDR',
+      ),
+      MediaItem(
+        id: '$sourceId:/夸克/来自：分享/小城大事/4K DV杜比视界 高码率/01.mkv',
+        sourceId: sourceId,
+        sourceName: 'WebDAV',
+        type: SourceType.webdav,
+        title: '01',
+        uri: 'https://example.com/dav/夸克/来自：分享/小城大事/4K%20DV杜比视界%20高码率/01.mkv',
+        folderTitle: '小城大事',
+        matchTitle: '小城大事',
+        groupPath: '夸克/来自：分享/小城大事',
+        versionName: '4K DV杜比视界 高码率',
+        versionDirPath: '夸克/来自：分享/小城大事/4K DV杜比视界 高码率',
+      ),
+    ];
+
+    final groups = mediaFolderGroups(items);
+
+    expect(groups, hasLength(1));
+    expect(groups.single.key, 'source:webdav:/夸克/来自：分享/小城大事');
+    expect(groups.single.title, '小城大事');
+    expect(groups.single.items, hasLength(2));
+  });
+
+  test('filters version and episode noise from TMDB search queries', () {
+    expect(tmdbSearchQueryFromText('01'), '');
+    expect(
+      tmdbSearchQueryFromText(
+        'S01E01.2026.2160p.WEB-DL.HQ.H265.25fps.10bit.AAC',
+      ),
+      '',
+    );
+    expect(
+      tmdbSearchQueryFromText('.2026.2160p.WEB-DL.HQ.H265.25fps.10bit.AAC'),
+      '',
+    );
+    expect(tmdbSearchQueryFromText('1080P 内封简繁英字幕'), '');
+    expect(
+      tmdbSearchQueryFromText('去有风的地方（2023）全40集 内封字幕 4K+1080P'),
+      '去有风的地方',
+    );
+    expect(
+      tmdbSearchQueryFromText('X 喜羊羊与灰太狼之古古怪界有古怪'),
+      '喜羊羊与灰太狼之古古怪界有古怪',
+    );
+    expect(tmdbSearchQueryFromText('Q 去有风的地方'), '去有风的地方');
+    expect(isUsefulTmdbSearchQuery('简繁字幕'), isFalse);
+    expect(isUsefulTmdbSearchQuery('第3章 CMake主要语法'), isFalse);
+  });
+
   test('webdav parent removal covers descendant selections', () {
     final source = MediaSourceConfig.webdav(
       id: 'source',
@@ -187,6 +252,63 @@ void main() {
           .toJson()['apiBaseUrl'],
       'https://tmdb.ansky.top/3',
     );
+  });
+
+  test('treats cached tv episode metadata as complete without still image', () {
+    final store = AppStore();
+    const item = MediaItem(
+      id: 'source:/Shows/Example/S01E02.mkv',
+      sourceId: 'source',
+      sourceName: 'source',
+      type: SourceType.local,
+      title: 'S01E02',
+      uri: '/Shows/Example/S01E02.mkv',
+      folderTitle: 'Example',
+      season: 1,
+      episode: 2,
+      mediaKind: 'TvEpisode',
+    );
+    final metadata = MediaMetadata(
+      itemId: item.id,
+      tmdbId: 100,
+      mediaType: 'tv',
+      title: 'Example',
+      posterPath: '/poster.jpg',
+      episodeTmdbId: 2002,
+      episodeName: 'Episode 2',
+      schemaVersion: currentMetadataSchemaVersion,
+    );
+
+    expect(store.metadataCompleteForItem(item, metadata), isTrue);
+  });
+
+  test('treats persisted season episode list as complete metadata', () {
+    final store = AppStore();
+    const item = MediaItem(
+      id: 'source:/Shows/Example/S01E03.mkv',
+      sourceId: 'source',
+      sourceName: 'source',
+      type: SourceType.local,
+      title: 'S01E03',
+      uri: '/Shows/Example/S01E03.mkv',
+      folderTitle: 'Example',
+      season: 1,
+      episode: 3,
+      mediaKind: 'TvEpisode',
+    );
+    final metadata = MediaMetadata(
+      itemId: item.id,
+      tmdbId: 100,
+      mediaType: 'tv',
+      title: 'Example',
+      posterPath: '/poster.jpg',
+      seasonEpisodes: [
+        {'seasonNumber': 1, 'episodeNumber': 3},
+      ],
+      schemaVersion: currentMetadataSchemaVersion,
+    );
+
+    expect(store.metadataCompleteForItem(item, metadata), isTrue);
   });
 
   test('normalizes danmu api endpoints', () {

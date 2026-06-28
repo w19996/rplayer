@@ -32,12 +32,12 @@ class MediaScanService {
       MediaSourceConfig source, String path) async* {
     final file = File(path);
     if (await file.exists()) {
-      if (isVideoName(path)) {
-        yield MediaItem.local(
-          source: source,
-          path: path,
-          size: await file.length(),
-        );
+      if (!isVideoName(path)) return;
+      final items = await _localVideoSeedsToItems(source, [
+        _LocalVideoSeed(path, await file.length()),
+      ]);
+      for (final item in items) {
+        yield item;
       }
       return;
     }
@@ -45,14 +45,40 @@ class MediaScanService {
     final dir = Directory(path);
     if (!await dir.exists()) return;
 
+    final chunk = <_LocalVideoSeed>[];
+
+    Future<List<MediaItem>> flushChunk() async {
+      if (chunk.isEmpty) return const [];
+      final seeds = List<_LocalVideoSeed>.of(chunk);
+      chunk.clear();
+      return _localVideoSeedsToItems(source, seeds);
+    }
+
     await for (final entity in dir.list(recursive: true, followLinks: false)) {
       if (entity is! File || !isVideoName(entity.path)) continue;
-      yield MediaItem.local(
-        source: source,
-        path: entity.path,
-        size: await entity.length(),
-      );
+      chunk.add(_LocalVideoSeed(entity.path, await entity.length()));
+      if (chunk.length >= 100) {
+        for (final item in await flushChunk()) {
+          yield item;
+        }
+        await Future<void>.delayed(Duration.zero);
+      }
     }
+    for (final item in await flushChunk()) {
+      yield item;
+    }
+  }
+
+  Future<List<MediaItem>> scanLocalPathItemsAsync(
+      MediaSourceConfig source, String path) {
+    return scanLocalPathStream(source, path).toList();
+  }
+
+  Future<List<MediaItem>> _localVideoSeedsToItems(
+    MediaSourceConfig source,
+    List<_LocalVideoSeed> seeds,
+  ) {
+    return Isolate.run(() => _localVideoSeedsToItemsWorker(source, seeds));
   }
 
   Future<List<MediaItem>> scanWebdavSelections(MediaSourceConfig source) async {
@@ -62,17 +88,66 @@ class MediaScanService {
   Stream<MediaItem> scanWebdavSelectionsStream(
       MediaSourceConfig source) async* {
     final client = WebdavClient.fromSource(source);
+    final chunk = <WebdavEntry>[];
+
+    Future<List<MediaItem>> flushChunk() async {
+      if (chunk.isEmpty) return const [];
+      final entries = List<WebdavEntry>.of(chunk);
+      chunk.clear();
+      return Isolate.run(() => _webdavEntriesToItemsWorker(source, entries));
+    }
+
     for (final path in source.selectedPaths) {
       if (path.endsWith('/')) {
         await for (final entry in client.scanVideosStream(path, maxDepth: 8)) {
-          yield MediaItem.webdav(source: source, entry: entry);
+          chunk.add(entry);
+          if (chunk.length >= 100) {
+            for (final item in await flushChunk()) {
+              yield item;
+            }
+            await Future<void>.delayed(Duration.zero);
+          }
         }
       } else if (isVideoName(path)) {
         final entry = await client.findFile(path);
         if (entry != null) {
-          yield MediaItem.webdav(source: source, entry: entry);
+          chunk.add(entry);
         }
       }
     }
+    for (final item in await flushChunk()) {
+      yield item;
+    }
   }
+}
+
+class _LocalVideoSeed {
+  const _LocalVideoSeed(this.path, this.size);
+
+  final String path;
+  final int size;
+}
+
+List<MediaItem> _localVideoSeedsToItemsWorker(
+  MediaSourceConfig source,
+  List<_LocalVideoSeed> seeds,
+) {
+  return seeds
+      .map(
+        (seed) => MediaItem.local(
+          source: source,
+          path: seed.path,
+          size: seed.size,
+        ),
+      )
+      .toList(growable: false);
+}
+
+List<MediaItem> _webdavEntriesToItemsWorker(
+  MediaSourceConfig source,
+  List<WebdavEntry> entries,
+) {
+  return entries
+      .map((entry) => MediaItem.webdav(source: source, entry: entry))
+      .toList(growable: false);
 }

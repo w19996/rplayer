@@ -1,6 +1,6 @@
 part of 'package:player_flutter/main.dart';
 
-const currentMetadataSchemaVersion = 10;
+const currentMetadataSchemaVersion = 11;
 
 enum _TmdbEndpointKind { search, detail }
 
@@ -55,7 +55,11 @@ class TmdbMetadataService {
     if (!group.items.any(looksLikeSeriesItem) &&
         representative.mediaKind != 'TvEpisode') {
       final metadata = await lookup(representative);
-      return metadata == null ? {} : {representative.id: metadata};
+      if (metadata == null) return {};
+      if (metadata.mediaType == 'movie' && metadata.tmdbId > 0) {
+        return _lookupMovieGroupById(group, metadata.tmdbId);
+      }
+      return {representative.id: metadata};
     }
 
     if (cachedTitle != null &&
@@ -81,6 +85,11 @@ class TmdbMetadataService {
         ? await _lookupTvGroup(group, _tvQueriesFor(representative))
         : await _lookupTvGroupById(group, tmdbId);
     if (result.isNotEmpty) return result;
+
+    if (group.items.any(looksLikeSeriesItem) ||
+        representative.mediaKind == 'TvEpisode') {
+      return {};
+    }
 
     final metadata = await lookup(representative);
     return metadata == null ? {} : {representative.id: metadata};
@@ -209,23 +218,23 @@ class TmdbMetadataService {
   Future<Map<String, MediaMetadata>> _lookupMultiGroup(
       MediaFolderGroup group, List<String> queries) async {
     for (final query in queries) {
-      _log('GET /search/multi group="${group.title}" query="$query"');
-      final results = await _getJsonList(
-        '/search/multi',
-        {
-          'query': query,
-          if (group.representative.matchYear != null)
-            'year': '${group.representative.matchYear}',
-        },
-        kind: _TmdbEndpointKind.search,
-      );
-      _log('/search/multi group="${group.title}" results=${results.length}');
-      final best = _bestMultiSearchResult(results, group.representative);
-      final id = (best?['id'] as num?)?.toInt();
-      final mediaType = best?['media_type'] as String?;
-      if (id == null) continue;
-      if (mediaType == 'movie') return _lookupMovieGroupById(group, id);
-      if (mediaType == 'tv') return _lookupTvGroupById(group, id);
+      for (final queryParams
+          in _searchQueryVariants(query, group.representative.matchYear)) {
+        _log(
+            'GET /search/multi group="${group.title}" query="$query"${queryParams.containsKey('year') ? ' year=${queryParams['year']}' : ''}');
+        final results = await _getJsonList(
+          '/search/multi',
+          queryParams,
+          kind: _TmdbEndpointKind.search,
+        );
+        _log('/search/multi group="${group.title}" results=${results.length}');
+        final best = _bestMultiSearchResult(results, group.representative);
+        final id = (best?['id'] as num?)?.toInt();
+        final mediaType = best?['media_type'] as String?;
+        if (id == null) continue;
+        if (mediaType == 'movie') return _lookupMovieGroupById(group, id);
+        if (mediaType == 'tv') return _lookupTvGroupById(group, id);
+      }
     }
     return {};
   }
@@ -233,21 +242,24 @@ class TmdbMetadataService {
   Future<Map<String, MediaMetadata>> _lookupTvGroup(
       MediaFolderGroup group, List<String> queries) async {
     for (final query in queries) {
-      _log('GET /search/tv group="${group.title}" query="$query"');
-      final results = await _getJsonList(
-        '/search/tv',
-        {
-          'query': query,
-          if (group.representative.matchYear != null)
-            'first_air_date_year': '${group.representative.matchYear}',
-        },
-        kind: _TmdbEndpointKind.search,
-      );
-      final best =
-          _bestSearchResult(results, group.representative, movie: false);
-      final id = (best?['id'] as num?)?.toInt();
-      if (id == null) continue;
-      return _lookupTvGroupById(group, id);
+      for (final queryParams in _searchQueryVariants(
+        query,
+        group.representative.matchYear,
+        yearKey: 'first_air_date_year',
+      )) {
+        _log(
+            'GET /search/tv group="${group.title}" query="$query"${queryParams.containsKey('first_air_date_year') ? ' year=${queryParams['first_air_date_year']}' : ''}');
+        final results = await _getJsonList(
+          '/search/tv',
+          queryParams,
+          kind: _TmdbEndpointKind.search,
+        );
+        final best =
+            _bestSearchResult(results, group.representative, movie: false);
+        final id = (best?['id'] as num?)?.toInt();
+        if (id == null) continue;
+        return _lookupTvGroupById(group, id);
+      }
     }
     return {};
   }
@@ -306,12 +318,14 @@ class TmdbMetadataService {
 
   Future<MediaMetadata?> _lookupMovieId(MediaItem item, int id) async {
     try {
+      _log('GET /movie/$id');
       final details = await _getJson(
         '/movie/$id',
         {'append_to_response': 'images,credits'},
       );
       return _movieMetadata(item, details);
-    } catch (_) {
+    } catch (error) {
+      _log('GET /movie/$id failed: $error');
       return null;
     }
   }
@@ -333,7 +347,8 @@ class TmdbMetadataService {
         episodeDetails = _episodeFromSeason(seasonDetails, episode);
       }
       return _tvMetadata(item, details, seasonDetails, episodeDetails);
-    } catch (_) {
+    } catch (error) {
+      _log('GET /tv/$id failed: $error');
       return null;
     }
   }
@@ -341,28 +356,28 @@ class TmdbMetadataService {
   Future<MediaMetadata?> _lookupMovie(
       MediaItem item, List<String> queries) async {
     for (final query in queries) {
-      _log('GET /search/movie query="$query"');
-      final results = await _getJsonList(
-        '/search/movie',
-        {
-          'query': query,
-          if (item.matchYear != null) 'year': '${item.matchYear}',
-        },
-        kind: _TmdbEndpointKind.search,
-      );
-      _log('/search/movie query="$query" results=${results.length}');
-      final best = _bestSearchResult(results, item, movie: true);
-      if (best == null) continue;
+      for (final queryParams in _searchQueryVariants(query, item.matchYear)) {
+        _log(
+            'GET /search/movie query="$query"${queryParams.containsKey('year') ? ' year=${queryParams['year']}' : ''}');
+        final results = await _getJsonList(
+          '/search/movie',
+          queryParams,
+          kind: _TmdbEndpointKind.search,
+        );
+        _log('/search/movie query="$query" results=${results.length}');
+        final best = _bestSearchResult(results, item, movie: true);
+        if (best == null) continue;
 
-      final id = (best['id'] as num?)?.toInt();
-      if (id == null) continue;
-      _log(
-          'selected movie id=$id title=${best['title']} poster=${best['poster_path']}');
-      final details = await _getJson(
-        '/movie/$id',
-        {'append_to_response': 'images,credits'},
-      );
-      return _movieMetadata(item, details);
+        final id = (best['id'] as num?)?.toInt();
+        if (id == null) continue;
+        _log(
+            'selected movie id=$id title=${best['title']} poster=${best['poster_path']}');
+        final details = await _getJson(
+          '/movie/$id',
+          {'append_to_response': 'images,credits'},
+        );
+        return _movieMetadata(item, details);
+      }
     }
     return null;
   }
@@ -370,65 +385,69 @@ class TmdbMetadataService {
   Future<MediaMetadata?> _lookupMulti(
       MediaItem item, List<String> queries) async {
     for (final query in queries) {
-      _log('GET /search/multi query="$query"');
-      final results = await _getJsonList(
-        '/search/multi',
-        {
-          'query': query,
-          if (item.matchYear != null) 'year': '${item.matchYear}',
-        },
-        kind: _TmdbEndpointKind.search,
-      );
-      _log('/search/multi query="$query" results=${results.length}');
-      final best = _bestMultiSearchResult(results, item);
-      if (best == null) continue;
-      final id = (best['id'] as num?)?.toInt();
-      final mediaType = best['media_type'] as String?;
-      if (id == null) continue;
-      _log('selected multi id=$id type=$mediaType title=${_multiTitle(best)}');
-      if (mediaType == 'movie') return _lookupMovieId(item, id);
-      if (mediaType == 'tv') return _lookupTvId(item, id);
+      for (final queryParams in _searchQueryVariants(query, item.matchYear)) {
+        _log(
+            'GET /search/multi query="$query"${queryParams.containsKey('year') ? ' year=${queryParams['year']}' : ''}');
+        final results = await _getJsonList(
+          '/search/multi',
+          queryParams,
+          kind: _TmdbEndpointKind.search,
+        );
+        _log('/search/multi query="$query" results=${results.length}');
+        final best = _bestMultiSearchResult(results, item);
+        if (best == null) continue;
+        final id = (best['id'] as num?)?.toInt();
+        final mediaType = best['media_type'] as String?;
+        if (id == null) continue;
+        _log(
+            'selected multi id=$id type=$mediaType title=${_multiTitle(best)}');
+        if (mediaType == 'movie') return _lookupMovieId(item, id);
+        if (mediaType == 'tv') return _lookupTvId(item, id);
+      }
     }
     return null;
   }
 
   Future<MediaMetadata?> _lookupTv(MediaItem item, List<String> queries) async {
     for (final query in queries) {
-      _log('GET /search/tv query="$query"');
-      final results = await _getJsonList(
-        '/search/tv',
-        {
-          'query': query,
-          if (item.matchYear != null)
-            'first_air_date_year': '${item.matchYear}',
-        },
-        kind: _TmdbEndpointKind.search,
-      );
-      _log('/search/tv query="$query" results=${results.length}');
-      final best = _bestSearchResult(results, item, movie: false);
-      if (best == null) continue;
-
-      final id = (best['id'] as num?)?.toInt();
-      if (id == null) continue;
-      _log(
-          'selected tv id=$id name=${best['name']} poster=${best['poster_path']}');
-      _log('GET /tv/$id');
-      final details = await _getJson(
-        '/tv/$id',
-        {'append_to_response': 'images,aggregate_credits'},
-      );
-      Map<String, dynamic>? seasonDetails;
-      Map<String, dynamic>? episodeDetails;
-      final season = inferredSeasonNumber(item);
-      final episode = inferredEpisodeNumber(item);
-      if (season != null) {
-        _log('GET /tv/$id/season/$season');
-        seasonDetails = await _getSeasonJson(id, season, [item]);
-        episodeDetails = _episodeFromSeason(seasonDetails, episode);
+      for (final queryParams in _searchQueryVariants(
+        query,
+        item.matchYear,
+        yearKey: 'first_air_date_year',
+      )) {
         _log(
-            'season=$season episode=$episode still=${episodeDetails?['still_path']}');
+            'GET /search/tv query="$query"${queryParams.containsKey('first_air_date_year') ? ' year=${queryParams['first_air_date_year']}' : ''}');
+        final results = await _getJsonList(
+          '/search/tv',
+          queryParams,
+          kind: _TmdbEndpointKind.search,
+        );
+        _log('/search/tv query="$query" results=${results.length}');
+        final best = _bestSearchResult(results, item, movie: false);
+        if (best == null) continue;
+
+        final id = (best['id'] as num?)?.toInt();
+        if (id == null) continue;
+        _log(
+            'selected tv id=$id name=${best['name']} poster=${best['poster_path']}');
+        _log('GET /tv/$id');
+        final details = await _getJson(
+          '/tv/$id',
+          {'append_to_response': 'images,aggregate_credits'},
+        );
+        Map<String, dynamic>? seasonDetails;
+        Map<String, dynamic>? episodeDetails;
+        final season = inferredSeasonNumber(item);
+        final episode = inferredEpisodeNumber(item);
+        if (season != null) {
+          _log('GET /tv/$id/season/$season');
+          seasonDetails = await _getSeasonJson(id, season, [item]);
+          episodeDetails = _episodeFromSeason(seasonDetails, episode);
+          _log(
+              'season=$season episode=$episode still=${episodeDetails?['still_path']}');
+        }
+        return _tvMetadata(item, details, seasonDetails, episodeDetails);
       }
-      return _tvMetadata(item, details, seasonDetails, episodeDetails);
     }
     return null;
   }
@@ -467,9 +486,10 @@ class TmdbMetadataService {
 
   List<String> _dedupeQueries(List<String> values) {
     return values
-        .map(cleanTmdbHints)
+        .map(tmdbSearchQueryFromText)
+        .expand(_queryAlternates)
         .map((value) => value.trim())
-        .where((value) => value.length >= 2)
+        .where(isUsefulTmdbSearchQuery)
         .fold<List<String>>([], (acc, value) {
       final normalized = normalizeMatchText(value);
       if (normalized.isNotEmpty &&
@@ -478,6 +498,34 @@ class TmdbMetadataService {
       }
       return acc;
     });
+  }
+
+  Iterable<String> _queryAlternates(String value) sync* {
+    final text = value.trim();
+    if (text.isEmpty) return;
+    yield text;
+
+    final zhiIndex = text.indexOf('之');
+    if (zhiIndex >= 4) {
+      final prefix = text.substring(0, zhiIndex).trim();
+      if (RegExp(r'[\u3400-\u9FFF]').hasMatch(prefix)) {
+        yield prefix;
+      }
+    }
+  }
+
+  List<Map<String, String>> _searchQueryVariants(
+    String query,
+    int? year, {
+    String yearKey = 'year',
+  }) {
+    return [
+      {
+        'query': query,
+        if (year != null) yearKey: '$year',
+      },
+      if (year != null) {'query': query},
+    ];
   }
 
   Map<String, dynamic>? _bestSearchResult(
@@ -647,6 +695,7 @@ class TmdbMetadataService {
     );
     Map<String, dynamic>? fallback;
     for (final language in languages) {
+      _log('GET /tv/$tvId/season/$season language=$language');
       final json = await _getJsonOrNull(
         '/tv/$tvId/season/$season',
         {'language': language},
@@ -870,7 +919,8 @@ class TmdbMetadataService {
       String path, Map<String, String> query) async {
     try {
       return await _getJson(path, query);
-    } catch (_) {
+    } catch (error) {
+      _log('request failed path=$path query=${jsonEncode(query)} error=$error');
       return null;
     }
   }
@@ -902,6 +952,7 @@ class TmdbMetadataService {
       uri.toString(),
       config.accessToken.trim(),
     );
+    _log('response $uri bytes=${body.length}');
     final decoded = jsonDecode(body) as Map<String, dynamic>;
     _jsonCache[cacheKey] = decoded;
     return decoded;

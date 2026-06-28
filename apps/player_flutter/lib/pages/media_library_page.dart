@@ -180,7 +180,7 @@ class MediaLibraryPage extends StatelessWidget {
             return MediaTile(
               item: current,
               store: store,
-              metadata: mediaGroupMetadata(group, store.metadata),
+              metadata: null,
               progressMs: store.progress[current.id] ?? 0,
               displayTitle: group.title,
               itemCount: group.items.length,
@@ -235,7 +235,9 @@ List<MediaFolderGroup> _pendingMediaGroups(
   final matched = home.map(_libraryEntryResourceKey).toSet();
   return mediaFolderGroups(
     store.items.where(
-      (item) => !matched.contains(_mediaGroupResourceKey(mediaFolderKey(item))),
+      (item) =>
+          !store.metadata.containsKey(item.id) &&
+          !matched.contains(_mediaGroupResourceKey(mediaFolderKey(item))),
     ),
     lastPlayedAt: store.lastPlayedAt,
   );
@@ -1000,11 +1002,67 @@ class _MediaGroupPageState extends State<MediaGroupPage> {
   }
 }
 
-class _MediaGroupDbBody extends StatelessWidget {
+class _MediaGroupDbBody extends StatefulWidget {
   const _MediaGroupDbBody({required this.store, required this.detail});
 
   final AppStore store;
   final LibraryShowDetail detail;
+
+  @override
+  State<_MediaGroupDbBody> createState() => _MediaGroupDbBodyState();
+}
+
+class _MediaGroupDbBodyState extends State<_MediaGroupDbBody> {
+  String? selectedVersionKey;
+
+  AppStore get store => widget.store;
+  LibraryShowDetail get detail => widget.detail;
+
+  List<LibraryFileEntry> get versionFiles {
+    final key = selectedVersionKey;
+    if (key == null) {
+      final fallback = currentLibraryFile(detail, store);
+      final files = detail.files
+          .where((file) => file.versionKey == fallback.versionKey)
+          .toList();
+      return files.isEmpty ? detail.files : files;
+    }
+    final files = detail.files.where((file) => file.versionKey == key).toList();
+    return files.isEmpty ? detail.files : files;
+  }
+
+  Map<String, String> get versionLabels {
+    final values = <String, String>{};
+    for (final file in detail.files) {
+      values.putIfAbsent(file.versionKey, () => file.versionLabel);
+    }
+    return values;
+  }
+
+  LibraryFileEntry currentVersionFile() {
+    final files = versionFiles;
+    final withHistory = files
+        .where((file) => (store.lastPlayedAt[file.itemId] ?? 0) > 0)
+        .toList();
+    if (withHistory.isNotEmpty) {
+      return withHistory.reduce((a, b) => (store.lastPlayedAt[a.itemId] ?? 0) >=
+              (store.lastPlayedAt[b.itemId] ?? 0)
+          ? a
+          : b);
+    }
+    final withProgress = files
+        .where(
+            (file) => (store.progress[file.itemId] ?? file.positionMs ?? 0) > 0)
+        .toList();
+    if (withProgress.isNotEmpty) {
+      return withProgress.reduce((a, b) =>
+          (store.progress[a.itemId] ?? a.positionMs ?? 0) >=
+                  (store.progress[b.itemId] ?? b.positionMs ?? 0)
+              ? a
+              : b);
+    }
+    return files.first;
+  }
 
   Future<void> _openManualMatch(BuildContext context) async {
     final changed = await Navigator.of(context).push<bool>(
@@ -1032,8 +1090,9 @@ class _MediaGroupDbBody extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final head = detail.representative!;
-    final current = currentLibraryFile(detail, store);
+    final current = currentVersionFile();
     final currentItem = store.itemById(current.itemId);
+    final versions = versionLabels;
     final title =
         head.showTitle?.isNotEmpty == true ? head.showTitle! : current.filename;
     final currentProgressMs =
@@ -1177,8 +1236,8 @@ class _MediaGroupDbBody extends StatelessWidget {
                                         ),
                                       _DarkTextChip(
                                         label: head.totalEpisodes == null
-                                            ? '库中有 ${detail.files.length} 集'
-                                            : '共 ${head.totalEpisodes} 集（库中有 ${detail.files.length} 集）',
+                                            ? '库中有 ${versionFiles.length} 集'
+                                            : '共 ${head.totalEpisodes} 集（库中有 ${versionFiles.length} 集）',
                                       ),
                                     ],
                                   ),
@@ -1242,11 +1301,54 @@ class _MediaGroupDbBody extends StatelessWidget {
                       dbSeasonLabel(current),
                       style: const TextStyle(
                         color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.w900,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
                       ),
                     ),
                     const Icon(Icons.arrow_drop_down, color: Colors.white),
+                    if (versions.length > 1) ...[
+                      const SizedBox(width: 14),
+                      PopupMenuButton<String>(
+                        tooltip: '切换版本',
+                        color: Colors.white,
+                        initialValue: selectedVersionKey ?? current.versionKey,
+                        onSelected: (value) {
+                          setState(() {
+                            selectedVersionKey = value;
+                          });
+                        },
+                        itemBuilder: (context) => [
+                          for (final entry in versions.entries)
+                            PopupMenuItem(
+                              value: entry.key,
+                              child: Text(entry.value),
+                            ),
+                        ],
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Flexible(
+                              child: Text(
+                                versions[selectedVersionKey ??
+                                        current.versionKey] ??
+                                    current.versionLabel,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                            const Icon(
+                              Icons.arrow_drop_down,
+                              color: Colors.white,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ],
                 ),
                 const SizedBox(height: 8),
@@ -1260,10 +1362,10 @@ class _MediaGroupDbBody extends StatelessWidget {
                   height: 154,
                   child: ListView.separated(
                     scrollDirection: Axis.horizontal,
-                    itemCount: detail.files.length,
+                    itemCount: versionFiles.length,
                     separatorBuilder: (_, __) => const SizedBox(width: 12),
                     itemBuilder: (context, index) {
-                      final file = detail.files[index];
+                      final file = versionFiles[index];
                       final item = store.itemById(file.itemId);
                       return SizedBox(
                         width: 176,

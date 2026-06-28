@@ -188,6 +188,154 @@ String cleanTmdbHints(String value) {
       .trim();
 }
 
+String tmdbSearchQueryFromText(String value) {
+  var text = cleanTmdbHints(value)
+      .replaceAll(RegExp(r'^\s*[A-Za-z]\s+(?=[\u3400-\u9FFF])'), ' ')
+      .replaceAll(RegExp(r'[【】\[\]{}()（）《》「」『』，、；;]'), ' ')
+      .replaceAll(RegExp(r'\b[Ss]\d{1,2}[Ee]\d{1,3}\b'), ' ')
+      .replaceAll(RegExp(r'\b[Ee][Pp]?\d{1,3}\b'), ' ')
+      .replaceAll(RegExp(r'第\s*[0-9一二三四五六七八九十百零两]+\s*[集季话]'), ' ')
+      .replaceAll(RegExp(r'全\s*[0-9一二三四五六七八九十百零两]+\s*[集季话]'), ' ');
+  final tokens = text
+      .split(RegExp(r'[\s._\-~+]+'))
+      .map(_stripTmdbNoiseFromToken)
+      .map((token) => token.trim())
+      .where((token) => token.isNotEmpty && !_isTmdbNoiseToken(token))
+      .toList(growable: false);
+  return tokens.join(' ').trim();
+}
+
+bool isUsefulTmdbSearchQuery(String value) {
+  final normalized = normalizeMatchText(value);
+  if (normalized.length < 2) return false;
+  if (RegExp(r'^\d+$').hasMatch(normalized.replaceAll(' ', ''))) {
+    return false;
+  }
+  const blocked = {
+    '夸克',
+    '来自 分享',
+    '分享',
+    '片头尾',
+    '花絮',
+    '字幕',
+    '简繁字幕',
+    '简繁英字幕',
+    '内封',
+  };
+  if (blocked.contains(normalized)) return false;
+  if (RegExp(r'^第\s*[0-9一二三四五六七八九十百零两]+\s*章').hasMatch(value.trim())) {
+    return false;
+  }
+  return true;
+}
+
+String _stripTmdbNoiseFromToken(String token) {
+  var value = token;
+  const zhNoise = [
+    '杜比视界',
+    '简繁英字幕',
+    '简繁字幕',
+    '中英字幕',
+    '外挂字幕',
+    '高码率',
+    '低码率',
+    '高帧率',
+    '原盘',
+    '蓝光',
+    '压制版',
+    '网盘版',
+    '收藏版',
+    '无水印',
+    '杜比',
+    '国语',
+    '粤语',
+    '日语',
+    '英语',
+    '中字',
+    '简中',
+    '繁中',
+    '内封',
+    '字幕',
+    '简繁',
+    '双语',
+  ];
+  for (final word in zhNoise) {
+    value = value.replaceAll(word, '');
+  }
+  return value
+      .replaceAll(
+        RegExp(
+          r'(dolbyvision|hdr10\+?|2160p|1080p|720p|480p|120fps|60fps|\d{2,3}fps|web[- ]?dl|webrip|blu[- ]?ray|bdrip|remux|hdtv|tvrip|dvdrip|truehd|dts[- ]?hd|h\.?265|x265|hevc|h\.?264|x264|avc|av1|vp9|10bit|8bit|atmos|dolby|hdr|sdr|uhd|fhd|4k|8k|ddp|eac3|ac3|aac|dts|hlg|raw|bd|dv|hq|dl)',
+          caseSensitive: false,
+        ),
+        '',
+      )
+      .replaceAll(RegExp(r'^[^\w\u4E00-\u9FFF]+|[^\w\u4E00-\u9FFF]+$'), '');
+}
+
+bool _isTmdbNoiseToken(String token) {
+  final lower = token.toLowerCase();
+  const exact = {
+    '8k',
+    '4k',
+    '2160p',
+    '1080p',
+    '720p',
+    '480p',
+    'uhd',
+    'fhd',
+    'hd',
+    'sd',
+    'hdr',
+    'hdr10',
+    'sdr',
+    'dv',
+    'hlg',
+    'web',
+    'dl',
+    'hq',
+    'webdl',
+    'webrip',
+    'bluray',
+    'bdrip',
+    'remux',
+    'raw',
+    'hdtv',
+    'h265',
+    'hevc',
+    'x265',
+    'h264',
+    'x264',
+    'avc',
+    'av1',
+    'vp9',
+    '10bit',
+    '8bit',
+    'aac',
+    'ac3',
+    'eac3',
+    'ddp',
+    'dts',
+    'p',
+  };
+  if (exact.contains(lower)) return true;
+  if (RegExp(r'^\d{2,3}fps$', caseSensitive: false).hasMatch(token)) {
+    return true;
+  }
+  if (RegExp(r'^0*\d{1,4}$').hasMatch(token)) return true;
+  if (RegExp(r'^\d{4}$').hasMatch(token)) return true;
+  if (RegExp(r'^全[0-9一二三四五六七八九十百零两]+[集季话]$').hasMatch(token)) {
+    return true;
+  }
+  if (RegExp(r'^第[0-9一二三四五六七八九十百零两]+[集季话]$').hasMatch(token)) {
+    return true;
+  }
+  return token.contains('字幕') ||
+      token == '内封' ||
+      token == '简繁' ||
+      token == '双语';
+}
+
 int? explicitTmdbIdFromText(String value) {
   final match = RegExp(
     r'(?:^|[^\w])tmdb(?:id)?\s*[-=]\s*(\d+)(?=$|[^\w])',
@@ -237,6 +385,12 @@ bool looksLikeSeriesItem(MediaItem item) {
 }
 
 String mediaFolderKey(MediaItem item) {
+  final parsedGroupPath = normalizedItemGroupPath(item);
+  if (parsedGroupPath.isNotEmpty) {
+    return normalizeMediaFolderKey(
+      '${item.sourceId}:${item.type == SourceType.webdav ? 'webdav' : 'local'}:$parsedGroupPath',
+    );
+  }
   if (item.type == SourceType.local) {
     final dir = p.dirname(item.uri);
     final folder = p.basename(dir);
@@ -251,6 +405,15 @@ String mediaFolderKey(MediaItem item) {
       ? parentPath(parent.substring(0, parent.length - 1))
       : parent;
   return normalizeMediaFolderKey('${item.sourceId}:webdav:$groupPath');
+}
+
+String normalizedItemGroupPath(MediaItem item) {
+  final value = item.groupPath.trim().replaceAll('\\', '/');
+  if (value.isEmpty) return '';
+  if (item.type == SourceType.webdav && !value.startsWith('/')) {
+    return '/$value';
+  }
+  return value;
 }
 
 String mediaFolderTitle(MediaItem item) {
