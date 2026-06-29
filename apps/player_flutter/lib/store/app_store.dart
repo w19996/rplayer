@@ -482,12 +482,14 @@ class AppStore extends ChangeNotifier {
   Future<void> rescanAll() async {
     addDiagnosticLog('rescan all sources: ${sources.length}', category: 'scan');
     final existing = List<MediaSourceConfig>.from(sources);
-    items.clear();
-    rebuildItemIndex();
-    notifyListeners();
+    final scanned = <MediaItem>[];
     for (final source in existing) {
-      await scanSourceIntoItems(source);
+      scanned.addAll(await scanSourceItems(source));
     }
+    items
+      ..clear()
+      ..addAll(scanned);
+    rebuildItemIndex();
     metadata.removeWhere((itemId, _) => !_itemIndexById.containsKey(itemId));
     await save();
     notifyListeners();
@@ -496,10 +498,11 @@ class AppStore extends ChangeNotifier {
 
   Future<void> rescanSource(MediaSourceConfig source) async {
     addDiagnosticLog('rescan source: ${source.name}', category: 'scan');
+    final scanned = await scanSourceItems(source);
     items.removeWhere((item) => item.sourceId == source.id);
+    items.addAll(scanned);
+    items.sort(compareMediaItems);
     rebuildItemIndex();
-    notifyListeners();
-    await scanSourceIntoItems(source);
     metadata.removeWhere((itemId, _) => !_itemIndexById.containsKey(itemId));
     await save();
     notifyListeners();
@@ -507,20 +510,30 @@ class AppStore extends ChangeNotifier {
   }
 
   Future<void> scanSourceIntoItems(MediaSourceConfig source) async {
-    final stopwatch = Stopwatch()..start();
-    addDiagnosticLog('scan source started: ${source.name}', category: 'scan');
-    var count = 0;
-    await for (final item in scanner.scanSourceStream(source)) {
+    final scanned = await scanSourceItems(source);
+    for (final item in scanned) {
       addOrReplaceItem(item);
-      count++;
-      notifyScanProgress(count);
     }
     items.sort(compareMediaItems);
     rebuildItemIndex();
+  }
+
+  Future<List<MediaItem>> scanSourceItems(MediaSourceConfig source) async {
+    final stopwatch = Stopwatch()..start();
+    addDiagnosticLog('scan source started: ${source.name}', category: 'scan');
+    var count = 0;
+    final scanned = <MediaItem>[];
+    await for (final item in scanner.scanSourceStream(source)) {
+      scanned.add(item);
+      count++;
+      notifyScanProgress(count);
+    }
+    scanned.sort(compareMediaItems);
     addDiagnosticLog(
       'scan source finished: ${source.name}, items=$count, elapsed=${stopwatch.elapsedMilliseconds}ms',
       category: 'scan',
     );
+    return scanned;
   }
 
   Future<void> addWebdavSelection(
@@ -816,12 +829,16 @@ class AppStore extends ChangeNotifier {
       );
       await loadMetadataDatabase();
       final autoMatchFingerprint = _tmdbAutoMatchFingerprint();
+      final autoMatchState = force ? null : await _tmdbAutoMatchState();
       if (!force &&
-          await _tmdbAutoMatchCompletedFor(autoMatchFingerprint)) {
+          _tmdbAutoMatchCompletedFor(autoMatchState, autoMatchFingerprint)) {
         tmdbLastStatus = 'TMDB refresh skipped: already tried current library';
         addDiagnosticLog(tmdbLastStatus, category: 'match');
         return;
       }
+      final previouslyFailedItems =
+          force ? const <String>{} : _tmdbAutoMatchFailedItems(autoMatchState);
+      final failedItems = <String>{};
       var matched = 0;
       var failed = 0;
       var skipped = 0;
@@ -841,6 +858,18 @@ class AppStore extends ChangeNotifier {
           if (skipped <= 20 || skipped % 500 == 0) {
             addDiagnosticLog(
               'TMDB skip cached sample=$skipped: ${describeMediaItem(item)}',
+              category: 'match',
+            );
+          }
+          continue;
+        }
+        final itemFingerprint = tmdbAutoMatchItemFingerprint(item);
+        if (!force && previouslyFailedItems.contains(itemFingerprint)) {
+          skipped++;
+          failedItems.add(itemFingerprint);
+          if (skipped <= 20 || skipped % 500 == 0) {
+            addDiagnosticLog(
+              'TMDB skip previous failed sample=$skipped: ${describeMediaItem(item)}',
               category: 'match',
             );
           }
@@ -877,6 +906,7 @@ class AppStore extends ChangeNotifier {
             values = await service.lookupGroup(group, cachedTitle: cachedTitle);
           } catch (error) {
             failed += group.items.length;
+            failedItems.addAll(group.items.map(tmdbAutoMatchItemFingerprint));
             tmdbLastStatus = 'TMDB error: ${group.title} - $error';
             addDiagnosticLog(tmdbLastStatus, category: 'match');
             notifyListeners();
@@ -904,6 +934,7 @@ class AppStore extends ChangeNotifier {
             }
           } else {
             failed += group.items.length;
+            failedItems.addAll(group.items.map(tmdbAutoMatchItemFingerprint));
             tmdbLastStatus = 'TMDB no match: ${group.title}';
             addDiagnosticLog(tmdbLastStatus, category: 'match');
           }
@@ -920,7 +951,7 @@ class AppStore extends ChangeNotifier {
       await Future.wait([
         for (var i = 0; i < workerCount; i++) worker(),
       ]);
-      await _markTmdbAutoMatchComplete(autoMatchFingerprint);
+      await _markTmdbAutoMatchComplete(autoMatchFingerprint, failedItems);
       metadataRevision++;
       tmdbLastStatus =
           'TMDB refresh done: $matched matched, $failed failed, $skipped skipped';
@@ -941,19 +972,7 @@ class AppStore extends ChangeNotifier {
   }
 
   String _tmdbAutoMatchFingerprint() {
-    final values = items
-        .map((item) => [
-              item.id,
-              item.size ?? -1,
-              item.matchTitle,
-              item.matchYear ?? '',
-              item.season ?? '',
-              item.episode ?? '',
-              item.mediaKind,
-              item.groupPath,
-            ].join('\t'))
-        .toList()
-      ..sort();
+    final values = items.map(tmdbAutoMatchItemFingerprint).toList()..sort();
     return [
       'schema=$currentMetadataSchemaVersion',
       'language=${tmdbConfig.language}',
@@ -974,22 +993,35 @@ class AppStore extends ChangeNotifier {
     return hash.toRadixString(16).padLeft(8, '0');
   }
 
-  Future<bool> _tmdbAutoMatchCompletedFor(String fingerprint) async {
+  Future<Map<String, dynamic>?> _tmdbAutoMatchState() async {
     try {
       final db = await metadataDatabaseFile;
-      final flag = await RustCoreService.instance.metadataGetFlagAsync(
+      return await RustCoreService.instance.metadataGetFlagAsync(
         db.path,
         _tmdbAutoMatchFlagKey,
       );
-      return flag?['fingerprint'] == fingerprint;
     } catch (error) {
       addDiagnosticLog('TMDB auto-match flag read failed: $error',
           category: 'match');
-      return false;
+      return null;
     }
   }
 
-  Future<void> _markTmdbAutoMatchComplete(String fingerprint) async {
+  bool _tmdbAutoMatchCompletedFor(
+      Map<String, dynamic>? state, String fingerprint) {
+    return state?['fingerprint'] == fingerprint;
+  }
+
+  Set<String> _tmdbAutoMatchFailedItems(Map<String, dynamic>? state) {
+    final values = state?['failedItems'];
+    if (values is! List) return const {};
+    return values.whereType<String>().toSet();
+  }
+
+  Future<void> _markTmdbAutoMatchComplete(
+    String fingerprint,
+    Set<String> failedItems,
+  ) async {
     try {
       final db = await metadataDatabaseFile;
       await RustCoreService.instance.metadataPutFlagAsync(
@@ -999,6 +1031,7 @@ class AppStore extends ChangeNotifier {
           'fingerprint': fingerprint,
           'itemCount': items.length,
           'schemaVersion': currentMetadataSchemaVersion,
+          'failedItems': failedItems.toList()..sort(),
           'completedAt': DateTime.now().millisecondsSinceEpoch,
         },
       );
@@ -1496,4 +1529,17 @@ class AppStore extends ChangeNotifier {
     await save();
     notifyListeners();
   }
+}
+
+String tmdbAutoMatchItemFingerprint(MediaItem item) {
+  return [
+    item.id,
+    item.size ?? -1,
+    item.matchTitle,
+    item.matchYear ?? '',
+    item.season ?? '',
+    item.episode ?? '',
+    item.mediaKind,
+    item.groupPath,
+  ].join('\t');
 }

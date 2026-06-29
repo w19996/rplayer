@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -150,6 +152,29 @@ void main() {
     expect(tmdbSearchQueryFromText('Q 去有风的地方'), '去有风的地方');
     expect(isUsefulTmdbSearchQuery('简繁字幕'), isFalse);
     expect(isUsefulTmdbSearchQuery('第3章 CMake主要语法'), isFalse);
+  });
+
+  test('tmdb auto-match failed item key changes when file changes', () {
+    const item = MediaItem(
+      id: 'source:/media/Show/01.mp4',
+      sourceId: 'source',
+      sourceName: 'source',
+      type: SourceType.local,
+      title: '01',
+      uri: '/media/Show/01.mp4',
+      folderTitle: 'Show',
+      matchTitle: 'Show',
+      season: 1,
+      episode: 1,
+      mediaKind: 'TvEpisode',
+      groupPath: '/media/Show',
+      size: 100,
+    );
+
+    expect(
+      tmdbAutoMatchItemFingerprint(item),
+      isNot(equals(tmdbAutoMatchItemFingerprint(item.copyWith(size: 200)))),
+    );
   });
 
   test('webdav parent removal covers descendant selections', () {
@@ -311,6 +336,36 @@ void main() {
     expect(store.metadataCompleteForItem(item, metadata), isTrue);
   });
 
+  test('rescan keeps current items until replacement scan completes', () async {
+    final scanner = _BlockingScanner();
+    final source = MediaSourceConfig.local(
+      id: 'source',
+      name: 'source',
+      directory: '/media',
+    ).copyWith(selectedPaths: const ['/media']);
+    const item = MediaItem(
+      id: 'source:/media/Show/01.mp4',
+      sourceId: 'source',
+      sourceName: 'source',
+      type: SourceType.local,
+      title: '01',
+      uri: '/media/Show/01.mp4',
+    );
+    final store = AppStore(scanner: scanner)
+      ..sources.add(source)
+      ..items.add(item)
+      ..rebuildItemIndex();
+
+    final rescan = store.rescanAll();
+    await scanner.started.future.timeout(const Duration(seconds: 1));
+
+    expect(store.items.single.id, item.id);
+
+    scanner.release.complete();
+    await expectLater(rescan, throwsA(isA<StateError>()));
+    expect(store.items.single.id, item.id);
+  });
+
   test('normalizes danmu api endpoints', () {
     expect(
       normalizeDanmuApiBaseUrl('danmu.example.com/87654321/api/v2/'),
@@ -406,4 +461,16 @@ void main() {
     expect(find.text('本地目录'), findsOneWidget);
     expect(find.text('WebDAV'), findsOneWidget);
   });
+}
+
+class _BlockingScanner extends MediaScanService {
+  final started = Completer<void>();
+  final release = Completer<void>();
+
+  @override
+  Stream<MediaItem> scanSourceStream(MediaSourceConfig source) async* {
+    started.complete();
+    await release.future;
+    throw StateError('scan stopped');
+  }
 }
