@@ -9,6 +9,8 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
+import android.graphics.Bitmap
+import android.media.MediaMetadataRetriever
 import android.graphics.drawable.Icon
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
@@ -21,6 +23,7 @@ import android.view.OrientationEventListener
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.io.ByteArrayOutputStream
 
 class MainActivity : FlutterActivity() {
     companion object {
@@ -50,6 +53,13 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 "appFilesDir" -> result.success(filesDir.absolutePath)
                 "playerStatus" -> result.success(playerStatus())
+                "videoThumbnail" -> {
+                    val uri = call.argument<String>("uri") ?: ""
+                    val remote = call.argument<Boolean>("remote") == true
+                    Thread {
+                        result.success(videoThumbnail(uri, remote))
+                    }.start()
+                }
                 "adjustPlaybackControl" -> {
                     val kind = call.argument<String>("kind") ?: ""
                     val delta = (call.argument<Double>("delta") ?: 0.0).toFloat()
@@ -72,6 +82,45 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
+
+    private fun videoThumbnail(uri: String, remote: Boolean): ByteArray? {
+        if (uri.isBlank()) return null
+        val retriever = MediaMetadataRetriever()
+        return try {
+            if (remote) {
+                retriever.setDataSource(uri, emptyMap())
+            } else {
+                retriever.setDataSource(uri)
+            }
+            val frame = retriever.getFrameAtTime(1_000_000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                ?: retriever.frameAtTime
+                ?: return null
+            val scaled = scaleBitmap(frame, 480)
+            val out = ByteArrayOutputStream()
+            scaled.compress(Bitmap.CompressFormat.JPEG, 82, out)
+            if (scaled !== frame) scaled.recycle()
+            frame.recycle()
+            out.toByteArray()
+        } catch (_: Exception) {
+            null
+        } finally {
+            retriever.release()
+        }
+    }
+
+    private fun scaleBitmap(bitmap: Bitmap, maxSide: Int): Bitmap {
+        val width = bitmap.width
+        val height = bitmap.height
+        val side = maxOf(width, height)
+        if (side <= maxSide || side <= 0) return bitmap
+        val scale = maxSide.toFloat() / side.toFloat()
+        return Bitmap.createScaledBitmap(
+            bitmap,
+            maxOf(1, (width * scale).toInt()),
+            maxOf(1, (height * scale).toInt()),
+            true
+        )
     }
 
     override fun onDestroy() {

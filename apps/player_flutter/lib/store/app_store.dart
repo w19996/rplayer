@@ -28,6 +28,7 @@ class AppStore extends ChangeNotifier {
   Future<void> _diagnosticLogWriteChain = Future.value();
   Future<void> _metadataDatabaseWriteChain = Future.value();
   final Map<String, Uint8List?> _imageCache = {};
+  final Map<String, Uint8List?> _videoCoverCache = {};
   final Set<String> _imageCacheMetadataWriteKeys = {};
   int _lastScanNotifyMs = 0;
   int _pathParseLogCount = 0;
@@ -58,6 +59,13 @@ class AppStore extends ChangeNotifier {
   Future<File> get diagnosticLogFile async {
     final dir = await appFilesDirectory;
     return File(p.join(dir.path, 'player_diagnostic.log'));
+  }
+
+  Future<Directory> get videoCoverDirectory async {
+    final dir =
+        Directory(p.join((await appFilesDirectory).path, 'video_covers'));
+    if (!await dir.exists()) await dir.create(recursive: true);
+    return dir;
   }
 
   Future<void> load() async {
@@ -1518,6 +1526,51 @@ class AppStore extends ChangeNotifier {
       _imageCache[key] = null;
       return null;
     }
+  }
+
+  Future<Uint8List?> videoCoverBytes(MediaItem item) async {
+    final key = _videoCoverKey(item);
+    if (_videoCoverCache.containsKey(key)) return _videoCoverCache[key];
+    final file = File(p.join((await videoCoverDirectory).path, '$key.jpg'));
+    if (await file.exists()) {
+      final bytes = await file.readAsBytes();
+      if (bytes.isNotEmpty) {
+        _videoCoverCache[key] = bytes;
+        return bytes;
+      }
+    }
+    try {
+      final bytes = await appChannel.invokeMethod<Uint8List>(
+        'videoThumbnail',
+        {
+          'uri': item.uri,
+          'remote': item.type == SourceType.webdav,
+        },
+      );
+      if (bytes == null || bytes.isEmpty) {
+        _videoCoverCache[key] = null;
+        return null;
+      }
+      _videoCoverCache[key] = bytes;
+      await file.writeAsBytes(bytes, flush: true);
+      return bytes;
+    } on MissingPluginException {
+      _videoCoverCache[key] = null;
+      return null;
+    } on PlatformException catch (error) {
+      addDiagnosticLog('video cover unavailable: ${item.id} - $error',
+          category: 'cache');
+      _videoCoverCache[key] = null;
+      return null;
+    }
+  }
+
+  String _videoCoverKey(MediaItem item) {
+    return _stableTextHash([
+      item.id,
+      item.uri,
+      item.size ?? -1,
+    ].join('\t'));
   }
 
   Future<void> updateProgress(String itemId, Duration position,

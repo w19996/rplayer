@@ -92,6 +92,7 @@ class MediaTile extends StatelessWidget {
       required this.progressMs,
       required this.onTap,
       this.displayTitle,
+      this.coverItem,
       this.itemCount = 1,
       super.key});
 
@@ -101,6 +102,7 @@ class MediaTile extends StatelessWidget {
   final int progressMs;
   final VoidCallback onTap;
   final String? displayTitle;
+  final MediaItem? coverItem;
   final int itemCount;
 
   @override
@@ -129,7 +131,12 @@ class MediaTile extends StatelessWidget {
                       fallback: MediaPosterFallback(remote: remote),
                     )
                   else
-                    MediaPosterFallback(remote: remote),
+                    VideoCoverImage(
+                      store: store,
+                      item: coverItem ?? item,
+                      fit: BoxFit.cover,
+                      fallback: MediaPosterFallback(remote: remote),
+                    ),
                   if (rating != null && rating > 0)
                     Positioned(
                       right: 6,
@@ -371,6 +378,64 @@ class _CachedTmdbImageState extends State<CachedTmdbImage> {
             bytes,
             fit: widget.fit,
             alignment: widget.alignment,
+            gaplessPlayback: true,
+            errorBuilder: (_, __, ___) => widget.fallback,
+          );
+        }
+        return widget.fallback;
+      },
+    );
+  }
+}
+
+class VideoCoverImage extends StatefulWidget {
+  const VideoCoverImage({
+    required this.store,
+    required this.item,
+    required this.fit,
+    required this.fallback,
+    super.key,
+  });
+
+  final AppStore store;
+  final MediaItem item;
+  final BoxFit fit;
+  final Widget fallback;
+
+  @override
+  State<VideoCoverImage> createState() => _VideoCoverImageState();
+}
+
+class _VideoCoverImageState extends State<VideoCoverImage> {
+  late Future<Uint8List?> future;
+  late String itemId;
+
+  @override
+  void initState() {
+    super.initState();
+    itemId = widget.item.id;
+    future = widget.store.videoCoverBytes(widget.item);
+  }
+
+  @override
+  void didUpdateWidget(VideoCoverImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.item.id != itemId || oldWidget.store != widget.store) {
+      itemId = widget.item.id;
+      future = widget.store.videoCoverBytes(widget.item);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<Uint8List?>(
+      future: future,
+      builder: (context, snapshot) {
+        final bytes = snapshot.data;
+        if (bytes != null && bytes.isNotEmpty) {
+          return Image.memory(
+            bytes,
+            fit: widget.fit,
             gaplessPlayback: true,
             errorBuilder: (_, __, ___) => widget.fallback,
           );

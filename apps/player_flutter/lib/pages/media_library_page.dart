@@ -186,6 +186,7 @@ class MediaLibraryPage extends StatelessWidget {
               metadata: null,
               progressMs: store.progress[current.id] ?? 0,
               displayTitle: group.title,
+              coverItem: group.items.first,
               itemCount: group.items.length,
               onTap: () {},
             );
