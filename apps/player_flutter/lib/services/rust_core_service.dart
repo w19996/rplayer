@@ -40,6 +40,8 @@ class RustCoreService {
   _RustStringDart? _appStateGetJson;
   _RustTwoStringDart? _appStatePutJson;
   _RustThreeStringDart? _metadataCachedImageJson;
+  _RustTwoStringDart? _metadataGetFlagJson;
+  _RustThreeStringDart? _metadataPutFlagJson;
   _RustTwoStringDart? _metadataPutCachedImageJson;
   _RustStringDart? _libraryHomeJson;
   _RustTwoStringDart? _libraryShowDetailJson;
@@ -65,6 +67,8 @@ class RustCoreService {
       _appStateGetJson != null &&
       _appStatePutJson != null &&
       _metadataCachedImageJson != null &&
+      _metadataGetFlagJson != null &&
+      _metadataPutFlagJson != null &&
       _metadataPutCachedImageJson != null &&
       _libraryHomeJson != null &&
       _libraryShowDetailJson != null &&
@@ -307,6 +311,30 @@ class RustCoreService {
     return Isolate.run(() => _rustMetadataCachedImageWorker(args));
   }
 
+  Map<String, dynamic>? metadataGetFlag(String dbPath, String key) {
+    _ensureAvailable();
+    final text = _callTwoString(_metadataGetFlagJson, dbPath, key);
+    final value = jsonDecode(text);
+    return value is Map<String, dynamic> ? value : null;
+  }
+
+  Future<Map<String, dynamic>?> metadataGetFlagAsync(
+      String dbPath, String key) {
+    final args = [dbPath, key];
+    return Isolate.run(() => _rustMetadataGetFlagWorker(args));
+  }
+
+  void metadataPutFlag(String dbPath, String key, Map<String, dynamic> value) {
+    _ensureAvailable();
+    _callThreeString(_metadataPutFlagJson, dbPath, key, jsonEncode(value));
+  }
+
+  Future<void> metadataPutFlagAsync(
+      String dbPath, String key, Map<String, dynamic> value) {
+    final args = [dbPath, key, jsonEncode(value)];
+    return Isolate.run(() => _rustMetadataPutFlagWorker(args));
+  }
+
   void metadataPutCachedImage(
     String dbPath,
     String imagePath,
@@ -470,6 +498,12 @@ class RustCoreService {
       _metadataCachedImageJson = _library!
           .lookupFunction<_RustThreeStringFn, _RustThreeStringDart>(
               'player_core_metadata_cached_image_json');
+      _metadataGetFlagJson = _library!
+          .lookupFunction<_RustTwoStringFn, _RustTwoStringDart>(
+              'player_core_metadata_get_flag_json');
+      _metadataPutFlagJson = _library!
+          .lookupFunction<_RustThreeStringFn, _RustThreeStringDart>(
+              'player_core_metadata_put_flag_json');
       _metadataPutCachedImageJson = _library!
           .lookupFunction<_RustTwoStringFn, _RustTwoStringDart>(
               'player_core_metadata_put_cached_image_json');
@@ -691,6 +725,18 @@ void _rustAppStatePutWorker(List<String> args) {
 
 Uint8List? _rustMetadataCachedImageWorker(List<String> args) {
   return RustCoreService._().metadataCachedImage(args[0], args[1], args[2]);
+}
+
+Map<String, dynamic>? _rustMetadataGetFlagWorker(List<String> args) {
+  return RustCoreService._().metadataGetFlag(args[0], args[1]);
+}
+
+void _rustMetadataPutFlagWorker(List<String> args) {
+  RustCoreService._().metadataPutFlag(
+    args[0],
+    args[1],
+    jsonDecode(args[2]) as Map<String, dynamic>,
+  );
 }
 
 void _rustMetadataPutCachedImageWorker(List<String> args) {

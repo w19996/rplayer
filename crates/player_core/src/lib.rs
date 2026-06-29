@@ -19,8 +19,9 @@ pub use media::{
 };
 pub use metadata_cache::{
     cache_images_json, get_all_metadata_json, get_app_state_json, get_cached_image_json,
-    prune_metadata_json, put_app_state_json, put_cached_image_json, put_metadata_json,
-    query_home_json, query_recent_json, query_show_detail_json, replace_all_metadata_json,
+    get_metadata_flag_json, prune_metadata_json, put_app_state_json, put_cached_image_json,
+    put_metadata_flag_json, put_metadata_json, query_home_json, query_recent_json,
+    query_show_detail_json, replace_all_metadata_json,
 };
 pub use scanner::{
     list_local_directory, list_local_directory_json, scan_local_videos, scan_local_videos_json,
@@ -220,6 +221,33 @@ pub extern "C" fn player_core_metadata_cached_image_json(
         let image_path = read_c_string(image_path)?;
         let size = read_c_string(size)?;
         get_cached_image_json(&db_path, &image_path, &size)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn player_core_metadata_get_flag_json(
+    db_path: *const c_char,
+    key: *const c_char,
+) -> *mut c_char {
+    ffi_result(|| {
+        let db_path = read_c_string(db_path)?;
+        let key = read_c_string(key)?;
+        get_metadata_flag_json(&db_path, &key)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn player_core_metadata_put_flag_json(
+    db_path: *const c_char,
+    key: *const c_char,
+    value_json: *const c_char,
+) -> *mut c_char {
+    ffi_result(|| {
+        let db_path = read_c_string(db_path)?;
+        let key = read_c_string(key)?;
+        let value_json = read_c_string(value_json)?;
+        put_metadata_flag_json(&db_path, &key, &value_json)?;
+        Ok("{}".to_string())
     })
 }
 

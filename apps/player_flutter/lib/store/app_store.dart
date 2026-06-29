@@ -3,6 +3,8 @@ part of 'package:player_flutter/main.dart';
 class AppStore extends ChangeNotifier {
   AppStore({this.scanner = const MediaScanService()});
 
+  static const _tmdbAutoMatchFlagKey = 'tmdb_auto_match_complete';
+
   final MediaScanService scanner;
   final List<MediaSourceConfig> sources = [];
   final List<MediaItem> items = [];
@@ -813,6 +815,13 @@ class AppStore extends ChangeNotifier {
         log: (message) => addDiagnosticLog(message, category: 'tmdb'),
       );
       await loadMetadataDatabase();
+      final autoMatchFingerprint = _tmdbAutoMatchFingerprint();
+      if (!force &&
+          await _tmdbAutoMatchCompletedFor(autoMatchFingerprint)) {
+        tmdbLastStatus = 'TMDB refresh skipped: already tried current library';
+        addDiagnosticLog(tmdbLastStatus, category: 'match');
+        return;
+      }
       var matched = 0;
       var failed = 0;
       var skipped = 0;
@@ -911,6 +920,7 @@ class AppStore extends ChangeNotifier {
       await Future.wait([
         for (var i = 0; i < workerCount; i++) worker(),
       ]);
+      await _markTmdbAutoMatchComplete(autoMatchFingerprint);
       metadataRevision++;
       tmdbLastStatus =
           'TMDB refresh done: $matched matched, $failed failed, $skipped skipped';
@@ -928,6 +938,74 @@ class AppStore extends ChangeNotifier {
     if (groupCount <= 0) return 0;
     final maxWorkers = force ? 8 : 6;
     return math.min(maxWorkers, groupCount);
+  }
+
+  String _tmdbAutoMatchFingerprint() {
+    final values = items
+        .map((item) => [
+              item.id,
+              item.size ?? -1,
+              item.matchTitle,
+              item.matchYear ?? '',
+              item.season ?? '',
+              item.episode ?? '',
+              item.mediaKind,
+              item.groupPath,
+            ].join('\t'))
+        .toList()
+      ..sort();
+    return [
+      'schema=$currentMetadataSchemaVersion',
+      'language=${tmdbConfig.language}',
+      'region=${tmdbConfig.region}',
+      'api=${tmdbConfig.normalizedApiBaseUrl}',
+      'token=${_stableTextHash(tmdbConfig.accessToken.trim())}',
+      'count=${items.length}',
+      ...values,
+    ].join('\n');
+  }
+
+  String _stableTextHash(String value) {
+    var hash = 0x811c9dc5;
+    for (final codeUnit in value.codeUnits) {
+      hash ^= codeUnit;
+      hash = (hash * 0x01000193) & 0xffffffff;
+    }
+    return hash.toRadixString(16).padLeft(8, '0');
+  }
+
+  Future<bool> _tmdbAutoMatchCompletedFor(String fingerprint) async {
+    try {
+      final db = await metadataDatabaseFile;
+      final flag = await RustCoreService.instance.metadataGetFlagAsync(
+        db.path,
+        _tmdbAutoMatchFlagKey,
+      );
+      return flag?['fingerprint'] == fingerprint;
+    } catch (error) {
+      addDiagnosticLog('TMDB auto-match flag read failed: $error',
+          category: 'match');
+      return false;
+    }
+  }
+
+  Future<void> _markTmdbAutoMatchComplete(String fingerprint) async {
+    try {
+      final db = await metadataDatabaseFile;
+      await RustCoreService.instance.metadataPutFlagAsync(
+        db.path,
+        _tmdbAutoMatchFlagKey,
+        {
+          'fingerprint': fingerprint,
+          'itemCount': items.length,
+          'schemaVersion': currentMetadataSchemaVersion,
+          'completedAt': DateTime.now().millisecondsSinceEpoch,
+        },
+      );
+    } catch (error) {
+      addDiagnosticLog('TMDB auto-match flag write failed: $error',
+          category: 'match');
+    }
   }
 
   Future<List<TmdbSearchCandidate>> searchTmdbCandidates(String query) async {

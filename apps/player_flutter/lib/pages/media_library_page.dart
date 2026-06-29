@@ -752,7 +752,7 @@ class _MediaGroupPageState extends State<MediaGroupPage> {
                                 style: const TextStyle(
                                   color: Colors.white,
                                   fontSize: 21,
-                                  fontWeight: FontWeight.w800,
+                                  fontWeight: FontWeight.w400,
                                 ),
                               ),
                             ),
@@ -828,7 +828,7 @@ class _MediaGroupPageState extends State<MediaGroupPage> {
                                       style: const TextStyle(
                                         color: Color(0xDDFFFFFF),
                                         fontSize: 15,
-                                        fontWeight: FontWeight.w600,
+                                        fontWeight: FontWeight.w400,
                                       ),
                                     ),
                                   ],
@@ -866,7 +866,7 @@ class _MediaGroupPageState extends State<MediaGroupPage> {
                       dbPlayButtonLabel(current, currentProgressMs),
                       style: const TextStyle(
                         fontSize: 15,
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w400,
                       ),
                     ),
                   ),
@@ -1156,7 +1156,7 @@ class _MediaGroupDbBodyState extends State<_MediaGroupDbBody> {
                                 style: const TextStyle(
                                   color: Colors.white,
                                   fontSize: 21,
-                                  fontWeight: FontWeight.w800,
+                                  fontWeight: FontWeight.w400,
                                 ),
                               ),
                             ),
@@ -1250,7 +1250,7 @@ class _MediaGroupDbBodyState extends State<_MediaGroupDbBody> {
                                       style: const TextStyle(
                                         color: Color(0xDDFFFFFF),
                                         fontSize: 15,
-                                        fontWeight: FontWeight.w600,
+                                        fontWeight: FontWeight.w400,
                                       ),
                                     ),
                                   ],
@@ -1289,7 +1289,7 @@ class _MediaGroupDbBodyState extends State<_MediaGroupDbBody> {
                       dbPlayButtonLabel(current, currentProgressMs),
                       style: const TextStyle(
                         fontSize: 15,
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w400,
                       ),
                     ),
                   ),
@@ -1302,7 +1302,7 @@ class _MediaGroupDbBodyState extends State<_MediaGroupDbBody> {
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 16,
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w400,
                       ),
                     ),
                     const Icon(Icons.arrow_drop_down, color: Colors.white),
@@ -1337,7 +1337,7 @@ class _MediaGroupDbBodyState extends State<_MediaGroupDbBody> {
                                 style: const TextStyle(
                                   color: Colors.white,
                                   fontSize: 16,
-                                  fontWeight: FontWeight.w800,
+                                  fontWeight: FontWeight.w400,
                                 ),
                               ),
                             ),
@@ -1874,7 +1874,7 @@ class _ActorAvatar extends StatelessWidget {
             style: const TextStyle(
               color: Colors.white,
               fontSize: 12,
-              fontWeight: FontWeight.w600,
+              fontWeight: FontWeight.w400,
             ),
           ),
         ],
@@ -2077,7 +2077,7 @@ class _EpisodeDbCard extends StatelessWidget {
                             style: const TextStyle(
                               color: Colors.white,
                               fontSize: 11,
-                              fontWeight: FontWeight.w700,
+                              fontWeight: FontWeight.w400,
                             ),
                           ),
                         ),
@@ -2108,7 +2108,7 @@ class _EpisodeDbCard extends StatelessWidget {
             style: const TextStyle(
               color: Colors.white,
               fontSize: 12,
-              fontWeight: FontWeight.w700,
+              fontWeight: FontWeight.w400,
             ),
           ),
         ],
@@ -2140,7 +2140,7 @@ class _DarkMetaChip extends StatelessWidget {
           style: const TextStyle(
             color: Colors.white,
             fontSize: 12,
-            fontWeight: FontWeight.w700,
+            fontWeight: FontWeight.w400,
           ),
         ),
       ],
@@ -2160,7 +2160,7 @@ class _DarkTextChip extends StatelessWidget {
       style: const TextStyle(
         color: Colors.white,
         fontSize: 12,
-        fontWeight: FontWeight.w700,
+        fontWeight: FontWeight.w400,
       ),
     );
   }
@@ -2178,7 +2178,7 @@ class _DarkSectionHeader extends StatelessWidget {
       style: const TextStyle(
         color: Colors.white,
         fontSize: 17,
-        fontWeight: FontWeight.w800,
+        fontWeight: FontWeight.w400,
       ),
     );
   }

@@ -261,6 +261,34 @@ pub fn get_cached_image_json(db_path: &str, path: &str, size: &str) -> Result<St
     Ok(Value::Object(object).to_string())
 }
 
+pub fn get_metadata_flag_json(db_path: &str, key: &str) -> Result<String> {
+    let conn = open(db_path)?;
+    let value = conn.query_row(
+        "select value from metadata_flags where key=?1",
+        params![key],
+        |row| row.get::<_, String>(0),
+    );
+    match value {
+        Ok(value) => Ok(value),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok("null".to_string()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub fn put_metadata_flag_json(db_path: &str, key: &str, value_json: &str) -> Result<()> {
+    let conn = open(db_path)?;
+    let _: Value = serde_json::from_str(value_json)?;
+    conn.execute(
+        "insert into metadata_flags(key, value, updated_at)
+         values (?1, ?2, ?3)
+         on conflict(key) do update set
+           value=excluded.value,
+           updated_at=excluded.updated_at",
+        params![key, value_json, now_ms()],
+    )?;
+    Ok(())
+}
+
 pub fn put_cached_image_json(db_path: &str, image_json: &str) -> Result<()> {
     let conn = open(db_path)?;
     let value: Value = serde_json::from_str(image_json)?;
@@ -1137,6 +1165,11 @@ fn open(db_path: &str) -> Result<Connection> {
            retry_count integer default 0,
            error_message text,
            unique(provider, entity_type, entity_id, language)
+         );
+         create table if not exists metadata_flags(
+           key text primary key,
+           value text not null,
+           updated_at integer not null
          );
          create index if not exists idx_source_folders_source on source_folders(source_id);
          create index if not exists idx_media_files_folder on media_files(folder_id);
@@ -3321,6 +3354,28 @@ fn query_profile_paths(conn: &Connection, show_id: i64) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metadata_flag_round_trips() {
+        let db_path =
+            std::env::temp_dir().join(format!("player_core_metadata_flag_{}.sqlite", now_ms()));
+        assert_eq!(
+            get_metadata_flag_json(db_path.to_str().unwrap(), "tmdb").unwrap(),
+            "null"
+        );
+        put_metadata_flag_json(
+            db_path.to_str().unwrap(),
+            "tmdb",
+            r#"{"fingerprint":"abc","itemCount":2}"#,
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(
+            &get_metadata_flag_json(db_path.to_str().unwrap(), "tmdb").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["fingerprint"], "abc");
+        assert_eq!(value["itemCount"], 2);
+    }
 
     #[test]
     fn app_state_round_trips_through_normalized_tables() {
