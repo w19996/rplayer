@@ -19,8 +19,12 @@ class MediaLibraryPage extends StatelessWidget {
         future: _loadLibraryPageData(store),
         builder: (context, snapshot) {
           final data = snapshot.data;
+          final loading = snapshot.connectionState == ConnectionState.waiting &&
+              !snapshot.hasData;
           final home = data?.home ?? const <LibraryHomeEntry>[];
-          final pendingGroups = _pendingMediaGroups(store, home);
+          final pendingGroups = data == null
+              ? const <MediaFolderGroup>[]
+              : _pendingMediaGroups(store, home);
           return CustomScrollView(
             slivers: [
               SliverToBoxAdapter(
@@ -35,8 +39,7 @@ class MediaLibraryPage extends StatelessWidget {
                   ),
                 ),
               ),
-              if (snapshot.connectionState == ConnectionState.waiting &&
-                  store.items.isEmpty)
+              if (loading)
                 const SliverFillRemaining(
                   child: Center(child: CircularProgressIndicator()),
                 )
@@ -306,9 +309,22 @@ Future<_LibraryPageData> _loadLibraryPageData(AppStore store) async {
     store.loadLibraryHome(),
     store.loadLibraryRecent(),
   ]);
+  final home = values[0] as List<LibraryHomeEntry>;
+  final recent = values[1] as List<LibraryRecentEntry>;
+  await store.preloadCachedTmdbImages([
+    for (final entry in home)
+      if (entry.posterPath != null) MapEntry(entry.posterPath!, 'w500'),
+    for (final entry in recent.take(12))
+      if (entry.stillPath != null)
+        MapEntry(entry.stillPath!, 'w780')
+      else if (entry.backdropPath != null)
+        MapEntry(entry.backdropPath!, 'w780')
+      else if (entry.posterPath != null)
+        MapEntry(entry.posterPath!, 'w500'),
+  ]);
   return _LibraryPageData(
-    home: values[0] as List<LibraryHomeEntry>,
-    recent: values[1] as List<LibraryRecentEntry>,
+    home: home,
+    recent: recent,
   );
 }
 

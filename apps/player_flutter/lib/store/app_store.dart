@@ -1417,7 +1417,35 @@ class AppStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<Uint8List?> cachedTmdbImageBytes(String imagePath, String size) async {
+  Uint8List? cachedTmdbImageMemoryBytes(String imagePath, String size) {
+    if (imagePath.trim().isEmpty) return null;
+    return _imageCache['$size:${_normalizedImagePath(imagePath)}'];
+  }
+
+  Future<void> preloadCachedTmdbImages(
+    Iterable<MapEntry<String, String>> images,
+  ) async {
+    final seen = <String>{};
+    final pending = <Future<void>>[];
+    for (final image in images) {
+      if (image.key.trim().isEmpty) continue;
+      final cacheKey = '${image.value}:${_normalizedImagePath(image.key)}';
+      if (!seen.add(cacheKey) || _imageCache.containsKey(cacheKey)) continue;
+      pending.add(cachedTmdbImageBytes(
+        image.key,
+        image.value,
+        downloadOnMiss: false,
+      ).then((_) {}));
+      if (pending.length >= 80) break;
+    }
+    await Future.wait(pending);
+  }
+
+  Future<Uint8List?> cachedTmdbImageBytes(
+    String imagePath,
+    String size, {
+    bool downloadOnMiss = true,
+  }) async {
     if (imagePath.trim().isEmpty) return null;
     final normalized = imagePath.startsWith('/') ? imagePath : '/$imagePath';
     final key = '$size:$normalized';
@@ -1444,6 +1472,7 @@ class AppStore extends ChangeNotifier {
       addDiagnosticLog('cached image read failed: $key - $error',
           category: 'cache');
     }
+    if (!downloadOnMiss) return null;
     final url = tmdbImageUrl(
       normalized,
       size,

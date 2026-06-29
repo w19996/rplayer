@@ -317,14 +317,15 @@ class CachedTmdbImage extends StatefulWidget {
 }
 
 class _CachedTmdbImageState extends State<CachedTmdbImage> {
-  late Future<Uint8List?> future;
+  Future<Uint8List?>? future;
+  Uint8List? bytes;
   late String key;
 
   @override
   void initState() {
     super.initState();
     key = _keyFor(widget.imagePath, widget.size);
-    future = widget.store.cachedTmdbImageBytes(widget.imagePath, widget.size);
+    _load();
   }
 
   @override
@@ -333,14 +334,34 @@ class _CachedTmdbImageState extends State<CachedTmdbImage> {
     final nextKey = _keyFor(widget.imagePath, widget.size);
     if (nextKey != key || oldWidget.store != widget.store) {
       key = nextKey;
-      future = widget.store.cachedTmdbImageBytes(widget.imagePath, widget.size);
+      _load();
     }
   }
 
   String _keyFor(String imagePath, String size) => '$size:$imagePath';
 
+  void _load() {
+    bytes = widget.store.cachedTmdbImageMemoryBytes(
+      widget.imagePath,
+      widget.size,
+    );
+    future = bytes == null
+        ? widget.store.cachedTmdbImageBytes(widget.imagePath, widget.size)
+        : null;
+  }
+
   @override
   Widget build(BuildContext context) {
+    final memoryBytes = bytes;
+    if (memoryBytes != null && memoryBytes.isNotEmpty) {
+      return Image.memory(
+        memoryBytes,
+        fit: widget.fit,
+        alignment: widget.alignment,
+        gaplessPlayback: true,
+        errorBuilder: (_, __, ___) => widget.fallback,
+      );
+    }
     return FutureBuilder<Uint8List?>(
       future: future,
       builder: (context, snapshot) {
