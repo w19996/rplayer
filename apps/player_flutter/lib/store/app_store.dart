@@ -479,7 +479,7 @@ class AppStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> rescanAll() async {
+  Future<void> rescanAll({bool forceMetadataRefresh = false}) async {
     addDiagnosticLog('rescan all sources: ${sources.length}', category: 'scan');
     final existing = List<MediaSourceConfig>.from(sources);
     final scanned = <MediaItem>[];
@@ -493,7 +493,7 @@ class AppStore extends ChangeNotifier {
     metadata.removeWhere((itemId, _) => !_itemIndexById.containsKey(itemId));
     await save();
     notifyListeners();
-    unawaited(refreshMissingMetadata());
+    unawaited(refreshMissingMetadata(force: forceMetadataRefresh));
   }
 
   Future<void> rescanSource(MediaSourceConfig source) async {

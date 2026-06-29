@@ -267,7 +267,9 @@ class _LibraryRefreshButton extends StatelessWidget {
     final refreshing = store.metadataRefreshing;
     return IconButton(
       tooltip: refreshing ? 'TMDB 刷新中' : '刷新',
-      onPressed: refreshing ? null : () => unawaited(store.rescanAll()),
+      onPressed: refreshing
+          ? null
+          : () => unawaited(store.rescanAll(forceMetadataRefresh: true)),
       icon: SizedBox(
         width: 26,
         height: 26,
