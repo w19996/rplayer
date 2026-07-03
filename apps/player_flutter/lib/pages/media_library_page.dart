@@ -34,6 +34,11 @@ class MediaLibraryPage extends StatelessWidget {
                     children: [
                       const AppBrand(),
                       const Spacer(),
+                      _LibrarySearchButton(
+                        store: store,
+                        home: home,
+                        pendingGroups: pendingGroups,
+                      ),
                       _LibraryRefreshButton(store: store),
                     ],
                   ),
@@ -143,18 +148,10 @@ class MediaLibraryPage extends StatelessWidget {
           ),
           itemBuilder: (context, index) {
             final entry = entries[index];
-            final item =
-                entry.itemId == null ? null : store.itemById(entry.itemId!);
             return _LibraryDbTile(
               store: store,
               entry: entry,
-              onTap: item != null && !entry.matched && entry.localFileCount == 1
-                  ? () => openPlayer(context, store, item)
-                  : () => openMediaGroupKey(
-                        context,
-                        store,
-                        entry.folderKey,
-                      ),
+              onTap: () => openLibraryEntry(context, store, entry),
             );
           },
         ),
@@ -234,6 +231,147 @@ class MediaLibraryPage extends StatelessWidget {
 
   String _libraryCategoryTitle(String mediaType) =>
       mediaCategoryLabel(mediaType);
+}
+
+class _LibrarySearchButton extends StatelessWidget {
+  const _LibrarySearchButton({
+    required this.store,
+    required this.home,
+    required this.pendingGroups,
+  });
+
+  final AppStore store;
+  final List<LibraryHomeEntry> home;
+  final List<MediaFolderGroup> pendingGroups;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: '搜索',
+      onPressed: () => showSearch<void>(
+        context: context,
+        delegate: _LibrarySearchDelegate(
+          store: store,
+          home: home,
+          pendingGroups: pendingGroups,
+        ),
+      ),
+      icon: const Icon(Icons.search, size: 26),
+    );
+  }
+}
+
+class _LibrarySearchDelegate extends SearchDelegate<void> {
+  _LibrarySearchDelegate({
+    required this.store,
+    required this.home,
+    required this.pendingGroups,
+  }) : super(searchFieldLabel: '搜索媒体库');
+
+  final AppStore store;
+  final List<LibraryHomeEntry> home;
+  final List<MediaFolderGroup> pendingGroups;
+
+  @override
+  List<Widget> buildActions(BuildContext context) {
+    return [
+      if (query.isNotEmpty)
+        IconButton(
+          tooltip: '清空',
+          onPressed: () => query = '',
+          icon: const Icon(Icons.clear),
+        ),
+    ];
+  }
+
+  @override
+  Widget buildLeading(BuildContext context) {
+    return IconButton(
+      tooltip: '返回',
+      onPressed: () => close(context, null),
+      icon: const Icon(Icons.arrow_back),
+    );
+  }
+
+  @override
+  Widget buildResults(BuildContext context) => _buildResults(context);
+
+  @override
+  Widget buildSuggestions(BuildContext context) => _buildResults(context);
+
+  Widget _buildResults(BuildContext context) {
+    final text = query.trim().toLowerCase();
+    final matchedHome =
+        home.where((entry) => _matchesHome(entry, text)).toList();
+    final matchedPending =
+        pendingGroups.where((group) => _matchesGroup(group, text)).toList();
+    final total = matchedHome.length + matchedPending.length;
+    if (total == 0) {
+      return const Center(child: Text('没有找到匹配的媒体'));
+    }
+    return GridView.builder(
+      padding: const EdgeInsets.fromLTRB(22, 18, 22, 24),
+      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+        maxCrossAxisExtent: 126,
+        crossAxisSpacing: 18,
+        mainAxisSpacing: 22,
+        childAspectRatio: 0.42,
+      ),
+      itemCount: total,
+      itemBuilder: (context, index) {
+        if (index < matchedHome.length) {
+          final entry = matchedHome[index];
+          return _LibraryDbTile(
+            store: store,
+            entry: entry,
+            onTap: () => _openEntry(context, entry),
+          );
+        }
+        final group = matchedPending[index - matchedHome.length];
+        final current = currentGroupItem(group, store);
+        return MediaTile(
+          item: current,
+          store: store,
+          metadata: null,
+          progressMs: store.progress[current.id] ?? 0,
+          displayTitle: group.title,
+          coverItem: group.items.first,
+          itemCount: group.items.length,
+          onTap: () {},
+        );
+      },
+    );
+  }
+
+  bool _matchesHome(LibraryHomeEntry entry, String text) {
+    if (text.isEmpty) return true;
+    return [
+      entry.title,
+      entry.overview,
+      entry.folderPath,
+      entry.releaseDate,
+      ...entry.genres,
+    ].whereType<String>().join(' ').toLowerCase().contains(text);
+  }
+
+  bool _matchesGroup(MediaFolderGroup group, String text) {
+    if (text.isEmpty) return true;
+    return [
+      group.title,
+      for (final item in group.items) ...[
+        item.title,
+        item.folderTitle,
+        item.matchTitle,
+        item.uri,
+      ],
+    ].join(' ').toLowerCase().contains(text);
+  }
+
+  void _openEntry(BuildContext context, LibraryHomeEntry entry) {
+    final navigator = Navigator.of(context);
+    close(context, null);
+    pushLibraryEntry(navigator, store, entry);
+  }
 }
 
 List<MediaFolderGroup> _pendingMediaGroups(
@@ -453,6 +591,7 @@ class _RecentDbTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final item = store.itemById(recent.itemId);
     final imagePath =
         recent.stillPath ?? recent.backdropPath ?? recent.posterPath;
     final hasTime = recent.positionMs > 0 || (recent.durationMs ?? 0) > 0;
@@ -479,7 +618,18 @@ class _RecentDbTile extends StatelessWidget {
                       imagePath: imagePath,
                       size: imagePath == recent.posterPath ? 'w500' : 'w780',
                       fit: BoxFit.cover,
-                      fallback: const MediaPosterFallback(remote: false),
+                      fallback: MediaPosterFallback(
+                        remote: item?.type == SourceType.webdav,
+                      ),
+                    )
+                  else if (item != null)
+                    VideoCoverImage(
+                      store: store,
+                      item: item,
+                      fit: BoxFit.cover,
+                      fallback: MediaPosterFallback(
+                        remote: item.type == SourceType.webdav,
+                      ),
                     )
                   else
                     const MediaPosterFallback(remote: false),
@@ -651,6 +801,34 @@ void openMediaGroupKey(BuildContext context, AppStore store, String groupKey) {
   Navigator.of(context).push(
     appSlideRoute((_) => MediaGroupPage(store: store, groupKey: groupKey)),
   );
+}
+
+void openLibraryEntry(
+    BuildContext context, AppStore store, LibraryHomeEntry entry) {
+  pushLibraryEntry(Navigator.of(context), store, entry);
+}
+
+void pushLibraryEntry(
+    NavigatorState navigator, AppStore store, LibraryHomeEntry entry) {
+  final item = singleLibraryEntryItem(store, entry);
+  if (item != null) {
+    navigator.push(PageRouteBuilder<void>(
+      transitionDuration: Duration.zero,
+      reverseTransitionDuration: Duration.zero,
+      pageBuilder: (_, __, ___) => VideoPlayerPage(store: store, item: item),
+    ));
+    return;
+  }
+  navigator.push(
+    appSlideRoute(
+        (_) => MediaGroupPage(store: store, groupKey: entry.folderKey)),
+  );
+}
+
+MediaItem? singleLibraryEntryItem(AppStore store, LibraryHomeEntry entry) {
+  if (entry.localFileCount != 1) return null;
+  final itemId = entry.itemId;
+  return itemId == null ? null : store.itemById(itemId);
 }
 
 class MediaGroupPage extends StatefulWidget {
@@ -1144,6 +1322,7 @@ class _MediaGroupDbBodyState extends State<_MediaGroupDbBody> {
     final versions = versionLabels;
     final title =
         head.showTitle?.isNotEmpty == true ? head.showTitle! : current.filename;
+    final hasCoverImage = head.posterPath != null || currentItem != null;
     final currentProgressMs =
         store.progress[current.itemId] ?? current.positionMs ?? 0;
     final currentDurationMs =
@@ -1163,6 +1342,15 @@ class _MediaGroupDbBodyState extends State<_MediaGroupDbBody> {
                       size: 'w780',
                       fit: BoxFit.cover,
                       alignment: Alignment.topCenter,
+                      fallback: const SizedBox.shrink(),
+                    ),
+                  )
+                else if (currentItem != null)
+                  Positioned.fill(
+                    child: VideoCoverImage(
+                      store: store,
+                      item: currentItem,
+                      fit: BoxFit.cover,
                       fallback: const SizedBox.shrink(),
                     ),
                   ),
@@ -1238,25 +1426,38 @@ class _MediaGroupDbBodyState extends State<_MediaGroupDbBody> {
                         Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            if (head.posterPath != null) ...[
+                            if (hasCoverImage) ...[
                               ClipRRect(
                                 borderRadius: BorderRadius.circular(8),
                                 child: SizedBox(
                                   width: 82,
                                   height: 123,
-                                  child: CachedTmdbImage(
-                                    store: store,
-                                    imagePath: head.posterPath!,
-                                    size: 'w500',
-                                    fit: BoxFit.cover,
-                                    fallback: const ColoredBox(
-                                      color: Color(0xFF252A22),
-                                      child: Icon(
-                                        Icons.movie_creation_outlined,
-                                        color: Colors.white70,
-                                      ),
-                                    ),
-                                  ),
+                                  child: head.posterPath != null
+                                      ? CachedTmdbImage(
+                                          store: store,
+                                          imagePath: head.posterPath!,
+                                          size: 'w500',
+                                          fit: BoxFit.cover,
+                                          fallback: const ColoredBox(
+                                            color: Color(0xFF252A22),
+                                            child: Icon(
+                                              Icons.movie_creation_outlined,
+                                              color: Colors.white70,
+                                            ),
+                                          ),
+                                        )
+                                      : VideoCoverImage(
+                                          store: store,
+                                          item: currentItem!,
+                                          fit: BoxFit.cover,
+                                          fallback: const ColoredBox(
+                                            color: Color(0xFF252A22),
+                                            child: Icon(
+                                              Icons.movie_creation_outlined,
+                                              color: Colors.white70,
+                                            ),
+                                          ),
+                                        ),
                                 ),
                               ),
                               const SizedBox(width: 14),
@@ -2072,6 +2273,7 @@ class _EpisodeDbCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final imagePath = file.stillPath ?? file.backdropPath;
+    final item = store.itemById(file.itemId);
     final progress = store.progress[file.itemId] ?? file.positionMs ?? 0;
     final duration = store.durations[file.itemId] ?? file.durationMs ?? 0;
     final hasTime = progress > 0 || duration > 0;
@@ -2097,7 +2299,18 @@ class _EpisodeDbCard extends StatelessWidget {
                       imagePath: imagePath,
                       size: 'w780',
                       fit: BoxFit.cover,
-                      fallback: const MediaPosterFallback(remote: false),
+                      fallback: MediaPosterFallback(
+                        remote: item?.type == SourceType.webdav,
+                      ),
+                    )
+                  else if (item != null)
+                    VideoCoverImage(
+                      store: store,
+                      item: item,
+                      fit: BoxFit.cover,
+                      fallback: MediaPosterFallback(
+                        remote: item.type == SourceType.webdav,
+                      ),
                     )
                   else
                     const MediaPosterFallback(remote: false),
@@ -2291,7 +2504,13 @@ class _EpisodeCard extends StatelessWidget {
                           remote: item.type == SourceType.webdav),
                     )
                   else
-                    MediaPosterFallback(remote: item.type == SourceType.webdav),
+                    VideoCoverImage(
+                      store: store,
+                      item: item,
+                      fit: BoxFit.cover,
+                      fallback: MediaPosterFallback(
+                          remote: item.type == SourceType.webdav),
+                    ),
                   const Center(
                     child: CircleAvatar(
                       radius: 15,

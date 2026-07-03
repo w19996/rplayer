@@ -580,6 +580,11 @@ String readableBytes(int? value) {
   return '${size.toStringAsFixed(size >= 10 ? 0 : 1)} ${units[unit]}';
 }
 
+String defaultLocalStorageRoot() {
+  if (Platform.isAndroid) return '/storage/emulated/0';
+  return Directory.current.path;
+}
+
 Future<bool> ensureLocalStorageAccess(BuildContext context,
     {bool showDeniedMessage = true}) async {
   if (!Platform.isAndroid) return true;

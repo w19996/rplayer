@@ -29,7 +29,9 @@ class AppStore extends ChangeNotifier {
   Future<void> _metadataDatabaseWriteChain = Future.value();
   final Map<String, Uint8List?> _imageCache = {};
   final Map<String, Uint8List?> _videoCoverCache = {};
+  final Map<String, Future<Uint8List?>> _videoCoverRequests = {};
   final Set<String> _imageCacheMetadataWriteKeys = {};
+  Future<void> _remoteVideoCoverChain = Future.value();
   int _lastScanNotifyMs = 0;
   int _pathParseLogCount = 0;
   static const int _diagnosticLogPreviewLimit = 100;
@@ -418,29 +420,17 @@ class AppStore extends ChangeNotifier {
 
   Future<MediaSourceConfig> addLocalDirectory(String dir) async {
     addDiagnosticLog('add local source: $dir', category: 'source');
+    final name = dir == defaultLocalStorageRoot()
+        ? '本地存储'
+        : (p.basename(dir).isEmpty ? '本地目录' : p.basename(dir));
     final source = MediaSourceConfig.local(
       id: newId(),
-      name: p.basename(dir).isEmpty ? '本地目录' : p.basename(dir),
+      name: name,
       directory: dir,
-    ).copyWith(selectedPaths: [dir]);
-    sources.add(source);
-    notifyListeners();
-    final stopwatch = Stopwatch()..start();
-    var count = 0;
-    await for (final item in scanner.scanLocalPathStream(source, dir)) {
-      addOrReplaceItem(item);
-      count++;
-      notifyScanProgress(count);
-    }
-    items.sort(compareMediaItems);
-    rebuildItemIndex();
-    addDiagnosticLog(
-      'add local source scanned: $dir, items=$count, elapsed=${stopwatch.elapsedMilliseconds}ms',
-      category: 'scan',
     );
+    sources.add(source);
     await save();
     notifyListeners();
-    unawaited(refreshMissingMetadata());
     return source;
   }
 
@@ -1585,22 +1575,37 @@ class AppStore extends ChangeNotifier {
         return bytes;
       }
     }
+    final pending = _videoCoverRequests[key];
+    if (pending != null) return pending;
+    final request = _loadVideoCoverBytes(item, key, file);
+    _videoCoverRequests[key] = request;
     try {
-      final headers = item.type == SourceType.webdav
+      return await request;
+    } finally {
+      _videoCoverRequests.remove(key);
+    }
+  }
+
+  Future<Uint8List?> _loadVideoCoverBytes(
+      MediaItem item, String key, File file) async {
+    try {
+      final remote = item.type == SourceType.webdav;
+      final headers = remote
           ? sources
                   .where((source) => source.id == item.sourceId)
                   .firstOrNull
                   ?.headers ??
               const <String, String>{}
           : const <String, String>{};
-      final bytes = await appChannel.invokeMethod<Uint8List>(
-        'videoThumbnail',
-        {
-          'uri': item.uri,
-          'remote': item.type == SourceType.webdav,
-          'headers': headers,
-        },
-      );
+      Future<Uint8List?> load() => appChannel.invokeMethod<Uint8List>(
+            'videoThumbnail',
+            {
+              'uri': item.uri,
+              'remote': remote,
+              'headers': headers,
+            },
+          );
+      final bytes = remote ? await _queueRemoteVideoCover(load) : await load();
       if (bytes == null || bytes.isEmpty) {
         _videoCoverCache[key] = null;
         return null;
@@ -1617,6 +1622,14 @@ class AppStore extends ChangeNotifier {
       _videoCoverCache[key] = null;
       return null;
     }
+  }
+
+  Future<Uint8List?> _queueRemoteVideoCover(
+      Future<Uint8List?> Function() load) {
+    final run =
+        _remoteVideoCoverChain.then((_) => load(), onError: (_) => load());
+    _remoteVideoCoverChain = run.then<void>((_) {}, onError: (_) {});
+    return run;
   }
 
   String _videoCoverKey(MediaItem item) {

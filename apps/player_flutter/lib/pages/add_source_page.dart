@@ -24,9 +24,13 @@ class AddSourcePage extends StatelessWidget {
             onTap: () async {
               final granted = await ensureLocalStorageAccess(context);
               if (!granted) return;
-              final dir = await FilePicker.platform.getDirectoryPath();
-              if (dir == null) return;
-              final source = await store.addLocalDirectory(dir);
+              final dir = defaultLocalStorageRoot();
+              final source = store.sources
+                      .where((source) =>
+                          source.type == SourceType.local &&
+                          source.directory == dir)
+                      .firstOrNull ??
+                  await store.addLocalDirectory(dir);
               if (context.mounted) {
                 Navigator.pushReplacement(
                   context,

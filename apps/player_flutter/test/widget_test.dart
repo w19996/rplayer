@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:player_flutter/main.dart';
@@ -88,6 +90,71 @@ void main() {
     final groups = mediaFolderGroups(const [item]);
 
     expect(groups.single.title, 'Movie Name');
+  });
+
+  test('single library entry resolves playable item even when matched', () {
+    const item = MediaItem(
+      id: 'source:/media/Parent/Movie Name.mp4',
+      sourceId: 'source',
+      sourceName: 'source',
+      type: SourceType.local,
+      title: 'Movie Name',
+      uri: '/media/Parent/Movie Name.mp4',
+      folderTitle: 'Parent',
+    );
+    final store = AppStore()..addOrReplaceItem(item);
+    const entry = LibraryHomeEntry(
+      folderId: 1,
+      sourceId: 'source',
+      folderPath: '/media/Parent',
+      itemId: 'source:/media/Parent/Movie Name.mp4',
+      showId: 1,
+      tmdbId: 1,
+      title: 'Movie Name',
+      localFileCount: 1,
+      matched: true,
+    );
+
+    expect(singleLibraryEntryItem(store, entry), item);
+  });
+
+  test('webdav video covers fetch one queued remote frame', () async {
+    final id = DateTime.now().microsecondsSinceEpoch;
+    final store = AppStore();
+    final dir = await Directory.systemTemp.createTemp('rplayer-cover-test-');
+    var thumbnailCalls = 0;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(appChannel, (call) async {
+      if (call.method == 'appFilesDir') return dir.path;
+      if (call.method == 'videoThumbnail') {
+        thumbnailCalls++;
+        expect((call.arguments as Map<dynamic, dynamic>)['remote'], true);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+        return Uint8List.fromList([1, 2, 3]);
+      }
+      throw MissingPluginException();
+    });
+    final item = MediaItem(
+      id: 'source:/media/Parent/Movie-$id.mp4',
+      sourceId: 'source',
+      sourceName: 'WebDAV',
+      type: SourceType.webdav,
+      title: 'Movie',
+      uri: 'https://example.com/dav/Parent/Movie-$id.mp4',
+      folderTitle: 'Parent',
+    );
+
+    final results = await Future.wait([
+      store.videoCoverBytes(item),
+      store.videoCoverBytes(item),
+    ]);
+
+    expect(results[0], [1, 2, 3]);
+    expect(results[1], [1, 2, 3]);
+    expect(thumbnailCalls, 1);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(appChannel, null);
+    await dir.delete(recursive: true);
   });
 
   test('separates manually selected files in the same folder', () {
@@ -520,6 +587,16 @@ void main() {
     );
     expect(cachedGroup.title, 'Folder');
     expect(cachedGroup.representative.matchTitle, 'Folder');
+  });
+
+  test('adding a local directory creates a selectable root only', () async {
+    final store = AppStore();
+
+    final source = await store.addLocalDirectory('/media/Folder');
+
+    expect(source.directory, '/media/Folder');
+    expect(source.selectedPaths, isEmpty);
+    expect(store.items, isEmpty);
   });
 
   test('single selected webdav file uses filename for unmatched TMDB lookup',
