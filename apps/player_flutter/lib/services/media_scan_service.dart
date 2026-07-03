@@ -140,6 +140,7 @@ List<MediaItem> _localVideoSeedsToItemsWorker(
           size: seed.size,
         ),
       )
+      .map((item) => applyManualSeriesPath(source, item))
       .toList(growable: false);
 }
 
@@ -149,5 +150,6 @@ List<MediaItem> _webdavEntriesToItemsWorker(
 ) {
   return entries
       .map((entry) => MediaItem.webdav(source: source, entry: entry))
+      .map((item) => applyManualSeriesPath(source, item))
       .toList(growable: false);
 }

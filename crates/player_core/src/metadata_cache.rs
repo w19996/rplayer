@@ -832,6 +832,7 @@ fn open(db_path: &str) -> Result<Connection> {
            source_id text not null,
            path text not null,
            selected integer not null default 1,
+           manual_series integer not null default 0,
            search_hint text,
            last_scanned_at integer,
            created_at integer not null,
@@ -866,6 +867,7 @@ fn open(db_path: &str) -> Result<Connection> {
            parsed_version_tags_json text,
            parsed_version_dir_path text,
            media_kind_hint text,
+           manual_series integer not null default 0,
            explicitly_selected integer not null default 0,
            scan_status text not null default 'active',
            created_at integer not null,
@@ -1215,6 +1217,12 @@ fn open(db_path: &str) -> Result<Connection> {
     )?;
     add_column_if_missing(&conn, "sources", "username", "text")?;
     add_column_if_missing(&conn, "sources", "password", "text")?;
+    add_column_if_missing(
+        &conn,
+        "source_folders",
+        "manual_series",
+        "integer not null default 0",
+    )?;
     add_column_if_missing(&conn, "tmdb_tv_shows", "genres_json", "text")?;
     add_column_if_missing(&conn, "tmdb_movies", "genres_json", "text")?;
     for (column, ty) in [
@@ -1230,6 +1238,7 @@ fn open(db_path: &str) -> Result<Connection> {
         ("parsed_version_name", "text"),
         ("parsed_version_tags_json", "text"),
         ("parsed_version_dir_path", "text"),
+        ("manual_series", "integer not null default 0"),
         ("explicitly_selected", "integer not null default 0"),
     ] {
         add_column_if_missing(&conn, "media_files", column, ty)?;
@@ -1401,6 +1410,7 @@ fn export_library_state_json(conn: &Connection) -> Result<String> {
     for row in rows {
         let (id, name, source_type, base_url, root_path, username, password) = row?;
         let selected_paths = query_selected_paths(conn, &id)?;
+        let series_paths = query_series_paths(conn, &id)?;
         let mut object = Map::new();
         object.insert("id".to_string(), Value::String(id));
         object.insert("name".to_string(), Value::String(name));
@@ -1413,6 +1423,10 @@ fn export_library_state_json(conn: &Connection) -> Result<String> {
             "selectedPaths".to_string(),
             Value::Array(selected_paths.into_iter().map(Value::String).collect()),
         );
+        object.insert(
+            "seriesPaths".to_string(),
+            Value::Array(series_paths.into_iter().map(Value::String).collect()),
+        );
         sources.push(Value::Object(object));
     }
 
@@ -1422,7 +1436,8 @@ fn export_library_state_json(conn: &Connection) -> Result<String> {
                 coalesce(s.base_url, ''), mf.relative_path, mf.filename,
                 coalesce(mf.guess_title, ''), mf.guess_season, mf.guess_episode,
                 coalesce(mf.media_kind_hint, 'Unknown'), mf.size, sf.path,
-                mf.parsed_version_name, mf.parsed_version_dir_path
+                mf.parsed_version_name, mf.parsed_version_dir_path,
+                mf.manual_series
          from media_files mf
          join sources s on s.id = mf.source_id
          join source_folders sf on sf.id = mf.folder_id
@@ -1446,6 +1461,7 @@ fn export_library_state_json(conn: &Connection) -> Result<String> {
             row.get::<_, String>(12)?,
             row.get::<_, Option<String>>(13)?,
             row.get::<_, Option<String>>(14)?,
+            row.get::<_, i64>(15)?,
         ))
     })?;
     for row in rows {
@@ -1465,6 +1481,7 @@ fn export_library_state_json(conn: &Connection) -> Result<String> {
             group_path,
             version_name,
             version_dir_path,
+            manual_series,
         ) = row?;
         let uri = if source_type == "webdav" {
             webdav_uri(&base_url, &relative_path)
@@ -1483,7 +1500,11 @@ fn export_library_state_json(conn: &Connection) -> Result<String> {
         object.insert("uri".to_string(), Value::String(uri));
         object.insert(
             "folderTitle".to_string(),
-            Value::String(display_name_from_path(&parent_path(&relative_path))),
+            Value::String(if manual_series != 0 {
+                display_name_from_path(&group_path)
+            } else {
+                display_name_from_path(&parent_path(&relative_path))
+            }),
         );
         object.insert("matchTitle".to_string(), Value::String(guess_title));
         insert_optional_i64(&mut object, "season", guess_season);
@@ -1492,6 +1513,7 @@ fn export_library_state_json(conn: &Connection) -> Result<String> {
         object.insert("groupPath".to_string(), Value::String(group_path));
         insert_optional_string(&mut object, "versionName", version_name);
         insert_optional_string(&mut object, "versionDirPath", version_dir_path);
+        object.insert("manualSeries".to_string(), Value::Bool(manual_series != 0));
         insert_optional_i64(&mut object, "size", size);
         items.push(Value::Object(object));
     }
@@ -1576,6 +1598,28 @@ fn query_selected_paths(conn: &Connection, source_id: &str) -> Result<Vec<String
                and mf.scan_status='active'
                and mf.explicitly_selected=1
            )
+         order by 1",
+    )?;
+    let rows = stmt.query_map(params![source_id], |row| row.get::<_, String>(0))?;
+    let mut values = Vec::new();
+    for row in rows {
+        values.push(row?);
+    }
+    Ok(values)
+}
+
+fn query_series_paths(conn: &Connection, source_id: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "select mf.relative_path
+         from media_files mf
+         where mf.source_id=?1
+           and mf.scan_status='active'
+           and mf.manual_series=1
+           and mf.explicitly_selected=1
+         union
+         select sf.path
+         from source_folders sf
+         where sf.source_id=?1 and sf.manual_series=1
          order by 1",
     )?;
     let rows = stmt.query_map(params![source_id], |row| row.get::<_, String>(0))?;
@@ -1675,10 +1719,18 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
             ],
         )?;
         conn.execute(
-            "update source_folders set selected=0, updated_at=?2 where source_id=?1",
+            "update source_folders set selected=0, manual_series=0, updated_at=?2 where source_id=?1",
             params![source_id, now],
         )?;
 
+        let series_paths: HashSet<String> = source
+            .get("seriesPaths")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(normalize_resource_path)
+            .collect();
         let selected_paths: Vec<String> = source
             .get("selectedPaths")
             .and_then(Value::as_array)
@@ -1695,12 +1747,15 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
             } else {
                 (normalize_folder_path(&normalized), None)
             };
+            let manual_series =
+                !is_video_resource_path(&normalized) && series_paths.contains(&normalized);
             upsert_source_folder(
                 conn,
                 source_id,
                 &folder_path,
                 search_hint.as_deref(),
                 true,
+                manual_series,
                 now,
             )?;
             live_folder_keys.insert(format!("{source_id}\n{folder_path}"));
@@ -1720,11 +1775,33 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
         let parsed_candidates =
             parse_media_path_candidates(item_type, &relative_path).unwrap_or_default();
         let parsed = parsed_candidates.first();
-        let guess_title = parsed
-            .map(|candidate| candidate.title.as_str())
-            .filter(|value| !value.trim().is_empty())
-            .or_else(|| item.get("matchTitle").and_then(Value::as_str))
-            .or_else(|| item.get("title").and_then(Value::as_str));
+        let manual_series = item
+            .get("manualSeries")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let manual_group_path = if manual_series {
+            item.get("groupPath")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+        } else {
+            None
+        };
+        let manual_title = if manual_series {
+            item.get("matchTitle")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| item.get("folderTitle").and_then(Value::as_str))
+                .or_else(|| item.get("title").and_then(Value::as_str))
+        } else {
+            None
+        };
+        let guess_title = manual_title.or_else(|| {
+            parsed
+                .map(|candidate| candidate.title.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| item.get("matchTitle").and_then(Value::as_str))
+                .or_else(|| item.get("title").and_then(Value::as_str))
+        });
         let guess_season = parsed
             .and_then(|candidate| candidate.season_number.map(i64::from))
             .or_else(|| item.get("season").and_then(Value::as_i64));
@@ -1736,22 +1813,51 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
         let parse_warnings_json = parsed
             .map(|candidate| serde_json::to_string(&candidate.warnings))
             .transpose()?;
-        let parsed_version_name = parsed.map(|candidate| candidate.version_name.as_str());
+        let parsed_version_name = if manual_series {
+            item.get("versionName")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+        } else {
+            parsed.map(|candidate| candidate.version_name.as_str())
+        };
         let parsed_version_tags_json = parsed
             .map(|candidate| serde_json::to_string(&candidate.version_tags))
             .transpose()?;
-        let parsed_version_dir_path = parsed
-            .map(|candidate| candidate.version_dir_path.as_str())
-            .filter(|value| !value.trim().is_empty());
-        let media_type_hint = parsed
-            .map(|candidate| candidate.media_type_hint.as_str())
-            .filter(|value| *value == "tv" || *value == "movie");
-        let folder_path = parsed
-            .map(|candidate| parsed_source_folder_path(&relative_path, &candidate.source_path))
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| parent_path(&relative_path));
-        let folder_id =
-            upsert_source_folder(conn, source_id, &folder_path, guess_title, false, now)?;
+        let parsed_version_dir_path = if manual_series {
+            item.get("versionDirPath")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+        } else {
+            parsed
+                .map(|candidate| candidate.version_dir_path.as_str())
+                .filter(|value| !value.trim().is_empty())
+        };
+        let media_type_hint = if manual_series {
+            Some("tv")
+        } else {
+            parsed
+                .map(|candidate| candidate.media_type_hint.as_str())
+                .filter(|value| *value == "tv" || *value == "movie")
+        };
+        let folder_path = manual_group_path
+            .map(normalize_folder_path)
+            .unwrap_or_else(|| {
+                parsed
+                    .map(|candidate| {
+                        parsed_source_folder_path(&relative_path, &candidate.source_path)
+                    })
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| parent_path(&relative_path))
+            });
+        let folder_id = upsert_source_folder(
+            conn,
+            source_id,
+            &folder_path,
+            guess_title,
+            false,
+            manual_series,
+            now,
+        )?;
         live_folder_keys.insert(format!("{source_id}\n{folder_path}"));
         live_item_ids.insert(item_id.to_string());
         let explicitly_selected =
@@ -1763,9 +1869,9 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
                media_type,
                parse_source, parse_confidence, parse_warnings_json,
                parsed_version_name, parsed_version_tags_json, parsed_version_dir_path,
-               media_kind_hint, explicitly_selected, scan_status, created_at, updated_at
+               media_kind_hint, manual_series, explicitly_selected, scan_status, created_at, updated_at
              )
-             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, 'active', ?21, ?21)
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, 'active', ?22, ?22)
              on conflict(item_id) do update set
                source_id=excluded.source_id,
                folder_id=excluded.folder_id,
@@ -1785,6 +1891,7 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
                parsed_version_tags_json=excluded.parsed_version_tags_json,
                parsed_version_dir_path=excluded.parsed_version_dir_path,
                media_kind_hint=excluded.media_kind_hint,
+               manual_series=excluded.manual_series,
                explicitly_selected=excluded.explicitly_selected,
                scan_status='active',
                updated_at=excluded.updated_at",
@@ -1808,6 +1915,7 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
                 parsed_version_tags_json,
                 parsed_version_dir_path,
                 item.get("mediaKind").and_then(Value::as_str),
+                manual_series as i64,
                 explicitly_selected as i64,
                 now
             ],
@@ -1841,7 +1949,7 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
             continue;
         };
         if let Some((source_id, path)) = folder_preference_key_parts(&folder_key) {
-            let folder_id = upsert_source_folder(conn, &source_id, &path, None, false, now)?;
+            let folder_id = upsert_source_folder(conn, &source_id, &path, None, false, false, now)?;
             live_folder_keys.insert(format!("{source_id}\n{path}"));
             conn.execute(
                 "insert into folder_preferences(folder_id, preferred_orientation, updated_at)
@@ -2550,13 +2658,15 @@ fn upsert_source_folder(
     path: &str,
     search_hint: Option<&str>,
     selected: bool,
+    manual_series: bool,
     now: i64,
 ) -> Result<i64> {
     conn.execute(
-        "insert into source_folders(source_id, path, selected, search_hint, created_at, updated_at)
-         values (?1, ?2, ?3, ?4, ?5, ?5)
+        "insert into source_folders(source_id, path, selected, manual_series, search_hint, created_at, updated_at)
+         values (?1, ?2, ?3, ?4, ?5, ?6, ?6)
          on conflict(source_id, path) do update set
            selected=max(source_folders.selected, excluded.selected),
+           manual_series=max(source_folders.manual_series, excluded.manual_series),
            search_hint=case
              when excluded.selected=1 then excluded.search_hint
              when source_folders.selected=1 and source_folders.search_hint is not null
@@ -2568,6 +2678,7 @@ fn upsert_source_folder(
             source_id,
             normalize_folder_path(path),
             selected as i64,
+            manual_series as i64,
             search_hint,
             now
         ],
@@ -3489,6 +3600,77 @@ mod tests {
     }
 
     #[test]
+    fn manual_series_item_uses_declared_group_and_version() {
+        let db_path =
+            std::env::temp_dir().join(format!("player_core_manual_series_{}.sqlite", now_ms()));
+        let state = r#"{
+          "version": 1,
+          "sources": [
+            {
+              "id": "source-1",
+              "name": "My WebDAV",
+              "type": "webdav",
+              "directory": "/",
+              "baseUrl": "https://example.com/dav",
+              "selectedPaths": ["/Course/"],
+              "seriesPaths": ["/Course/"]
+            }
+          ],
+          "items": [
+            {
+              "id": "source-1:/Course/Chapter 01/001.mp4",
+              "sourceId": "source-1",
+              "sourceName": "My WebDAV",
+              "type": "webdav",
+              "title": "001",
+              "uri": "https://example.com/dav/Course/Chapter%2001/001.mp4",
+              "folderTitle": "Course",
+              "matchTitle": "Course",
+              "groupPath": "/Course",
+              "versionName": "Chapter 01",
+              "versionDirPath": "/Course/Chapter 01",
+              "manualSeries": true,
+              "mediaKind": "TvEpisode",
+              "size": 1234
+            }
+          ],
+          "progress": {},
+          "durations": {},
+          "lastPlayedAt": {},
+          "folderOrientations": {}
+        }"#;
+
+        put_app_state_json(db_path.to_str().unwrap(), state).unwrap();
+        let conn = open(db_path.to_str().unwrap()).unwrap();
+        let row: (String, String, String, String) = conn
+            .query_row(
+                "select sf.path, mf.guess_title, mf.media_kind_hint, mf.parsed_version_name
+                   from media_files mf
+                   join source_folders sf on sf.id=mf.folder_id
+                  where mf.item_id=?1",
+                params!["source-1:/Course/Chapter 01/001.mp4"],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "/Course/");
+        assert_eq!(row.1, "Course");
+        assert_eq!(row.2, "TvEpisode");
+        assert_eq!(row.3, "Chapter 01");
+        drop(conn);
+
+        let exported: Value =
+            serde_json::from_str(&get_app_state_json(db_path.to_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(exported["sources"][0]["seriesPaths"][0], "/Course/");
+        assert_eq!(exported["items"][0]["folderTitle"], "Course");
+        assert_eq!(exported["items"][0]["matchTitle"], "Course");
+        assert_eq!(exported["items"][0]["groupPath"], "/Course/");
+        assert_eq!(exported["items"][0]["versionName"], "Chapter 01");
+        assert_eq!(exported["items"][0]["manualSeries"], true);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
     fn show_detail_does_not_include_child_folder_files() {
         let db_path =
             std::env::temp_dir().join(format!("player_core_exact_folder_{}.sqlite", now_ms()));
@@ -3501,10 +3683,17 @@ mod tests {
         )
         .unwrap();
         let parent_id =
-            upsert_source_folder(&conn, "local-1", "D:/Root/", None, true, now).unwrap();
-        let child_id =
-            upsert_source_folder(&conn, "local-1", "D:/Root/Show/", Some("Show"), false, now)
-                .unwrap();
+            upsert_source_folder(&conn, "local-1", "D:/Root/", None, true, false, now).unwrap();
+        let child_id = upsert_source_folder(
+            &conn,
+            "local-1",
+            "D:/Root/Show/",
+            Some("Show"),
+            false,
+            false,
+            now,
+        )
+        .unwrap();
         assert_ne!(parent_id, child_id);
         conn.execute(
             "insert into media_files(

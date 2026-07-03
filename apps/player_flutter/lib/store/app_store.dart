@@ -534,13 +534,19 @@ class AppStore extends ChangeNotifier {
     return scanned;
   }
 
-  Future<void> addWebdavSelection(
-      MediaSourceConfig source, WebdavEntry entry) async {
+  Future<void> addWebdavSelection(MediaSourceConfig source, WebdavEntry entry,
+      {bool asSeries = false}) async {
     addDiagnosticLog('add webdav selection: ${entry.path}', category: 'scan');
     final normalizedPath =
         entry.isDir ? normalizeRemoteDir(entry.path) : entry.path;
+    final selectedPaths = {...source.selectedPaths, normalizedPath}.toList()
+      ..sort();
+    final seriesPaths = asSeries
+        ? ({...source.seriesPaths, normalizedPath}.toList()..sort())
+        : source.seriesPaths;
     final updated = source.copyWith(
-      selectedPaths: {...source.selectedPaths, normalizedPath}.toList()..sort(),
+      selectedPaths: selectedPaths,
+      seriesPaths: seriesPaths,
     );
     replaceSource(updated);
 
@@ -549,12 +555,14 @@ class AppStore extends ChangeNotifier {
       var count = 0;
       await for (final video
           in client.scanVideosStream(entry.path, maxDepth: 8)) {
-        addOrReplaceItem(MediaItem.webdav(source: updated, entry: video));
+        addOrReplaceItem(applyManualSeriesPath(
+            updated, MediaItem.webdav(source: updated, entry: video)));
         count++;
         notifyScanProgress(count);
       }
     } else if (isVideoName(entry.name)) {
-      addOrReplaceItem(MediaItem.webdav(source: updated, entry: entry));
+      addOrReplaceItem(applyManualSeriesPath(
+          updated, MediaItem.webdav(source: updated, entry: entry)));
       notifyScanProgress(1);
     }
     items.sort(compareMediaItems);
@@ -564,12 +572,18 @@ class AppStore extends ChangeNotifier {
     unawaited(refreshMissingMetadata());
   }
 
-  Future<void> addLocalSelection(
-      MediaSourceConfig source, LocalEntry entry) async {
+  Future<void> addLocalSelection(MediaSourceConfig source, LocalEntry entry,
+      {bool asSeries = false}) async {
     addDiagnosticLog('add local selection: ${entry.path}', category: 'scan');
     final normalizedPath = entry.path;
+    final selectedPaths = {...source.selectedPaths, normalizedPath}.toList()
+      ..sort();
+    final seriesPaths = asSeries
+        ? ({...source.seriesPaths, normalizedPath}.toList()..sort())
+        : source.seriesPaths;
     final updated = source.copyWith(
-      selectedPaths: {...source.selectedPaths, normalizedPath}.toList()..sort(),
+      selectedPaths: selectedPaths,
+      seriesPaths: seriesPaths,
     );
     replaceSource(updated);
 
@@ -582,7 +596,8 @@ class AppStore extends ChangeNotifier {
         notifyScanProgress(count);
       }
     } else if (isVideoName(entry.name)) {
-      addOrReplaceItem(MediaItem.local(source: updated, path: entry.path));
+      addOrReplaceItem(applyManualSeriesPath(
+          updated, MediaItem.local(source: updated, path: entry.path)));
       notifyScanProgress(1);
     }
     items.sort(compareMediaItems);
@@ -590,6 +605,27 @@ class AppStore extends ChangeNotifier {
     await save();
     notifyListeners();
     unawaited(refreshMissingMetadata());
+  }
+
+  Future<void> setManualSeriesPath(
+    MediaSourceConfig source,
+    String path, {
+    required bool isDir,
+    required bool enabled,
+  }) async {
+    final normalizedPath = sourcePathIdentity(source, path, isDir: isDir);
+    final selectedPaths = enabled
+        ? {...source.selectedPaths, normalizedPath}.toList()
+        : List<String>.from(source.selectedPaths);
+    final seriesPaths = enabled
+        ? {...source.seriesPaths, normalizedPath}.toList()
+        : source.seriesPaths.where((value) => value != normalizedPath).toList();
+    final updated = source.copyWith(
+      selectedPaths: selectedPaths..sort(),
+      seriesPaths: seriesPaths..sort(),
+    );
+    replaceSource(updated);
+    await rescanSource(updated);
   }
 
   Future<void> removeLocalSelection(
@@ -624,8 +660,12 @@ class AppStore extends ChangeNotifier {
     final selectedPaths = source.selectedPaths
         .where((path) => !removedSelectedPaths.contains(path))
         .toList();
+    final seriesPaths = source.seriesPaths
+        .where((path) => !removedSelectedPaths.contains(path))
+        .toList();
     final updated = source.copyWith(
       selectedPaths: selectedPaths..sort(),
+      seriesPaths: seriesPaths..sort(),
     );
     replaceSource(updated);
     final removedItemIds = <String>{};
@@ -834,8 +874,6 @@ class AppStore extends ChangeNotifier {
         addDiagnosticLog(tmdbLastStatus, category: 'match');
         return;
       }
-      final previouslyFailedItems =
-          force ? const <String>{} : _tmdbAutoMatchFailedItems(autoMatchState);
       final failedItems = <String>{};
       var matched = 0;
       var failed = 0;
@@ -856,18 +894,6 @@ class AppStore extends ChangeNotifier {
           if (skipped <= 20 || skipped % 500 == 0) {
             addDiagnosticLog(
               'TMDB skip cached sample=$skipped: ${describeMediaItem(item)}',
-              category: 'match',
-            );
-          }
-          continue;
-        }
-        final failedItemKey = tmdbAutoMatchFailedItemKey(item);
-        if (!force && previouslyFailedItems.contains(failedItemKey)) {
-          skipped++;
-          failedItems.add(failedItemKey);
-          if (skipped <= 20 || skipped % 500 == 0) {
-            addDiagnosticLog(
-              'TMDB skip previous failed sample=$skipped: ${describeMediaItem(item)}',
               category: 'match',
             );
           }
@@ -1054,12 +1080,6 @@ class AppStore extends ChangeNotifier {
   bool _tmdbAutoMatchCompletedFor(
       Map<String, dynamic>? state, String fingerprint) {
     return state?['fingerprint'] == fingerprint;
-  }
-
-  Set<String> _tmdbAutoMatchFailedItems(Map<String, dynamic>? state) {
-    final values = state?['failedItems'];
-    if (values is! List) return const {};
-    return values.whereType<String>().toSet();
   }
 
   Future<void> _markTmdbAutoMatchComplete(
@@ -1690,6 +1710,10 @@ String tmdbAutoMatchItemFingerprint(MediaItem item) {
     item.episode ?? '',
     item.mediaKind,
     item.groupPath,
+    item.folderTitle,
+    item.versionName,
+    item.versionDirPath,
+    item.manualSeries,
   ].join('\t');
 }
 
@@ -1697,5 +1721,8 @@ String tmdbAutoMatchFailedItemKey(MediaItem item) {
   return [
     item.id,
     item.size ?? -1,
+    item.matchTitle,
+    item.groupPath,
+    item.manualSeries,
   ].join('\t');
 }

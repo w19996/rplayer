@@ -196,10 +196,10 @@ class _WebdavBrowserPageState extends State<WebdavBrowserPage> {
     if (path != widget.source.directory) refresh(parentPath(path));
   }
 
-  Future<void> addEntry(WebdavEntry entry) async {
+  Future<void> addEntry(WebdavEntry entry, {bool asSeries = false}) async {
     setState(() => adding = true);
     try {
-      await widget.store.addWebdavSelection(source, entry);
+      await widget.store.addWebdavSelection(source, entry, asSeries: asSeries);
       if (mounted) {
         showSnack(context, entry.isDir ? '已添加文件夹，视频会显示在首页' : '已添加视频到首页');
       }
@@ -225,6 +225,28 @@ class _WebdavBrowserPageState extends State<WebdavBrowserPage> {
   bool isSelected(WebdavEntry entry) {
     final entryPath = entry.isDir ? normalizeRemoteDir(entry.path) : entry.path;
     return widget.store.sourcePathAdded(source, entryPath, isDir: entry.isDir);
+  }
+
+  bool isManualSeries(WebdavEntry entry) {
+    final entryPath = entry.isDir ? normalizeRemoteDir(entry.path) : entry.path;
+    return sourceManualSeriesPath(source, entryPath, isDir: entry.isDir);
+  }
+
+  Future<void> setSeriesEntry(WebdavEntry entry, bool enabled) async {
+    setState(() => adding = true);
+    try {
+      await widget.store.setManualSeriesPath(
+        source,
+        entry.isDir ? normalizeRemoteDir(entry.path) : entry.path,
+        isDir: entry.isDir,
+        enabled: enabled,
+      );
+      if (mounted) showSnack(context, enabled ? '已设为剧集' : '已取消剧集设置');
+    } catch (e) {
+      if (mounted) showSnack(context, '设置失败：$e');
+    } finally {
+      if (mounted) setState(() => adding = false);
+    }
   }
 
   @override
@@ -289,21 +311,16 @@ class _WebdavBrowserPageState extends State<WebdavBrowserPage> {
                       maxLines: 1, overflow: TextOverflow.ellipsis),
                   subtitle:
                       Text(entry.isDir ? '文件夹' : readableBytes(entry.size)),
-                  trailing: selected
-                      ? IconButton(
-                          tooltip: entry.isDir ? '取消此文件夹' : '取消此视频',
-                          onPressed: adding ? null : () => removeEntry(entry),
-                          icon: const Icon(Icons.check_circle,
-                              color: Color(0xFF2E7AF6)),
-                        )
-                      : IconButton(
-                          tooltip: entry.isDir ? '添加此文件夹' : '添加此视频',
-                          onPressed: adding ||
-                                  (!entry.isDir && !isVideoName(entry.name))
-                              ? null
-                              : () => addEntry(entry),
-                          icon: const Icon(Icons.add_circle_outline),
-                        ),
+                  trailing: SourceEntryMenu(
+                    selected: selected,
+                    manualSeries: isManualSeries(entry),
+                    enabled:
+                        !adding && (entry.isDir || isVideoName(entry.name)),
+                    onAdd: () => addEntry(entry),
+                    onRemove: () => removeEntry(entry),
+                    onSeriesOn: () => addEntry(entry, asSeries: true),
+                    onSeriesOff: () => setSeriesEntry(entry, false),
+                  ),
                   onTap: () {
                     if (entry.isDir) {
                       refresh(entry.path);

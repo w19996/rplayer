@@ -472,6 +472,58 @@ class MediaPosterFallback extends StatelessWidget {
   }
 }
 
+class SourceEntryMenu extends StatelessWidget {
+  const SourceEntryMenu({
+    required this.selected,
+    required this.manualSeries,
+    required this.enabled,
+    required this.onAdd,
+    required this.onRemove,
+    required this.onSeriesOn,
+    required this.onSeriesOff,
+    super.key,
+  });
+
+  final bool selected;
+  final bool manualSeries;
+  final bool enabled;
+  final VoidCallback onAdd;
+  final VoidCallback onRemove;
+  final VoidCallback onSeriesOn;
+  final VoidCallback onSeriesOff;
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<String>(
+      enabled: enabled,
+      icon: Icon(
+        manualSeries
+            ? Icons.live_tv_outlined
+            : selected
+                ? Icons.check_circle
+                : Icons.more_vert,
+        color: selected ? const Color(0xFF2E7AF6) : null,
+      ),
+      onSelected: (value) {
+        if (value == 'add') onAdd();
+        if (value == 'remove') onRemove();
+        if (value == 'series-on') onSeriesOn();
+        if (value == 'series-off') onSeriesOff();
+      },
+      itemBuilder: (_) => [
+        PopupMenuItem(
+          value: selected ? 'remove' : 'add',
+          child: Text(selected ? '取消添加' : '添加'),
+        ),
+        PopupMenuItem(
+          value: manualSeries ? 'series-off' : 'series-on',
+          child: Text(manualSeries ? '取消剧集设置' : '设为剧集'),
+        ),
+      ],
+    );
+  }
+}
+
 class SourceCard extends StatelessWidget {
   const SourceCard(
       {required this.source,

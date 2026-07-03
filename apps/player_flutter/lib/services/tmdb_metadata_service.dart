@@ -461,6 +461,7 @@ class TmdbMetadataService {
   }
 
   List<String> _tvQueriesFor(MediaItem item) {
+    if (item.manualSeries) return _manualQueriesFor(item);
     final folderTitle = cleanTmdbHints(mediaGroupDisplayTitle(item));
     final values = <String>[
       folderTitle,
@@ -470,6 +471,7 @@ class TmdbMetadataService {
   }
 
   List<String> _movieQueriesFor(MediaItem item) {
+    if (item.manualSeries) return _manualQueriesFor(item);
     final folderTitle = cleanTmdbHints(mediaGroupDisplayTitle(item));
     final values = <String>[
       item.matchTitle,
@@ -482,6 +484,7 @@ class TmdbMetadataService {
   }
 
   List<String> _multiQueriesFor(MediaItem item) {
+    if (item.manualSeries) return _manualQueriesFor(item);
     final values = <String>[
       mediaGroupDisplayTitle(item),
       item.matchTitle,
@@ -490,6 +493,15 @@ class TmdbMetadataService {
       item.title,
     ];
     return _dedupeQueries(values);
+  }
+
+  List<String> _manualQueriesFor(MediaItem item) {
+    final query = cleanTmdbHints(
+      item.matchTitle.trim().isNotEmpty
+          ? item.matchTitle.trim()
+          : mediaGroupDisplayTitle(item),
+    ).trim();
+    return query.isEmpty ? const [] : [query];
   }
 
   List<String> _dedupeQueries(List<String> values) {

@@ -249,6 +249,75 @@ void main() {
     expect(groups.single.items, hasLength(2));
   });
 
+  test('manual series path overrides title grouping and keeps child versions',
+      () {
+    final source = MediaSourceConfig.local(
+      id: 'source',
+      name: 'source',
+      directory: '/media',
+    ).copyWith(
+      selectedPaths: const ['/media/Manual Show'],
+      seriesPaths: const ['/media/Manual Show'],
+    );
+    const item = MediaItem(
+      id: 'source:/media/Manual Show/4K/01.mp4',
+      sourceId: 'source',
+      sourceName: 'source',
+      type: SourceType.local,
+      title: '01',
+      uri: '/media/Manual Show/4K/01.mp4',
+      folderTitle: '4K',
+      matchTitle: '01',
+      groupPath: '/media/Manual Show/4K',
+    );
+
+    final manual = applyManualSeriesPath(source, item);
+
+    expect(manual.folderTitle, 'Manual Show');
+    expect(manual.matchTitle, 'Manual Show');
+    expect(manual.mediaKind, 'TvEpisode');
+    expect(manual.groupPath, '/media/Manual Show');
+    expect(manual.versionName, '4K');
+    expect(manual.versionDirPath, '/media/Manual Show/4K');
+    expect(manual.manualSeries, isTrue);
+    expect(mediaFolderKey(manual), 'source:local:/media/Manual Show');
+    expect(source.toJson()['seriesPaths'], ['/media/Manual Show']);
+  });
+
+  test('manual series changes tmdb retry identity', () {
+    const item = MediaItem(
+      id: 'source:/media/Course/Chapter 01/001.mp4',
+      sourceId: 'source',
+      sourceName: 'source',
+      type: SourceType.local,
+      title: '001',
+      uri: '/media/Course/Chapter 01/001.mp4',
+      folderTitle: 'Chapter 01',
+      matchTitle: '001',
+      groupPath: '/media/Course/Chapter 01',
+      size: 100,
+    );
+    final manual = item.copyWith(
+      folderTitle: 'Course',
+      matchTitle: 'Course',
+      groupPath: '/media/Course',
+      manualSeries: true,
+    );
+
+    expect(
+      tmdbAutoMatchItemFingerprint(item),
+      isNot(tmdbAutoMatchItemFingerprint(manual)),
+    );
+    expect(
+      tmdbAutoMatchFailedItemKey(item),
+      isNot(tmdbAutoMatchFailedItemKey(manual)),
+    );
+    expect(
+      tmdbAutoMatchFailedItemKey(item),
+      equals(tmdbAutoMatchFailedItemKey(item.copyWith(title: '002'))),
+    );
+  });
+
   test('filters version and episode noise from TMDB search queries', () {
     expect(tmdbSearchQueryFromText('01'), '');
     expect(
@@ -298,17 +367,24 @@ void main() {
     );
     expect(
       tmdbAutoMatchFailedItemKey(item),
-      tmdbAutoMatchFailedItemKey(
-        item.copyWith(
-          folderTitle: 'Other',
-          matchTitle: 'Other',
-          groupPath: '/media/Other',
-        ),
-      ),
+      isNot(equals(tmdbAutoMatchFailedItemKey(item.copyWith(size: 200)))),
     );
     expect(
       tmdbAutoMatchFailedItemKey(item),
-      isNot(equals(tmdbAutoMatchFailedItemKey(item.copyWith(size: 200)))),
+      equals(tmdbAutoMatchFailedItemKey(item.copyWith(title: '02'))),
+    );
+    expect(
+      tmdbAutoMatchFailedItemKey(item),
+      isNot(equals(tmdbAutoMatchFailedItemKey(item.copyWith(
+        matchTitle: 'Other',
+        groupPath: '/media/Other',
+      )))),
+    );
+    expect(
+      tmdbAutoMatchFailedItemKey(item),
+      isNot(equals(tmdbAutoMatchFailedItemKey(item.copyWith(
+        manualSeries: true,
+      )))),
     );
   });
 

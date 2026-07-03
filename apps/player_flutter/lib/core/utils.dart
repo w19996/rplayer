@@ -102,6 +102,78 @@ String sourceItemPath(MediaSourceConfig source, MediaItem item) {
   return item.uri.replaceAll('\\', '/');
 }
 
+String mediaPathName(MediaSourceConfig source, String path) {
+  final value = source.type == SourceType.webdav
+      ? path.trimRight().split('/').where((part) => part.isNotEmpty).lastOrNull
+      : p.basename(path);
+  if (value == null || value.isEmpty) return path;
+  return isVideoName(value) ? p.basenameWithoutExtension(value) : value;
+}
+
+bool sourceManualSeriesPath(
+  MediaSourceConfig source,
+  String path, {
+  required bool isDir,
+}) {
+  return source.seriesPaths
+      .contains(sourcePathIdentity(source, path, isDir: isDir));
+}
+
+String? manualSeriesPathForItem(MediaSourceConfig source, MediaItem item) {
+  if (source.id != item.sourceId) return null;
+  final itemPath = sourceItemPath(source, item);
+  if (itemPath.isEmpty) return null;
+  final matches = source.seriesPaths
+      .where((path) => sourcePathCovers(
+            source,
+            path,
+            itemPath,
+            targetIsDir: false,
+          ))
+      .toList();
+  if (matches.isEmpty) return null;
+  matches.sort((a, b) => b.length.compareTo(a.length));
+  return matches.first;
+}
+
+MediaItem applyManualSeriesPath(MediaSourceConfig source, MediaItem item) {
+  final root = manualSeriesPathForItem(source, item);
+  if (root == null) return item;
+  final title = mediaPathName(source, root);
+  final version =
+      manualSeriesVersion(source, root, sourceItemPath(source, item));
+  return item.copyWith(
+    folderTitle: title,
+    matchTitle: title,
+    mediaKind: 'TvEpisode',
+    groupPath: normalizeMediaResourcePath(root),
+    versionName: version.$1,
+    versionDirPath: version.$2,
+    manualSeries: true,
+  );
+}
+
+(String, String) manualSeriesVersion(
+  MediaSourceConfig source,
+  String root,
+  String itemPath,
+) {
+  if (!sourceStoredPathIsDir(source, root)) return ('', '');
+  final rootPath = sourceComparablePath(source, root, isDir: true);
+  final item = sourceComparablePath(source, itemPath, isDir: false);
+  final prefix = rootPath.endsWith('/') ? rootPath : '$rootPath/';
+  if (!item.startsWith(prefix)) return ('', '');
+  final parts = item
+      .substring(prefix.length)
+      .split('/')
+      .where((part) => part.isNotEmpty)
+      .toList(growable: false);
+  if (parts.length < 2) return ('', '');
+  final versionName = parts.first;
+  final versionDir = normalizeMediaResourcePath('$prefix$versionName');
+  return (versionName, versionDir);
+}
+
 bool looksLikeSeasonFolderName(String value) {
   final text = value.trim();
   if (text.isEmpty) return false;

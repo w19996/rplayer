@@ -12,6 +12,7 @@ class MediaSourceConfig {
     this.username = '',
     this.password = '',
     this.selectedPaths = const [],
+    this.seriesPaths = const [],
   });
 
   factory MediaSourceConfig.local(
@@ -28,6 +29,7 @@ class MediaSourceConfig {
     required String password,
     required String directory,
     List<String> selectedPaths = const [],
+    List<String> seriesPaths = const [],
   }) {
     return MediaSourceConfig(
       id: id,
@@ -38,6 +40,7 @@ class MediaSourceConfig {
       password: password,
       directory: directory,
       selectedPaths: selectedPaths,
+      seriesPaths: seriesPaths,
     );
   }
 
@@ -49,6 +52,7 @@ class MediaSourceConfig {
   final String username;
   final String password;
   final List<String> selectedPaths;
+  final List<String> seriesPaths;
 
   String get displayPath =>
       type == SourceType.local ? directory : '$baseUrl$directory';
@@ -78,6 +82,7 @@ class MediaSourceConfig {
     String? username,
     String? password,
     List<String>? selectedPaths,
+    List<String>? seriesPaths,
   }) {
     return MediaSourceConfig(
       id: id ?? this.id,
@@ -88,6 +93,7 @@ class MediaSourceConfig {
       username: username ?? this.username,
       password: password ?? this.password,
       selectedPaths: selectedPaths ?? this.selectedPaths,
+      seriesPaths: seriesPaths ?? this.seriesPaths,
     );
   }
 
@@ -105,6 +111,9 @@ class MediaSourceConfig {
         selectedPaths: (json['selectedPaths'] as List<dynamic>? ?? const [])
             .whereType<String>()
             .toList(),
+        seriesPaths: (json['seriesPaths'] as List<dynamic>? ?? const [])
+            .whereType<String>()
+            .toList(),
       );
 
   Map<String, dynamic> toJson() => {
@@ -116,6 +125,7 @@ class MediaSourceConfig {
         'username': username,
         'password': password,
         'selectedPaths': selectedPaths,
+        'seriesPaths': seriesPaths,
       };
 }
 
@@ -136,6 +146,7 @@ class MediaItem {
     this.groupPath = '',
     this.versionName = '',
     this.versionDirPath = '',
+    this.manualSeries = false,
     this.size,
   });
 
@@ -215,6 +226,7 @@ class MediaItem {
   final String groupPath;
   final String versionName;
   final String versionDirPath;
+  final bool manualSeries;
   final int? size;
 
   MediaItem copyWith({
@@ -233,6 +245,7 @@ class MediaItem {
     String? groupPath,
     String? versionName,
     String? versionDirPath,
+    bool? manualSeries,
     int? size,
   }) {
     return MediaItem(
@@ -251,6 +264,7 @@ class MediaItem {
       groupPath: groupPath ?? this.groupPath,
       versionName: versionName ?? this.versionName,
       versionDirPath: versionDirPath ?? this.versionDirPath,
+      manualSeries: manualSeries ?? this.manualSeries,
       size: size ?? this.size,
     );
   }
@@ -273,6 +287,7 @@ class MediaItem {
         groupPath: json['groupPath'] as String? ?? '',
         versionName: json['versionName'] as String? ?? '',
         versionDirPath: json['versionDirPath'] as String? ?? '',
+        manualSeries: json['manualSeries'] as bool? ?? false,
         size: (json['size'] as num?)?.toInt(),
       );
 
@@ -292,6 +307,7 @@ class MediaItem {
         'groupPath': groupPath,
         'versionName': versionName,
         'versionDirPath': versionDirPath,
+        'manualSeries': manualSeries,
         'size': size,
       };
 }
