@@ -871,10 +871,10 @@ class AppStore extends ChangeNotifier {
           }
           continue;
         }
-        final itemFingerprint = tmdbAutoMatchItemFingerprint(item);
-        if (!force && previouslyFailedItems.contains(itemFingerprint)) {
+        final failedItemKey = tmdbAutoMatchFailedItemKey(item);
+        if (!force && previouslyFailedItems.contains(failedItemKey)) {
           skipped++;
-          failedItems.add(itemFingerprint);
+          failedItems.add(failedItemKey);
           if (skipped <= 20 || skipped % 500 == 0) {
             addDiagnosticLog(
               'TMDB skip previous failed sample=$skipped: ${describeMediaItem(item)}',
@@ -885,9 +885,16 @@ class AppStore extends ChangeNotifier {
         }
         targetItems.add(item);
       }
-      final targetGroups = mediaFolderGroups(targetItems);
+      final targetGroups = mediaFolderGroups(
+        targetItems,
+        separateItemIds: explicitlySelectedItemIds(targetItems),
+      );
       final allGroupsByKey = {
-        for (final group in mediaFolderGroups(items)) group.key: group,
+        for (final group in mediaFolderGroups(
+          items,
+          separateItemIds: explicitlySelectedItemIds(items),
+        ))
+          group.key: group,
       };
       final workerCount = _tmdbMatchWorkerCount(targetGroups.length, force);
       addDiagnosticLog(
@@ -911,10 +918,13 @@ class AppStore extends ChangeNotifier {
           try {
             final fullGroup = allGroupsByKey[group.key] ?? group;
             final cachedTitle = mediaGroupMetadata(fullGroup, metadata);
-            values = await service.lookupGroup(group, cachedTitle: cachedTitle);
+            values = await service.lookupGroup(
+              tmdbLookupGroup(group, cachedTitle: cachedTitle),
+              cachedTitle: cachedTitle,
+            );
           } catch (error) {
             failed += group.items.length;
-            failedItems.addAll(group.items.map(tmdbAutoMatchItemFingerprint));
+            failedItems.addAll(group.items.map(tmdbAutoMatchFailedItemKey));
             tmdbLastStatus = 'TMDB error: ${group.title} - $error';
             addDiagnosticLog(tmdbLastStatus, category: 'match');
             notifyListeners();
@@ -942,7 +952,7 @@ class AppStore extends ChangeNotifier {
             }
           } else {
             failed += group.items.length;
-            failedItems.addAll(group.items.map(tmdbAutoMatchItemFingerprint));
+            failedItems.addAll(group.items.map(tmdbAutoMatchFailedItemKey));
             tmdbLastStatus = 'TMDB no match: ${group.title}';
             addDiagnosticLog(tmdbLastStatus, category: 'match');
           }
@@ -977,6 +987,42 @@ class AppStore extends ChangeNotifier {
     if (groupCount <= 0) return 0;
     final maxWorkers = force ? 8 : 6;
     return math.min(maxWorkers, groupCount);
+  }
+
+  Set<String> explicitlySelectedItemIds(Iterable<MediaItem> values) {
+    final sourceById = {for (final source in sources) source.id: source};
+    return values
+        .where((item) {
+          final source = sourceById[item.sourceId];
+          return source != null && itemExplicitlySelectedFile(source, item);
+        })
+        .map((item) => item.id)
+        .toSet();
+  }
+
+  MediaFolderGroup tmdbLookupGroup(
+    MediaFolderGroup group, {
+    MediaMetadata? cachedTitle,
+  }) {
+    if (cachedTitle != null || group.items.length != 1) return group;
+    final item = group.representative;
+    final source =
+        sources.where((source) => source.id == item.sourceId).firstOrNull;
+    final explicitlySelectedFile =
+        source != null && itemExplicitlySelectedFile(source, item);
+    final usefulFileTitle =
+        isUsefulTmdbSearchQuery(tmdbSearchQueryFromText(item.title));
+    if (!explicitlySelectedFile && !usefulFileTitle) {
+      return group;
+    }
+    final lookupItem = singleFileTmdbLookupItem(item);
+    return MediaFolderGroup(
+      key: group.key,
+      title: mediaGroupDisplayTitle(lookupItem),
+      items: [lookupItem],
+      representative: lookupItem,
+      latestPlayedAt: group.latestPlayedAt,
+    );
   }
 
   String _tmdbAutoMatchFingerprint() {
@@ -1540,11 +1586,19 @@ class AppStore extends ChangeNotifier {
       }
     }
     try {
+      final headers = item.type == SourceType.webdav
+          ? sources
+                  .where((source) => source.id == item.sourceId)
+                  .firstOrNull
+                  ?.headers ??
+              const <String, String>{}
+          : const <String, String>{};
       final bytes = await appChannel.invokeMethod<Uint8List>(
         'videoThumbnail',
         {
           'uri': item.uri,
           'remote': item.type == SourceType.webdav,
+          'headers': headers,
         },
       );
       if (bytes == null || bytes.isEmpty) {
@@ -1623,5 +1677,12 @@ String tmdbAutoMatchItemFingerprint(MediaItem item) {
     item.episode ?? '',
     item.mediaKind,
     item.groupPath,
+  ].join('\t');
+}
+
+String tmdbAutoMatchFailedItemKey(MediaItem item) {
+  return [
+    item.id,
+    item.size ?? -1,
   ].join('\t');
 }

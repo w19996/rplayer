@@ -72,6 +72,60 @@ void main() {
     expect(mediaFolderKey(item), 'source:local:C:/media/Low IQ Crime');
   });
 
+  test('single unmatched media group displays file title', () {
+    const item = MediaItem(
+      id: 'source:/media/Parent/Movie Name.mp4',
+      sourceId: 'source',
+      sourceName: 'source',
+      type: SourceType.local,
+      title: 'Movie Name',
+      uri: '/media/Parent/Movie Name.mp4',
+      folderTitle: 'Parent',
+      matchTitle: 'Parent',
+      groupPath: '/media/Parent',
+    );
+
+    final groups = mediaFolderGroups(const [item]);
+
+    expect(groups.single.title, 'Movie Name');
+  });
+
+  test('separates manually selected files in the same folder', () {
+    const items = [
+      MediaItem(
+        id: 'source:/media/Parent/A.mp4',
+        sourceId: 'source',
+        sourceName: 'source',
+        type: SourceType.local,
+        title: 'A',
+        uri: '/media/Parent/A.mp4',
+        folderTitle: 'Parent',
+        matchTitle: 'Parent',
+        groupPath: '/media/Parent',
+      ),
+      MediaItem(
+        id: 'source:/media/Parent/B.mp4',
+        sourceId: 'source',
+        sourceName: 'source',
+        type: SourceType.local,
+        title: 'B',
+        uri: '/media/Parent/B.mp4',
+        folderTitle: 'Parent',
+        matchTitle: 'Parent',
+        groupPath: '/media/Parent',
+      ),
+    ];
+
+    expect(mediaFolderGroups(items), hasLength(1));
+    expect(
+      mediaFolderGroups(
+        items,
+        separateItemIds: items.map((item) => item.id).toSet(),
+      ),
+      hasLength(2),
+    );
+  });
+
   test('normalizes webdav folder keys like the database', () {
     const item = MediaItem(
       id: 'source:/media/Show/01.mp4',
@@ -174,6 +228,20 @@ void main() {
     expect(
       tmdbAutoMatchItemFingerprint(item),
       isNot(equals(tmdbAutoMatchItemFingerprint(item.copyWith(size: 200)))),
+    );
+    expect(
+      tmdbAutoMatchFailedItemKey(item),
+      tmdbAutoMatchFailedItemKey(
+        item.copyWith(
+          folderTitle: 'Other',
+          matchTitle: 'Other',
+          groupPath: '/media/Other',
+        ),
+      ),
+    );
+    expect(
+      tmdbAutoMatchFailedItemKey(item),
+      isNot(equals(tmdbAutoMatchFailedItemKey(item.copyWith(size: 200)))),
     );
   });
 
@@ -401,6 +469,172 @@ void main() {
     );
   });
 
+  test('does not resume playback from the end', () {
+    expect(resumablePlaybackPositionMs(10558777, 10558777), 0);
+    expect(resumablePlaybackPositionMs(10556000, 10558777), 0);
+    expect(resumablePlaybackPositionMs(60000, 10558777), 60000);
+    expect(resumablePlaybackPositionMs(60000, 0), 60000);
+  });
+
+  test('single selected file uses filename for unmatched TMDB lookup', () {
+    final source = MediaSourceConfig.local(
+      id: 'source',
+      name: 'source',
+      directory: '/media',
+    ).copyWith(selectedPaths: const ['/media/Folder/Movie Name.mp4']);
+    const item = MediaItem(
+      id: 'source:/media/Folder/Movie Name.mp4',
+      sourceId: 'source',
+      sourceName: 'source',
+      type: SourceType.local,
+      title: 'Movie Name',
+      uri: '/media/Folder/Movie Name.mp4',
+      folderTitle: 'Folder',
+      matchTitle: 'Folder',
+      groupPath: '/media/Folder',
+    );
+    final group = MediaFolderGroup(
+      key: mediaFolderKey(item),
+      title: 'Folder',
+      items: const [item],
+      representative: item,
+      latestPlayedAt: 0,
+    );
+    final store = AppStore()..sources.add(source);
+
+    final lookupGroup = store.tmdbLookupGroup(group);
+
+    expect(itemExplicitlySelectedFile(source, item), isTrue);
+    expect(lookupGroup.title, 'Movie Name');
+    expect(lookupGroup.representative.matchTitle, 'Movie Name');
+
+    final cachedGroup = store.tmdbLookupGroup(
+      group,
+      cachedTitle: MediaMetadata(
+        itemId: item.id,
+        tmdbId: 1,
+        mediaType: 'movie',
+        title: 'Folder Match',
+        schemaVersion: currentMetadataSchemaVersion,
+      ),
+    );
+    expect(cachedGroup.title, 'Folder');
+    expect(cachedGroup.representative.matchTitle, 'Folder');
+  });
+
+  test('single selected webdav file uses filename for unmatched TMDB lookup',
+      () {
+    final source = MediaSourceConfig.webdav(
+      id: 'source',
+      name: 'WebDAV',
+      baseUrl: 'https://example.com/dav',
+      username: '',
+      password: '',
+      directory: '/',
+      selectedPaths: const ['/本机/001 Qt环境搭建.ts'],
+    );
+    const item = MediaItem(
+      id: 'source:/本机/001 Qt环境搭建.ts',
+      sourceId: 'source',
+      sourceName: 'WebDAV',
+      type: SourceType.webdav,
+      title: '001 Qt环境搭建',
+      uri:
+          'https://example.com/dav/%E6%9C%AC%E6%9C%BA/001%20Qt%E7%8E%AF%E5%A2%83%E6%90%AD%E5%BB%BA.ts',
+      folderTitle: '本机',
+      matchTitle: '本机',
+      groupPath: '/本机',
+    );
+    final group = MediaFolderGroup(
+      key: mediaFolderKey(item),
+      title: '本机',
+      items: const [item],
+      representative: item,
+      latestPlayedAt: 0,
+    );
+    final store = AppStore()..sources.add(source);
+
+    final lookupGroup = store.tmdbLookupGroup(group);
+
+    expect(itemExplicitlySelectedFile(source, item), isTrue);
+    expect(lookupGroup.title, '001 Qt环境搭建');
+    expect(lookupGroup.representative.matchTitle, '001 Qt环境搭建');
+  });
+
+  test('single restored webdav file uses filename when folder was restored',
+      () {
+    final source = MediaSourceConfig.webdav(
+      id: 'source',
+      name: 'WebDAV',
+      baseUrl: 'https://example.com/dav',
+      username: '',
+      password: '',
+      directory: '/',
+      selectedPaths: const ['/本机/'],
+    );
+    const item = MediaItem(
+      id: 'source:/本机/001 Qt环境搭建.ts',
+      sourceId: 'source',
+      sourceName: 'WebDAV',
+      type: SourceType.webdav,
+      title: '001 Qt环境搭建',
+      uri:
+          'https://example.com/dav/%E6%9C%AC%E6%9C%BA/001%20Qt%E7%8E%AF%E5%A2%83%E6%90%AD%E5%BB%BA.ts',
+      folderTitle: '本机',
+      matchTitle: '本机',
+      groupPath: '/本机',
+    );
+    final group = MediaFolderGroup(
+      key: mediaFolderKey(item),
+      title: '本机',
+      items: const [item],
+      representative: item,
+      latestPlayedAt: 0,
+    );
+    final store = AppStore()..sources.add(source);
+
+    final lookupGroup = store.tmdbLookupGroup(group);
+
+    expect(itemExplicitlySelectedFile(source, item), isFalse);
+    expect(lookupGroup.title, '001 Qt环境搭建');
+    expect(lookupGroup.representative.matchTitle, '001 Qt环境搭建');
+  });
+
+  test('only persists confirmed playback progress', () {
+    expect(
+      shouldPersistPlaybackProgress(
+        ready: false,
+        positionConfirmed: true,
+        positionMs: 60000,
+      ),
+      isFalse,
+    );
+    expect(
+      shouldPersistPlaybackProgress(
+        ready: true,
+        positionConfirmed: false,
+        positionMs: 60000,
+      ),
+      isFalse,
+    );
+    expect(
+      shouldPersistPlaybackProgress(
+        ready: true,
+        positionConfirmed: true,
+        positionMs: 0,
+      ),
+      isFalse,
+    );
+    expect(
+      shouldPersistPlaybackProgress(
+        ready: true,
+        positionConfirmed: true,
+        positionMs: 60000,
+      ),
+      isTrue,
+    );
+  });
+
   test('builds danmu match filename with tmdb episode hints', () {
     expect(
       buildDanmuMatchFileName(
@@ -460,6 +694,28 @@ void main() {
 
     expect(find.text('本地目录'), findsOneWidget);
     expect(find.text('WebDAV'), findsOneWidget);
+  });
+
+  testWidgets('added source browser uses a pop guard',
+      (WidgetTester tester) async {
+    final store = AppStore()
+      ..sources.add(MediaSourceConfig.local(
+        id: 'source',
+        name: 'source',
+        directory: '/media',
+      ));
+
+    await tester.pumpWidget(MaterialApp(
+      home:
+          AddedSourceSelectionsPage(store: store, source: store.sources.first),
+    ));
+
+    expect(
+      find.byWidgetPredicate(
+        (widget) => widget is PopScope<void> && widget.canPop,
+      ),
+      findsOneWidget,
+    );
   });
 }
 

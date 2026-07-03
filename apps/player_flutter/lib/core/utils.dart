@@ -468,10 +468,14 @@ String describeMediaItem(MediaItem item) {
 List<MediaFolderGroup> mediaFolderGroups(
   Iterable<MediaItem> items, {
   Map<String, int> lastPlayedAt = const {},
+  Set<String> separateItemIds = const {},
 }) {
   final grouped = <String, List<MediaItem>>{};
   for (final item in items) {
-    grouped.putIfAbsent(mediaFolderKey(item), () => []).add(item);
+    final key = separateItemIds.contains(item.id)
+        ? '${mediaFolderKey(item)}\t${item.id}'
+        : mediaFolderKey(item);
+    grouped.putIfAbsent(key, () => []).add(item);
   }
 
   final groups = <MediaFolderGroup>[];
@@ -485,9 +489,12 @@ List<MediaFolderGroup> mediaFolderGroups(
         ? groupItems.reduce((a, b) =>
             (lastPlayedAt[a.id] ?? 0) >= (lastPlayedAt[b.id] ?? 0) ? a : b)
         : groupItems.first;
+    final title = groupItems.length == 1
+        ? cleanTmdbHints(groupItems.first.title)
+        : mediaGroupDisplayTitle(representative);
     groups.add(MediaFolderGroup(
       key: entry.key,
-      title: mediaGroupDisplayTitle(representative),
+      title: title.isNotEmpty ? title : mediaGroupDisplayTitle(representative),
       items: groupItems,
       representative: representative,
       latestPlayedAt: latestPlayed,
@@ -516,6 +523,25 @@ MediaMetadata? mediaGroupMetadata(
           .firstOrNull;
 }
 
+bool itemExplicitlySelectedFile(MediaSourceConfig source, MediaItem item) {
+  if (source.id != item.sourceId) return false;
+  final path = sourceItemPath(source, item);
+  if (path.isEmpty) return false;
+  final identity = sourcePathIdentity(source, path, isDir: false);
+  return source.selectedPaths.any(
+    (selected) =>
+        !sourceStoredPathIsDir(source, selected) &&
+        sourcePathIdentity(source, selected, isDir: false) == identity,
+  );
+}
+
+MediaItem singleFileTmdbLookupItem(MediaItem item) {
+  return item.copyWith(
+    folderTitle: item.title,
+    matchTitle: item.title,
+  );
+}
+
 String formatDuration(Duration value) {
   final total = value.inSeconds;
   final h = total ~/ 3600;
@@ -526,6 +552,21 @@ String formatDuration(Duration value) {
   }
   return '$m:${s.toString().padLeft(2, '0')}';
 }
+
+int resumablePlaybackPositionMs(int positionMs, int durationMs) {
+  if (positionMs <= 0) return 0;
+  if (durationMs <= 0) return positionMs;
+  if (positionMs >= durationMs) return 0;
+  if (durationMs - positionMs <= 3000) return 0;
+  return positionMs;
+}
+
+bool shouldPersistPlaybackProgress({
+  required bool ready,
+  required bool positionConfirmed,
+  required int positionMs,
+}) =>
+    ready && positionConfirmed && positionMs > 0;
 
 String readableBytes(int? value) {
   if (value == null || value <= 0) return '未知大小';

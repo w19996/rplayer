@@ -143,14 +143,18 @@ class MediaLibraryPage extends StatelessWidget {
           ),
           itemBuilder: (context, index) {
             final entry = entries[index];
+            final item =
+                entry.itemId == null ? null : store.itemById(entry.itemId!);
             return _LibraryDbTile(
               store: store,
               entry: entry,
-              onTap: () => openMediaGroupKey(
-                context,
-                store,
-                entry.folderKey,
-              ),
+              onTap: item != null && !entry.matched && entry.localFileCount == 1
+                  ? () => openPlayer(context, store, item)
+                  : () => openMediaGroupKey(
+                        context,
+                        store,
+                        entry.folderKey,
+                      ),
             );
           },
         ),
@@ -244,6 +248,7 @@ List<MediaFolderGroup> _pendingMediaGroups(
           !matched.contains(_mediaGroupResourceKey(mediaFolderKey(item))),
     ),
     lastPlayedAt: store.lastPlayedAt,
+    separateItemIds: store.explicitlySelectedItemIds(store.items),
   );
 }
 
@@ -342,6 +347,8 @@ class _LibraryDbTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final coverItem = _libraryEntryCoverItem(store, entry);
+    final remote = coverItem?.type == SourceType.webdav;
     return InkWell(
       borderRadius: BorderRadius.circular(8),
       onTap: onTap,
@@ -361,10 +368,17 @@ class _LibraryDbTile extends StatelessWidget {
                       imagePath: entry.posterPath!,
                       size: 'w500',
                       fit: BoxFit.cover,
-                      fallback: const MediaPosterFallback(remote: false),
+                      fallback: MediaPosterFallback(remote: remote == true),
+                    )
+                  else if (coverItem != null)
+                    VideoCoverImage(
+                      store: store,
+                      item: coverItem,
+                      fit: BoxFit.cover,
+                      fallback: MediaPosterFallback(remote: remote == true),
                     )
                   else
-                    const MediaPosterFallback(remote: false),
+                    MediaPosterFallback(remote: remote == true),
                   if ((entry.voteAverage ?? 0) > 0)
                     Positioned(
                       right: 6,
@@ -401,6 +415,22 @@ class _LibraryDbTile extends StatelessWidget {
       ),
     );
   }
+}
+
+MediaItem? _libraryEntryCoverItem(AppStore store, LibraryHomeEntry entry) {
+  final itemId = entry.itemId;
+  if (itemId != null) {
+    final item = store.itemById(itemId);
+    if (item != null) return item;
+  }
+  final key = _libraryEntryResourceKey(entry);
+  final items = store.items
+      .where((item) =>
+          item.sourceId == entry.sourceId &&
+          _mediaGroupResourceKey(mediaFolderKey(item)) == key)
+      .toList()
+    ..sort(compareMediaItems);
+  return items.firstOrNull;
 }
 
 class _RecentDbTile extends StatelessWidget {

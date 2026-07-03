@@ -56,8 +56,9 @@ class MainActivity : FlutterActivity() {
                 "videoThumbnail" -> {
                     val uri = call.argument<String>("uri") ?: ""
                     val remote = call.argument<Boolean>("remote") == true
+                    val headers = call.argument<Map<String, String>>("headers") ?: emptyMap()
                     Thread {
-                        result.success(videoThumbnail(uri, remote))
+                        result.success(videoThumbnail(uri, remote, headers))
                     }.start()
                 }
                 "adjustPlaybackControl" -> {
@@ -84,12 +85,12 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun videoThumbnail(uri: String, remote: Boolean): ByteArray? {
+    private fun videoThumbnail(uri: String, remote: Boolean, headers: Map<String, String>): ByteArray? {
         if (uri.isBlank()) return null
         val retriever = MediaMetadataRetriever()
         return try {
             if (remote) {
-                retriever.setDataSource(uri, emptyMap())
+                retriever.setDataSource(uri, headers)
             } else {
                 retriever.setDataSource(uri)
             }

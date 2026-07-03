@@ -198,111 +198,125 @@ class _AddedSourceSelectionsPageState extends State<AddedSourceSelectionsPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('已添加')),
-      body: AnimatedBuilder(
-        animation: widget.store,
-        builder: (context, _) {
-          final current = source;
-          if (current == null) {
-            return const EmptyState(
-              icon: Icons.folder_off_outlined,
-              title: '源已删除',
-              message: '这个文件源已经不存在。',
-              action: SizedBox.shrink(),
-            );
-          }
-          final paths = current.selectedPaths;
-          if (paths.isEmpty) {
-            return const EmptyState(
-              icon: Icons.folder_open_outlined,
-              title: '还没有添加资源',
-              message: '进入源目录后选择文件或文件夹添加到媒体库。',
-              action: SizedBox.shrink(),
-            );
-          }
-          return FutureBuilder<List<_AddedSourceEntry>>(
-            future: future,
-            builder: (context, snapshot) {
-              if (snapshot.connectionState != ConnectionState.done) {
-                return const Center(child: CircularProgressIndicator());
-              }
-              if (snapshot.hasError) {
-                return ErrorView(
-                    message: '${snapshot.error}', onRetry: refresh);
-              }
-              final entries = snapshot.data ?? const [];
-              if (entries.isEmpty) {
-                return EmptyState(
-                  icon: Icons.folder_off_outlined,
-                  title: '当前目录没有已添加资源',
-                  message: '返回上级目录查看已添加的文件或文件夹。',
-                  action: OutlinedButton(
-                    onPressed: refresh,
-                    child: const Text('重新加载'),
-                  ),
-                );
-              }
-              final hasParent = path != current.directory;
-              return ListView.builder(
-                itemExtent: 72,
-                cacheExtent: 1440,
-                itemCount: entries.length + (hasParent ? 1 : 0),
-                itemBuilder: (context, index) {
-                  if (hasParent && index == 0) {
-                    return ListTile(
-                      leading: const Icon(Icons.drive_folder_upload_outlined),
-                      title: const Text('返回上级'),
-                      onTap: goParent,
-                    );
-                  }
-                  final entry = entries[index - (hasParent ? 1 : 0)];
-                  final selected = widget.store
-                      .sourcePathAdded(current, entry.path, isDir: entry.isDir);
-                  final removing = removingPath == entry.path;
-                  return ListTile(
-                    leading:
-                        Icon(entry.isDir ? Icons.folder : Icons.movie_outlined),
-                    title: Text(
-                      entry.name,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    subtitle: Text(entry.isDir
-                        ? entry.path
-                        : '${readableBytes(entry.size)} · ${entry.path}'),
-                    trailing: selected
-                        ? TextButton(
-                            onPressed: removing
-                                ? null
-                                : () => unawaited(_remove(current, entry.path)),
-                            child: removing
-                                ? const SizedBox.square(
-                                    dimension: 18,
-                                    child: CircularProgressIndicator(
-                                        strokeWidth: 2),
-                                  )
-                                : const Text('取消添加'),
-                          )
-                        : entry.isDir
-                            ? const Icon(Icons.chevron_right)
-                            : null,
-                    onTap: () {
-                      if (entry.isDir) {
-                        refresh(entry.path);
-                      } else if (isVideoName(entry.name)) {
-                        final item = entry.toMediaItem(current);
-                        if (item != null) {
-                          openPlayer(context, widget.store, item);
-                        }
-                      }
-                    },
-                  );
-                },
+    final currentSource = source;
+    return PopScope<void>(
+      canPop: currentSource == null || path == currentSource.directory,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        if (source == null) {
+          Navigator.of(context).pop();
+        } else {
+          goParent();
+        }
+      },
+      child: Scaffold(
+        appBar: AppBar(title: const Text('已添加')),
+        body: AnimatedBuilder(
+          animation: widget.store,
+          builder: (context, _) {
+            final current = source;
+            if (current == null) {
+              return const EmptyState(
+                icon: Icons.folder_off_outlined,
+                title: '源已删除',
+                message: '这个文件源已经不存在。',
+                action: SizedBox.shrink(),
               );
-            },
-          );
-        },
+            }
+            final paths = current.selectedPaths;
+            if (paths.isEmpty) {
+              return const EmptyState(
+                icon: Icons.folder_open_outlined,
+                title: '还没有添加资源',
+                message: '进入源目录后选择文件或文件夹添加到媒体库。',
+                action: SizedBox.shrink(),
+              );
+            }
+            return FutureBuilder<List<_AddedSourceEntry>>(
+              future: future,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState != ConnectionState.done) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snapshot.hasError) {
+                  return ErrorView(
+                      message: '${snapshot.error}', onRetry: refresh);
+                }
+                final entries = snapshot.data ?? const [];
+                if (entries.isEmpty) {
+                  return EmptyState(
+                    icon: Icons.folder_off_outlined,
+                    title: '当前目录没有已添加资源',
+                    message: '返回上级目录查看已添加的文件或文件夹。',
+                    action: OutlinedButton(
+                      onPressed: refresh,
+                      child: const Text('重新加载'),
+                    ),
+                  );
+                }
+                final hasParent = path != current.directory;
+                return ListView.builder(
+                  itemExtent: 72,
+                  cacheExtent: 1440,
+                  itemCount: entries.length + (hasParent ? 1 : 0),
+                  itemBuilder: (context, index) {
+                    if (hasParent && index == 0) {
+                      return ListTile(
+                        leading: const Icon(Icons.drive_folder_upload_outlined),
+                        title: const Text('返回上级'),
+                        onTap: goParent,
+                      );
+                    }
+                    final entry = entries[index - (hasParent ? 1 : 0)];
+                    final selected = widget.store.sourcePathAdded(
+                        current, entry.path,
+                        isDir: entry.isDir);
+                    final removing = removingPath == entry.path;
+                    return ListTile(
+                      leading: Icon(
+                          entry.isDir ? Icons.folder : Icons.movie_outlined),
+                      title: Text(
+                        entry.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(entry.isDir
+                          ? entry.path
+                          : '${readableBytes(entry.size)} · ${entry.path}'),
+                      trailing: selected
+                          ? TextButton(
+                              onPressed: removing
+                                  ? null
+                                  : () =>
+                                      unawaited(_remove(current, entry.path)),
+                              child: removing
+                                  ? const SizedBox.square(
+                                      dimension: 18,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2),
+                                    )
+                                  : const Text('取消添加'),
+                            )
+                          : entry.isDir
+                              ? const Icon(Icons.chevron_right)
+                              : null,
+                      onTap: () {
+                        if (entry.isDir) {
+                          refresh(entry.path);
+                        } else if (isVideoName(entry.name)) {
+                          final item = entry.toMediaItem(current);
+                          if (item != null) {
+                            openPlayer(context, widget.store, item);
+                          }
+                        }
+                      },
+                    );
+                  },
+                );
+              },
+            );
+          },
+        ),
       ),
     );
   }

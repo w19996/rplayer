@@ -358,7 +358,9 @@ pub fn query_home_json(db_path: &str) -> Result<String> {
            s.type,
            count(distinct mf.id),
            max(pp.last_played_at),
-           coalesce(sf.search_hint, min(mf.guess_title), sf.path)
+           coalesce(sf.search_hint, min(mf.guess_title), sf.path),
+           min(mf.filename),
+           min(mf.item_id)
          from source_folders sf
          join media_files mf on mf.folder_id = sf.id and mf.scan_status = 'active'
          left join source_folder_matches sfm on sfm.folder_id = sf.id
@@ -366,7 +368,12 @@ pub fn query_home_json(db_path: &str) -> Result<String> {
          left join source_folder_movie_matches sfmm on sfmm.folder_id = sf.id
          left join tmdb_movies m on m.id = sfmm.movie_id
          left join playback_progress pp on pp.file_id = mf.id
-         group by sf.id, s.id, m.id
+         group by
+           case
+             when s.id is null and m.id is null and mf.explicitly_selected=1 then mf.id
+             else sf.id
+           end,
+           sf.id, s.id, m.id
          order by (s.id is null and m.id is null), max(pp.last_played_at) is null, max(pp.last_played_at) desc, coalesce(s.name, m.title, sf.path)",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -386,12 +393,25 @@ pub fn query_home_json(db_path: &str) -> Result<String> {
         insert_optional_i64(&mut object, "showId", show_id);
         insert_optional_i64(&mut object, "movieId", movie_id);
         insert_optional_i64(&mut object, "tmdbId", tmdb_id);
+        let file_count = row.get::<_, i64>(14)?;
         let fallback_title = row.get::<_, String>(16)?;
         let title = row
             .get::<_, Option<String>>(6)?
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| display_name_from_path(&fallback_title));
+            .unwrap_or_else(|| {
+                if show_id.is_none() && movie_id.is_none() && file_count == 1 {
+                    row.get::<_, Option<String>>(17)
+                        .ok()
+                        .flatten()
+                        .and_then(|filename| file_stem(&filename))
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or_else(|| display_name_from_path(&fallback_title))
+                } else {
+                    display_name_from_path(&fallback_title)
+                }
+            });
         object.insert("title".to_string(), Value::from(title));
+        insert_optional_string(&mut object, "itemId", row.get::<_, Option<String>>(18)?);
         insert_optional_string(&mut object, "overview", row.get::<_, Option<String>>(7)?);
         insert_optional_string(&mut object, "posterPath", row.get::<_, Option<String>>(8)?);
         insert_optional_string(
@@ -418,10 +438,7 @@ pub fn query_home_json(db_path: &str) -> Result<String> {
                 query_movie_genres(&conn, movie_id).unwrap_or_else(|_| Value::Array(Vec::new())),
             );
         }
-        object.insert(
-            "localFileCount".to_string(),
-            Value::from(row.get::<_, i64>(14)?),
-        );
+        object.insert("localFileCount".to_string(), Value::from(file_count));
         insert_optional_i64(
             &mut object,
             "latestPlayedAt",
@@ -849,6 +866,7 @@ fn open(db_path: &str) -> Result<Connection> {
            parsed_version_tags_json text,
            parsed_version_dir_path text,
            media_kind_hint text,
+           explicitly_selected integer not null default 0,
            scan_status text not null default 'active',
            created_at integer not null,
            updated_at integer not null,
@@ -1212,6 +1230,7 @@ fn open(db_path: &str) -> Result<Connection> {
         ("parsed_version_name", "text"),
         ("parsed_version_tags_json", "text"),
         ("parsed_version_dir_path", "text"),
+        ("explicitly_selected", "integer not null default 0"),
     ] {
         add_column_if_missing(&conn, "media_files", column, ty)?;
     }
@@ -1544,9 +1563,20 @@ fn export_library_state_json(conn: &Connection) -> Result<String> {
 
 fn query_selected_paths(conn: &Connection, source_id: &str) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
-        "select path from source_folders
-         where source_id=?1 and selected=1
-         order by path",
+        "select mf.relative_path
+         from media_files mf
+         where mf.source_id=?1 and mf.scan_status='active' and mf.explicitly_selected=1
+         union
+         select sf.path
+         from source_folders sf
+         where sf.source_id=?1 and sf.selected=1
+           and not exists(
+             select 1 from media_files mf
+             where mf.folder_id=sf.id
+               and mf.scan_status='active'
+               and mf.explicitly_selected=1
+           )
+         order by 1",
     )?;
     let rows = stmt.query_map(params![source_id], |row| row.get::<_, String>(0))?;
     let mut values = Vec::new();
@@ -1593,6 +1623,7 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
     let mut live_source_ids = HashSet::new();
     let mut live_folder_keys = HashSet::new();
     let mut live_item_ids = HashSet::new();
+    let mut explicitly_selected_files = HashSet::new();
 
     for source in &sources {
         let Some(source_id) = source.get("id").and_then(Value::as_str) else {
@@ -1659,6 +1690,7 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
         for path in selected_paths {
             let normalized = normalize_resource_path(&path);
             let (folder_path, search_hint) = if is_video_resource_path(&normalized) {
+                explicitly_selected_files.insert(format!("{source_id}\n{normalized}"));
                 (parent_path(&normalized), file_stem(&normalized))
             } else {
                 (normalize_folder_path(&normalized), None)
@@ -1722,6 +1754,8 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
             upsert_source_folder(conn, source_id, &folder_path, guess_title, false, now)?;
         live_folder_keys.insert(format!("{source_id}\n{folder_path}"));
         live_item_ids.insert(item_id.to_string());
+        let explicitly_selected =
+            explicitly_selected_files.contains(&format!("{source_id}\n{relative_path}"));
         conn.execute(
             "insert into media_files(
                item_id, source_id, folder_id, relative_path, filename, file_ext,
@@ -1729,9 +1763,9 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
                media_type,
                parse_source, parse_confidence, parse_warnings_json,
                parsed_version_name, parsed_version_tags_json, parsed_version_dir_path,
-               media_kind_hint, scan_status, created_at, updated_at
+               media_kind_hint, explicitly_selected, scan_status, created_at, updated_at
              )
-             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, 'active', ?20, ?20)
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, 'active', ?21, ?21)
              on conflict(item_id) do update set
                source_id=excluded.source_id,
                folder_id=excluded.folder_id,
@@ -1751,6 +1785,7 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
                parsed_version_tags_json=excluded.parsed_version_tags_json,
                parsed_version_dir_path=excluded.parsed_version_dir_path,
                media_kind_hint=excluded.media_kind_hint,
+               explicitly_selected=excluded.explicitly_selected,
                scan_status='active',
                updated_at=excluded.updated_at",
             params![
@@ -1773,6 +1808,7 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
                 parsed_version_tags_json,
                 parsed_version_dir_path,
                 item.get("mediaKind").and_then(Value::as_str),
+                explicitly_selected as i64,
                 now
             ],
         )?;
@@ -2521,7 +2557,12 @@ fn upsert_source_folder(
          values (?1, ?2, ?3, ?4, ?5, ?5)
          on conflict(source_id, path) do update set
            selected=max(source_folders.selected, excluded.selected),
-           search_hint=coalesce(excluded.search_hint, source_folders.search_hint),
+           search_hint=case
+             when excluded.selected=1 then excluded.search_hint
+             when source_folders.selected=1 and source_folders.search_hint is not null
+               then source_folders.search_hint
+             else coalesce(excluded.search_hint, source_folders.search_hint)
+           end,
            updated_at=excluded.updated_at",
         params![
             source_id,
@@ -3934,7 +3975,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_video_file_uses_parent_folder_and_source_delete_prunes_it() {
+    fn selected_video_file_uses_file_stem_for_home_title_and_delete_prunes_it() {
         let db_path = std::env::temp_dir().join(format!(
             "player_core_selected_file_folder_{}.sqlite",
             now_ms()
@@ -3979,7 +4020,11 @@ mod tests {
             )
             .unwrap();
         assert_eq!(path, "/Show/");
-        assert_eq!(search_hint.as_deref(), Some("Show"));
+        assert_eq!(search_hint.as_deref(), Some("01"));
+
+        let home: Value =
+            serde_json::from_str(&query_home_json(db_path.to_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(home[0]["title"], "01");
 
         let empty_state = r#"{
           "version": 1,
@@ -3991,6 +4036,116 @@ mod tests {
         assert_eq!(count_rows(&conn, "sources"), 0);
         assert_eq!(count_rows(&conn, "source_folders"), 0);
         assert_eq!(count_rows(&conn, "media_files"), 0);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn single_unmatched_folder_file_home_title_uses_file_stem() {
+        let db_path = std::env::temp_dir().join(format!(
+            "player_core_single_file_home_title_{}.sqlite",
+            now_ms()
+        ));
+        let state = r#"{
+          "version": 1,
+          "sources": [
+            {
+              "id": "source-1",
+              "name": "My WebDAV",
+              "type": "webdav",
+              "directory": "/dav/",
+              "baseUrl": "https://example.com/dav",
+              "selectedPaths": ["/dav/Parent/"]
+            }
+          ],
+          "items": [
+            {
+              "id": "source-1:/Parent/Movie Name.mp4",
+              "sourceId": "source-1",
+              "sourceName": "My WebDAV",
+              "type": "webdav",
+              "title": "Movie Name",
+              "uri": "https://example.com/dav/Parent/Movie%20Name.mp4",
+              "folderTitle": "Parent",
+              "matchTitle": "Parent",
+              "mediaKind": "Unknown",
+              "size": 1234
+            }
+          ]
+        }"#;
+
+        put_app_state_json(db_path.to_str().unwrap(), state).unwrap();
+        let home: Value =
+            serde_json::from_str(&query_home_json(db_path.to_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(home[0]["title"], "Movie Name");
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn separately_selected_files_in_same_folder_stay_separate_on_home() {
+        let db_path = std::env::temp_dir().join(format!(
+            "player_core_separate_selected_files_{}.sqlite",
+            now_ms()
+        ));
+        let state = r#"{
+          "version": 1,
+          "sources": [
+            {
+              "id": "source-1",
+              "name": "My WebDAV",
+              "type": "webdav",
+              "directory": "/dav/",
+              "baseUrl": "https://example.com/dav",
+              "selectedPaths": ["/dav/Parent/A.mp4", "/dav/Parent/B.mp4"]
+            }
+          ],
+          "items": [
+            {
+              "id": "source-1:/Parent/A.mp4",
+              "sourceId": "source-1",
+              "sourceName": "My WebDAV",
+              "type": "webdav",
+              "title": "A",
+              "uri": "https://example.com/dav/Parent/A.mp4",
+              "folderTitle": "Parent",
+              "matchTitle": "Parent",
+              "mediaKind": "Unknown",
+              "size": 1234
+            },
+            {
+              "id": "source-1:/Parent/B.mp4",
+              "sourceId": "source-1",
+              "sourceName": "My WebDAV",
+              "type": "webdav",
+              "title": "B",
+              "uri": "https://example.com/dav/Parent/B.mp4",
+              "folderTitle": "Parent",
+              "matchTitle": "Parent",
+              "mediaKind": "Unknown",
+              "size": 2345
+            }
+          ]
+        }"#;
+
+        put_app_state_json(db_path.to_str().unwrap(), state).unwrap();
+        let home: Value =
+            serde_json::from_str(&query_home_json(db_path.to_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(home.as_array().unwrap().len(), 2);
+        assert_eq!(home[0]["localFileCount"], 1);
+        let mut titles = vec![
+            home[0]["title"].as_str().unwrap().to_string(),
+            home[1]["title"].as_str().unwrap().to_string(),
+        ];
+        titles.sort();
+        assert_eq!(titles, vec!["A", "B"]);
+
+        let exported: Value =
+            serde_json::from_str(&get_app_state_json(db_path.to_str().unwrap()).unwrap()).unwrap();
+        let selected = exported["sources"][0]["selectedPaths"].as_array().unwrap();
+        assert_eq!(selected.len(), 2);
+        assert!(selected.contains(&Value::String("/Parent/A.mp4".to_string())));
+        assert!(selected.contains(&Value::String("/Parent/B.mp4".to_string())));
 
         let _ = std::fs::remove_file(db_path);
     }

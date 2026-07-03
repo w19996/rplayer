@@ -945,6 +945,7 @@ class LibraryHomeEntry {
     required this.folderId,
     required this.sourceId,
     required this.folderPath,
+    this.itemId,
     required this.showId,
     required this.tmdbId,
     required this.title,
@@ -965,6 +966,7 @@ class LibraryHomeEntry {
   final int folderId;
   final String sourceId;
   final String folderPath;
+  final String? itemId;
   final int showId;
   final int tmdbId;
   final String title;
@@ -986,6 +988,7 @@ class LibraryHomeEntry {
       folderId: (json['folderId'] as num?)?.toInt() ?? 0,
       sourceId: json['sourceId'] as String? ?? '',
       folderPath: json['folderPath'] as String? ?? '',
+      itemId: json['itemId'] as String?,
       showId: (json['showId'] as num?)?.toInt() ?? 0,
       tmdbId: (json['tmdbId'] as num?)?.toInt() ?? 0,
       title: json['title'] as String? ?? '',

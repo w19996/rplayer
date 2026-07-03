@@ -622,10 +622,23 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     } catch (_) {}
   }
 
+  Future<void> saveCurrentProgress() async {
+    if (!shouldPersistPlaybackProgress(
+      ready: ready,
+      positionConfirmed: playbackPositionConfirmed,
+      positionMs: position.inMilliseconds,
+    )) {
+      logVideoLoading(
+          'progress save skipped: ready=$ready confirmed=$playbackPositionConfirmed position=${position.inMilliseconds}ms duration=${duration.inMilliseconds}ms');
+      return;
+    }
+    await widget.store.updateProgress(currentItem.id, position, duration);
+  }
+
   @override
   void dispose() {
     widget.store.removeListener(handleStoreChanged);
-    widget.store.updateProgress(currentItem.id, position, duration);
+    unawaited(saveCurrentProgress());
     statusTimer?.cancel();
     loadingHideTimer?.cancel();
     controlsHideTimer?.cancel();
@@ -1740,9 +1753,14 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
 
   int rememberedPositionMsFor(MediaItem item) {
     final stored = widget.store.progress[item.id];
-    if (stored != null && stored > 0) return stored;
+    final duration = rememberedDurationMsFor(item);
+    if (stored != null && stored > 0) {
+      return resumablePlaybackPositionMs(stored, duration);
+    }
     final filePosition = dbFileForItem(item)?.positionMs;
-    return filePosition != null && filePosition > 0 ? filePosition : 0;
+    return filePosition != null && filePosition > 0
+        ? resumablePlaybackPositionMs(filePosition, duration)
+        : 0;
   }
 
   int rememberedDurationMsFor(MediaItem item) {
@@ -1783,6 +1801,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
 
   Future<void> handlePlaybackCompleted(bool completed) async {
     if (!completed || autoAdvancingEpisode || !mediaOpenCompleted) return;
+    if (!ready || !playbackPositionConfirmed) {
+      logVideoLoading(
+          'playback completed ignored before ready: ready=$ready confirmed=$playbackPositionConfirmed position=${position.inMilliseconds}ms duration=${duration.inMilliseconds}ms');
+      return;
+    }
     final next = nextEpisodeItem;
     final completedPosition = duration > Duration.zero ? duration : position;
     setStateIfMounted(() {
@@ -1814,7 +1837,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       return;
     }
     controlsHideTimer?.cancel();
-    await widget.store.updateProgress(currentItem.id, position, duration);
+    await saveCurrentProgress();
     final saved = resume ? rememberedPositionMsFor(item) : 0;
     final rememberedDuration = resume ? rememberedDurationMsFor(item) : 0;
     syncDanmuClock(saved > 0 ? Duration(milliseconds: saved) : Duration.zero);
