@@ -497,71 +497,78 @@ class _LibraryDbTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final coverItem = _libraryEntryCoverItem(store, entry);
     final remote = coverItem?.type == SourceType.webdav;
-    return InkWell(
-      borderRadius: BorderRadius.circular(8),
-      onTap: onTap,
-      onLongPress: onLongPress,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          AspectRatio(
-            aspectRatio: 2 / 3,
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  if (entry.posterPath != null)
-                    CachedTmdbImage(
-                      store: store,
-                      imagePath: entry.posterPath!,
-                      size: 'w500',
-                      fit: BoxFit.cover,
-                      fallback: MediaPosterFallback(remote: remote == true),
-                    )
-                  else if (coverItem != null)
-                    VideoCoverImage(
-                      store: store,
-                      item: coverItem,
-                      fit: BoxFit.cover,
-                      fallback: MediaPosterFallback(remote: remote == true),
-                    )
-                  else
-                    MediaPosterFallback(remote: remote == true),
-                  if ((entry.voteAverage ?? 0) > 0)
-                    Positioned(
-                      right: 6,
-                      bottom: 6,
-                      child: Text(
-                        entry.voteAverage!.toStringAsFixed(1),
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w800,
-                          shadows: [Shadow(color: Colors.black, blurRadius: 8)],
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: onTap,
+          onLongPress: onLongPress,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              AspectRatio(
+                aspectRatio: 2 / 3,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      if (entry.posterPath != null)
+                        CachedTmdbImage(
+                          store: store,
+                          imagePath: entry.posterPath!,
+                          size: 'w500',
+                          fit: BoxFit.cover,
+                          fallback: MediaPosterFallback(remote: remote == true),
+                        )
+                      else if (coverItem != null)
+                        VideoCoverImage(
+                          store: store,
+                          item: coverItem,
+                          fit: BoxFit.cover,
+                          fallback: MediaPosterFallback(remote: remote == true),
+                        )
+                      else
+                        MediaPosterFallback(remote: remote == true),
+                      if ((entry.voteAverage ?? 0) > 0)
+                        Positioned(
+                          right: 6,
+                          bottom: 6,
+                          child: Text(
+                            entry.voteAverage!.toStringAsFixed(1),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w800,
+                              shadows: [
+                                Shadow(color: Colors.black, blurRadius: 8),
+                              ],
+                            ),
+                          ),
                         ),
-                      ),
-                    ),
-                ],
+                    ],
+                  ),
+                ),
               ),
-            ),
+              const SizedBox(height: 9),
+              Text(
+                entry.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 14),
+              ),
+            ],
           ),
-          const SizedBox(height: 9),
-          Text(
-            entry.title,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 14),
-          ),
-          const SizedBox(height: 3),
-          Text(
-            '库中有 ${entry.localFileCount} 集',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(color: Colors.grey),
-          ),
-        ],
-      ),
+        ),
+        const SizedBox(height: 3),
+        Text(
+          '库中有 ${entry.localFileCount} 集',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(color: Colors.grey),
+        ),
+      ],
     );
   }
 }

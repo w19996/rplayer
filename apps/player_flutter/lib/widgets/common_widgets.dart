@@ -111,75 +111,85 @@ class MediaTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final remote = item.type == SourceType.webdav;
     final rating = metadata?.voteAverage;
-    return InkWell(
-      borderRadius: BorderRadius.circular(8),
-      onTap: onTap,
-      onLongPress: onLongPress,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          AspectRatio(
-            aspectRatio: 2 / 3,
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  if (metadata?.posterPath != null)
-                    CachedTmdbImage(
-                      store: store,
-                      imagePath: metadata!.posterPath!,
-                      size: 'w500',
-                      fit: BoxFit.cover,
-                      fallback: MediaPosterFallback(remote: remote),
-                    )
-                  else
-                    VideoCoverImage(
-                      store: store,
-                      item: coverItem ?? item,
-                      fit: BoxFit.cover,
-                      fallback: MediaPosterFallback(remote: remote),
-                    ),
-                  if (rating != null && rating > 0)
-                    Positioned(
-                      right: 6,
-                      bottom: 6,
-                      child: Text(
-                        rating.toStringAsFixed(1),
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w800,
-                          shadows: [
-                            Shadow(color: Colors.black, blurRadius: 8),
-                          ],
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: onTap,
+          onLongPress: onLongPress,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              AspectRatio(
+                aspectRatio: 2 / 3,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      if (metadata?.posterPath != null)
+                        CachedTmdbImage(
+                          store: store,
+                          imagePath: metadata!.posterPath!,
+                          size: 'w500',
+                          fit: BoxFit.cover,
+                          fallback: MediaPosterFallback(remote: remote),
+                        )
+                      else
+                        VideoCoverImage(
+                          store: store,
+                          item: coverItem ?? item,
+                          fit: BoxFit.cover,
+                          fallback: MediaPosterFallback(remote: remote),
                         ),
-                      ),
-                    ),
-                ],
+                      if (rating != null && rating > 0)
+                        Positioned(
+                          right: 6,
+                          bottom: 6,
+                          child: Text(
+                            rating.toStringAsFixed(1),
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w800,
+                              shadows: [
+                                Shadow(color: Colors.black, blurRadius: 8),
+                              ],
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
               ),
-            ),
-          ),
-          const SizedBox(height: 9),
-          Text(
-              metadata?.title.isNotEmpty == true
-                  ? metadata!.title
-                  : displayTitle ?? item.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 14)),
-          const SizedBox(height: 3),
-          Text(item.sourceName,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: Colors.grey)),
-          if (itemCount > 1)
-            Text('共 $itemCount 集',
+              const SizedBox(height: 9),
+              Text(
+                metadata?.title.isNotEmpty == true
+                    ? metadata!.title
+                    : displayTitle ?? item.title,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.grey)),
-        ],
-      ),
+                style: const TextStyle(fontSize: 14),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 3),
+        Text(
+          item.sourceName,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(color: Colors.grey),
+        ),
+        if (itemCount > 1)
+          Text(
+            '共 $itemCount 集',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: Colors.grey),
+          ),
+      ],
     );
   }
 }
