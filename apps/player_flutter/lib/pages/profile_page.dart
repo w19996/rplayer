@@ -117,6 +117,11 @@ class ProfilePage extends StatelessWidget {
   }
 }
 
+Widget _scrollingHelper(String text) => SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Text(text, maxLines: 1, softWrap: false),
+    );
+
 class TmdbSettingsPage extends StatelessWidget {
   const TmdbSettingsPage({required this.store, super.key});
 
@@ -438,9 +443,11 @@ class _DanmuSettingsPageState extends State<DanmuSettingsPage> {
               const SizedBox(height: 10),
               TextField(
                 controller: apiBaseUrl,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: 'API 地址',
-                  helperText: '例如 https://danmu.example.com，不填 /api/v2',
+                  helper: _scrollingHelper(
+                    '兼容 huangxd-/danmu_api，例如 https://danmu.example.com，不填 /api/v2',
+                  ),
                 ),
               ),
               const SizedBox(height: 12),
@@ -570,9 +577,11 @@ Future<void> showTmdbConfigDialog(BuildContext context, AppStore store) async {
                   initialValue: endpointValue,
                   decoration: InputDecoration(
                     labelText: 'TMDB API 地址',
-                    helperText: selected.custom
-                        ? '兼容 w19996/tmdb：API 使用 /3，图片使用 /t/p'
-                        : selected.url,
+                    helper: _scrollingHelper(
+                      selected.custom
+                          ? '兼容 imaliang/tmdb-proxy：API 使用 /3，图片使用 /t/p'
+                          : selected.url,
+                    ),
                   ),
                   selectedItemBuilder: (context) => [
                     for (final endpoint in tmdbApiEndpoints)
