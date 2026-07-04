@@ -461,8 +461,13 @@ Future<_LibraryPageData> _loadLibraryPageData(AppStore store) async {
     store.loadLibraryHome(),
     store.loadLibraryRecent(),
   ]);
-  final home = values[0] as List<LibraryHomeEntry>;
-  final recent = values[1] as List<LibraryRecentEntry>;
+  final home = filterLiveLibraryHome(
+    store,
+    values[0] as List<LibraryHomeEntry>,
+  );
+  final recent = (values[1] as List<LibraryRecentEntry>)
+      .where((entry) => store.itemById(entry.itemId) != null)
+      .toList();
   unawaited(store.preloadCachedTmdbImages([
     for (final entry in home)
       if (entry.posterPath != null) MapEntry(entry.posterPath!, 'w500'),
@@ -478,6 +483,31 @@ Future<_LibraryPageData> _loadLibraryPageData(AppStore store) async {
     home: home,
     recent: recent,
   );
+}
+
+List<LibraryHomeEntry> filterLiveLibraryHome(
+  AppStore store,
+  List<LibraryHomeEntry> home,
+) {
+  final sourceById = {for (final source in store.sources) source.id: source};
+  final itemIds = store.items.map((item) => item.id).toSet();
+  return home.where((entry) {
+    if (entry.itemId != null && itemIds.contains(entry.itemId)) return true;
+    final source = sourceById[entry.sourceId];
+    if (source == null || entry.folderPath.isEmpty) return false;
+    return store.items.any((item) {
+      if (item.sourceId != entry.sourceId) return false;
+      final itemPath = sourceItemPath(source, item);
+      if (itemPath.isEmpty) return false;
+      return sourcePathCovers(
+        source,
+        entry.folderPath,
+        itemPath,
+        containerIsDir: true,
+        targetIsDir: false,
+      );
+    });
+  }).toList();
 }
 
 class _LibraryDbTile extends StatelessWidget {
@@ -662,36 +692,10 @@ String? libraryEntryRemovePath(
 ) {
   final item = entry.itemId == null ? null : store.itemById(entry.itemId!);
   final itemPath = item == null ? null : sourceItemPath(source, item);
-  if (itemPath != null) {
-    final itemIdentity = sourcePathIdentity(source, itemPath, isDir: false);
-    for (final selected in source.selectedPaths) {
-      if (!sourceStoredPathIsDir(source, selected) &&
-          sourcePathIdentity(source, selected, isDir: false) == itemIdentity) {
-        return selected;
-      }
-    }
+  if (entry.localFileCount == 1 && itemPath?.isNotEmpty == true) {
+    return explicitSelectedFilePath(source, itemPath!) ?? itemPath;
   }
-
-  final targets = [
-    if (entry.folderPath.isNotEmpty) (path: entry.folderPath, isDir: true),
-    if (itemPath?.isNotEmpty == true) (path: itemPath!, isDir: false),
-  ];
-  final matches = source.selectedPaths
-      .where((selected) => targets.any(
-            (target) => sourcePathCovers(
-              source,
-              selected,
-              target.path,
-              containerIsDir: sourceStoredPathIsDir(source, selected),
-              targetIsDir: target.isDir,
-            ),
-          ))
-      .toList()
-    ..sort((a, b) => b.length.compareTo(a.length));
-  if (matches.isNotEmpty) return matches.first;
-  return itemPath?.isNotEmpty == true
-      ? itemPath
-      : (entry.folderPath.isEmpty ? null : entry.folderPath);
+  return entry.folderPath.isEmpty ? null : entry.folderPath;
 }
 
 MediaSourceConfig? mediaGroupSource(AppStore store, MediaFolderGroup group) {
@@ -710,38 +714,25 @@ String? mediaGroupRemovePath(
   final itemPaths = [
     for (final item in group.items) sourceItemPath(source, item),
   ].where((path) => path.isNotEmpty).toList();
-  for (final itemPath in itemPaths) {
-    final identity = sourcePathIdentity(source, itemPath, isDir: false);
-    for (final selected in source.selectedPaths) {
-      if (!sourceStoredPathIsDir(source, selected) &&
-          sourcePathIdentity(source, selected, isDir: false) == identity) {
-        return selected;
-      }
+  if (group.items.length == 1 && itemPaths.isNotEmpty) {
+    final itemPath = itemPaths.first;
+    final selected = explicitSelectedFilePath(source, itemPath);
+    if (selected != null) return selected;
+  }
+  return group.representative.groupPath.isEmpty
+      ? itemPaths.firstOrNull
+      : group.representative.groupPath;
+}
+
+String? explicitSelectedFilePath(MediaSourceConfig source, String itemPath) {
+  final identity = sourcePathIdentity(source, itemPath, isDir: false);
+  for (final selected in source.selectedPaths) {
+    if (!sourceStoredPathIsDir(source, selected) &&
+        sourcePathIdentity(source, selected, isDir: false) == identity) {
+      return selected;
     }
   }
-
-  final targets = [
-    for (final item in group.items)
-      if (item.groupPath.isNotEmpty) (path: item.groupPath, isDir: true),
-    for (final itemPath in itemPaths) (path: itemPath, isDir: false),
-  ];
-  final matches = source.selectedPaths
-      .where((selected) => targets.any(
-            (target) => sourcePathCovers(
-              source,
-              selected,
-              target.path,
-              containerIsDir: sourceStoredPathIsDir(source, selected),
-              targetIsDir: target.isDir,
-            ),
-          ))
-      .toList()
-    ..sort((a, b) => b.length.compareTo(a.length));
-  if (matches.isNotEmpty) return matches.first;
-  if (itemPaths.isNotEmpty) return itemPaths.first;
-  return group.representative.groupPath.isEmpty
-      ? null
-      : group.representative.groupPath;
+  return null;
 }
 
 MediaItem? _libraryEntryCoverItem(AppStore store, LibraryHomeEntry entry) {

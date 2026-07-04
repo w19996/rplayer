@@ -726,9 +726,9 @@ class AppStore extends ChangeNotifier {
     folderOrientations.removeWhere(
       (key, _) => !liveFolderKeys.contains(normalizeMediaFolderKey(key)),
     );
+    notifyListeners();
     await deleteVideoCoversForItems(removedItems);
     await save();
-    notifyListeners();
   }
 
   void addOrReplaceItem(MediaItem item) {

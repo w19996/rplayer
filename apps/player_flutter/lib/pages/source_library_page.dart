@@ -184,9 +184,10 @@ class _AddedSourceSelectionsPageState extends State<AddedSourceSelectionsPage> {
   Future<void> _remove(MediaSourceConfig source, String path) async {
     setState(() => removingPath = path);
     try {
-      await widget.store.removeSelectedPath(source, path);
+      final pending = widget.store.removeSelectedPath(source, path);
+      refresh();
+      await pending;
       if (mounted) {
-        refresh();
         showSnack(context, '已取消添加');
       }
     } catch (err) {

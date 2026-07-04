@@ -428,6 +428,40 @@ void main() {
         '/media/Parent/Movie.mp4');
   });
 
+  test('multi-file library entry removal uses covering folder', () {
+    final source = MediaSourceConfig.local(
+      id: 'source',
+      name: 'source',
+      directory: '/media',
+    ).copyWith(
+      selectedPaths: const ['/media/Show/03.mp4', '/media/Show'],
+    );
+    const item = MediaItem(
+      id: 'source:/media/Show/03.mp4',
+      sourceId: 'source',
+      sourceName: 'source',
+      type: SourceType.local,
+      title: '03',
+      uri: '/media/Show/03.mp4',
+      folderTitle: 'Show',
+    );
+    const entry = LibraryHomeEntry(
+      folderId: 1,
+      sourceId: 'source',
+      folderPath: '/media/Show',
+      itemId: 'source:/media/Show/03.mp4',
+      showId: 1,
+      tmdbId: 1,
+      title: 'Show',
+      localFileCount: 40,
+    );
+    final store = AppStore()
+      ..sources.add(source)
+      ..addOrReplaceItem(item);
+
+    expect(libraryEntryRemovePath(store, source, entry), '/media/Show');
+  });
+
   test('media group removal uses covering selected folder', () {
     final source = MediaSourceConfig.local(
       id: 'source',
@@ -445,6 +479,39 @@ void main() {
       groupPath: '/media/Show',
     );
     final group = mediaFolderGroups(const [item]).single;
+
+    expect(mediaGroupRemovePath(source, group), '/media/Show');
+  });
+
+  test('multi-file media group removal uses group folder', () {
+    final source = MediaSourceConfig.local(
+      id: 'source',
+      name: 'source',
+      directory: '/media',
+    ).copyWith(selectedPaths: const ['/media/Show/01.mp4', '/media/Show']);
+    const items = [
+      MediaItem(
+        id: 'source:/media/Show/01.mp4',
+        sourceId: 'source',
+        sourceName: 'source',
+        type: SourceType.local,
+        title: '01',
+        uri: '/media/Show/01.mp4',
+        folderTitle: 'Show',
+        groupPath: '/media/Show',
+      ),
+      MediaItem(
+        id: 'source:/media/Show/02.mp4',
+        sourceId: 'source',
+        sourceName: 'source',
+        type: SourceType.local,
+        title: '02',
+        uri: '/media/Show/02.mp4',
+        folderTitle: 'Show',
+        groupPath: '/media/Show',
+      ),
+    ];
+    final group = mediaFolderGroups(items).single;
 
     expect(mediaGroupRemovePath(source, group), '/media/Show');
   });
@@ -495,6 +562,94 @@ void main() {
     expect(store.items, [kept]);
     expect(store.progress, isEmpty);
     expect(store.metadata, isEmpty);
+  });
+
+  test('removing a selection notifies before slow save finishes', () async {
+    const selectedPath = '/dav/Q Show/';
+    final source = MediaSourceConfig.webdav(
+      id: 'source',
+      name: 'WebDAV',
+      baseUrl: 'https://example.com',
+      username: '',
+      password: '',
+      directory: '/',
+      selectedPaths: const [selectedPath],
+    );
+    const removed = MediaItem(
+      id: 'source:/dav/Q Show/01.mkv',
+      sourceId: 'source',
+      sourceName: 'WebDAV',
+      type: SourceType.webdav,
+      title: '01',
+      uri: 'https://example.com/dav/Q%20Show/01.mkv',
+    );
+    const kept = MediaItem(
+      id: 'source:/dav/Other/01.mkv',
+      sourceId: 'source',
+      sourceName: 'WebDAV',
+      type: SourceType.webdav,
+      title: '01',
+      uri: 'https://example.com/dav/Other/01.mkv',
+    );
+    final store = _SlowSaveStore()
+      ..sources.add(source)
+      ..items.addAll(const [removed, kept])
+      ..rebuildItemIndex();
+    var notified = false;
+    store.addListener(() {
+      notified = true;
+      expect(store.items, [kept]);
+    });
+
+    final pending = store.removeSelectedPath(source, selectedPath);
+
+    expect(notified, isTrue);
+    expect(store.sources.single.selectedPaths, isEmpty);
+    await store.saveStarted.future;
+    store.finishSave.complete();
+    await pending;
+  });
+
+  test('library home hides stale database entries after in-memory removal', () {
+    final source = MediaSourceConfig.local(
+      id: 'source',
+      name: 'source',
+      directory: '/media',
+    ).copyWith(selectedPaths: const ['/media/Show']);
+    const liveItem = MediaItem(
+      id: 'source:/media/Show/01.mkv',
+      sourceId: 'source',
+      sourceName: 'source',
+      type: SourceType.local,
+      title: '01',
+      uri: '/media/Show/01.mkv',
+      folderTitle: 'Show',
+    );
+    const liveEntry = LibraryHomeEntry(
+      folderId: 1,
+      sourceId: 'source',
+      folderPath: '/media/Show',
+      showId: 1,
+      tmdbId: 1,
+      title: 'Show',
+      localFileCount: 1,
+    );
+    const staleEntry = LibraryHomeEntry(
+      folderId: 2,
+      sourceId: 'source',
+      folderPath: '/media/Removed',
+      itemId: 'source:/media/Removed/01.mkv',
+      showId: 2,
+      tmdbId: 2,
+      title: 'Removed',
+      localFileCount: 1,
+    );
+    final store = AppStore()
+      ..sources.add(source)
+      ..addOrReplaceItem(liveItem);
+
+    expect(filterLiveLibraryHome(store, const [staleEntry, liveEntry]),
+        [liveEntry]);
   });
 
   test('removing a selection deletes cached video covers', () async {
@@ -1114,6 +1269,17 @@ void main() {
       findsOneWidget,
     );
   });
+}
+
+class _SlowSaveStore extends AppStore {
+  final saveStarted = Completer<void>();
+  final finishSave = Completer<void>();
+
+  @override
+  Future<void> save() async {
+    if (!saveStarted.isCompleted) saveStarted.complete();
+    await finishSave.future;
+  }
 }
 
 class _BlockingScanner extends MediaScanService {
