@@ -318,6 +318,16 @@ void main() {
     );
   });
 
+  test('reads previous TMDB auto-match failures', () {
+    expect(
+      tmdbAutoMatchFailedItems(const {
+        'failedItems': ['a', 'b', 1, 'a'],
+      }),
+      {'a', 'b'},
+    );
+    expect(tmdbAutoMatchFailedItems(null), isEmpty);
+  });
+
   test('filters version and episode noise from TMDB search queries', () {
     expect(tmdbSearchQueryFromText('01'), '');
     expect(
@@ -407,6 +417,165 @@ void main() {
       selectedPathsCoveredBy(source, '/Shows/'),
       {'/Shows/A/', '/Shows/B/01.mp4'},
     );
+  });
+
+  test('removing a webdav folder removes its scanned children', () async {
+    const selectedPath = '/dav/Q Show/';
+    final source = MediaSourceConfig.webdav(
+      id: 'source',
+      name: 'WebDAV',
+      baseUrl: 'https://example.com',
+      username: '',
+      password: '',
+      directory: '/',
+      selectedPaths: const [selectedPath],
+    );
+    const removed = MediaItem(
+      id: 'source:/dav/Q Show/1080P/01.mkv',
+      sourceId: 'source',
+      sourceName: 'WebDAV',
+      type: SourceType.webdav,
+      title: '01',
+      uri: 'https://example.com/dav/Q%20Show/1080P/01.mkv',
+    );
+    const kept = MediaItem(
+      id: 'source:/dav/Other/01.mkv',
+      sourceId: 'source',
+      sourceName: 'WebDAV',
+      type: SourceType.webdav,
+      title: '01',
+      uri: 'https://example.com/dav/Other/01.mkv',
+    );
+    final store = AppStore()
+      ..sources.add(source)
+      ..items.addAll(const [removed, kept])
+      ..progress[removed.id] = 1
+      ..metadata[removed.id] = MediaMetadata(
+        itemId: removed.id,
+        tmdbId: 1,
+        mediaType: 'tv',
+        title: 'Q Show',
+        schemaVersion: currentMetadataSchemaVersion,
+      )
+      ..rebuildItemIndex();
+
+    await store.removeSelectedPath(source, selectedPath);
+
+    expect(store.sources.single.selectedPaths, isEmpty);
+    expect(store.items, [kept]);
+    expect(store.progress, isEmpty);
+    expect(store.metadata, isEmpty);
+  });
+
+  test('removing a webdav folder clears stale scanned children', () async {
+    const selectedPath = '/dav/Q Show/';
+    final source = MediaSourceConfig.webdav(
+      id: 'source',
+      name: 'WebDAV',
+      baseUrl: 'https://example.com',
+      username: '',
+      password: '',
+      directory: '/',
+    );
+    const removed = MediaItem(
+      id: 'source:/dav/Q Show/1080P/01.mkv',
+      sourceId: 'source',
+      sourceName: 'WebDAV',
+      type: SourceType.webdav,
+      title: '01',
+      uri: 'https://example.com/dav/Q%20Show/1080P/01.mkv',
+    );
+    const kept = MediaItem(
+      id: 'source:/dav/Other/01.mkv',
+      sourceId: 'source',
+      sourceName: 'WebDAV',
+      type: SourceType.webdav,
+      title: '01',
+      uri: 'https://example.com/dav/Other/01.mkv',
+    );
+    final store = AppStore()
+      ..sources.add(source)
+      ..items.addAll(const [removed, kept])
+      ..rebuildItemIndex();
+
+    await store.removeSelectedPath(source, selectedPath);
+
+    expect(store.items, [kept]);
+  });
+
+  test('removing a webdav folder also matches parsed group path', () async {
+    const selectedPath = '/dav/Q Show/';
+    final source = MediaSourceConfig.webdav(
+      id: 'source',
+      name: 'WebDAV',
+      baseUrl: 'https://example.com',
+      username: '',
+      password: '',
+      directory: '/',
+    );
+    const removed = MediaItem(
+      id: 'source:/dav/Encoded%20Name/1080P/01.mkv',
+      sourceId: 'source',
+      sourceName: 'WebDAV',
+      type: SourceType.webdav,
+      title: '01',
+      uri: 'https://example.com/dav/Encoded%20Name/1080P/01.mkv',
+      groupPath: selectedPath,
+    );
+    const kept = MediaItem(
+      id: 'source:/dav/Other/01.mkv',
+      sourceId: 'source',
+      sourceName: 'WebDAV',
+      type: SourceType.webdav,
+      title: '01',
+      uri: 'https://example.com/dav/Other/01.mkv',
+    );
+    final store = AppStore()
+      ..sources.add(source)
+      ..items.addAll(const [removed, kept])
+      ..rebuildItemIndex();
+
+    await store.removeSelectedPath(source, selectedPath);
+
+    expect(store.items, [kept]);
+  });
+
+  test('removing a webdav folder ignores overlapping selections', () async {
+    const selectedPath = '/dav/Parent/Q Show/';
+    final source = MediaSourceConfig.webdav(
+      id: 'source',
+      name: 'WebDAV',
+      baseUrl: 'https://example.com',
+      username: '',
+      password: '',
+      directory: '/',
+      selectedPaths: const ['/dav/Parent/', selectedPath],
+    );
+    const removed = MediaItem(
+      id: 'source:/dav/Parent/Q Show/1080P/01.mkv',
+      sourceId: 'source',
+      sourceName: 'WebDAV',
+      type: SourceType.webdav,
+      title: '01',
+      uri: 'https://example.com/dav/Parent/Q%20Show/1080P/01.mkv',
+    );
+    const kept = MediaItem(
+      id: 'source:/dav/Parent/Other/01.mkv',
+      sourceId: 'source',
+      sourceName: 'WebDAV',
+      type: SourceType.webdav,
+      title: '01',
+      uri: 'https://example.com/dav/Parent/Other/01.mkv',
+    );
+    final store = AppStore()
+      ..sources.add(source)
+      ..items.addAll(const [removed, kept])
+      ..rebuildItemIndex();
+
+    await store.removeSelectedPath(source, selectedPath);
+
+    expect(store.sources.single.selectedPaths, ['/dav/Parent/']);
+    expect(store.items, [kept]);
   });
 
   test('imports database folder orientation keys for playback lookup', () {

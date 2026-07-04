@@ -14,8 +14,8 @@ pub use danmu::{
 };
 pub use media::{
     media_series_title_json, parse_media_identity, parse_media_identity_json,
-    parse_media_path_candidates, parse_media_path_candidates_json, MediaIdentity, MediaKind,
-    SearchCandidate,
+    parse_media_path_candidates, parse_media_path_candidates_json,
+    set_version_directory_regexes_json, MediaIdentity, MediaKind, SearchCandidate,
 };
 pub use metadata_cache::{
     cache_images_json, get_all_metadata_json, get_app_state_json, get_cached_image_json,
@@ -82,6 +82,16 @@ pub extern "C" fn player_core_media_series_title_json(
         let source_type = read_c_string(source_type)?;
         let path = read_c_string(path)?;
         media_series_title_json(&source_type, &path)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn player_core_set_version_directory_regexes_json(
+    patterns_json: *const c_char,
+) -> *mut c_char {
+    ffi_result(|| {
+        let patterns_json = read_c_string(patterns_json)?;
+        set_version_directory_regexes_json(&patterns_json)
     })
 }
 

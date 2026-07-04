@@ -71,6 +71,32 @@ pub fn media_series_title_json(source_type: &str, path: &str) -> Result<String> 
     })
 }
 
+pub fn set_version_directory_regexes_json(patterns_json: &str) -> Result<String> {
+    let patterns: Vec<String> = serde_json::from_str(patterns_json)
+        .context("failed to decode version directory regexes")?;
+    let mut normalized = Vec::new();
+    for pattern in patterns {
+        let trimmed = pattern.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.contains('\n') || trimmed.contains('\r') {
+            anyhow::bail!("version directory regex cannot contain line breaks");
+        }
+        normalized.push(trimmed.to_string());
+    }
+    let patterns_text =
+        CString::new(normalized.join("\n")).context("version directory regex contains nul byte")?;
+    let error = cpp_string(|| unsafe {
+        player_core_cpp_set_version_directory_regexes(patterns_text.as_ptr())
+    })?;
+    if error.trim().is_empty() {
+        Ok("{}".to_string())
+    } else {
+        anyhow::bail!(error);
+    }
+}
+
 fn cpp_string(run: impl FnOnce() -> *mut c_char) -> Result<String> {
     let value = run();
     if value.is_null() {
@@ -99,6 +125,7 @@ extern "C" {
         source_type: *const c_char,
         path: *const c_char,
     ) -> *mut c_char;
+    fn player_core_cpp_set_version_directory_regexes(patterns: *const c_char) -> *mut c_char;
     fn player_core_cpp_free_string(value: *mut c_char);
 }
 
@@ -322,6 +349,23 @@ mod tests {
     }
 
     #[test]
+    fn applies_custom_version_directory_regexes() {
+        set_version_directory_regexes_json(r#"["^My Edition$"]"#).unwrap();
+        let candidates =
+            parse_media_path_candidates("local", "D:/Shows/Example Show/My Edition/01.mkv")
+                .unwrap();
+        set_version_directory_regexes_json("[]").unwrap();
+
+        assert_eq!(candidates[0].title, "Example Show");
+        assert_eq!(candidates[0].version_name, "My Edition");
+        assert_eq!(
+            candidates[0].version_dir_path,
+            "D:/Shows/Example Show/My Edition"
+        );
+        assert_eq!(candidates[0].episode_number, Some(1));
+    }
+
+    #[test]
     fn treats_chapter_directories_as_version_context() {
         for chapter in ["第1章", "第一章", "第1章 CMake快速入门篇"] {
             let path = format!("/Quark/Example Show/{chapter}/01.mp4");
@@ -396,6 +440,27 @@ mod tests {
         assert!(candidates[0].version_name.contains("1080P"));
         assert!(candidates[0].version_name.contains("内封"));
         assert!(candidates[0].version_name.contains("简繁英字幕"));
+        assert_eq!(candidates[0].episode_number, Some(1));
+    }
+
+    #[test]
+    fn keeps_title_directory_when_it_contains_quality_tags() {
+        let candidates = parse_media_path_candidates(
+            "webdav",
+            "/夸克1/来自：分享/Q 去有风的地方（2023）全40集 内封字幕 4K+1080P/1080P 内封简繁英字幕/01.mkv",
+        )
+        .unwrap();
+
+        assert_eq!(candidates[0].title, "Q 去有风的地方");
+        assert_eq!(
+            candidates[0].source_path,
+            "夸克1/来自：分享/Q 去有风的地方（2023）全40集 内封字幕 4K+1080P"
+        );
+        assert_eq!(
+            candidates[0].version_dir_path,
+            "夸克1/来自：分享/Q 去有风的地方（2023）全40集 内封字幕 4K+1080P/1080P 内封简繁英字幕"
+        );
+        assert_eq!(candidates[0].version_name, "1080P 内封简繁英字幕");
         assert_eq!(candidates[0].episode_number, Some(1));
     }
 }

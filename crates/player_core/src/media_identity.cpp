@@ -5,6 +5,7 @@
 #include <regex>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -270,19 +271,27 @@ std::string merge_media_hint(const std::string& left, const std::string& right) 
     return "unknown";
 }
 
+const std::vector<std::string>& ascii_version_words() {
+    static const std::vector<std::string> tags = {
+        "dolbyvision", "hdr10+", "hdr10", "2160p", "1080p", "720p", "480p",
+        "120fps", "60fps", "webrip", "web-dl", "bluray", "blu-ray", "bdrip",
+        "remux", "hdtv", "tvrip", "dvdrip", "truehd", "dts-hd", "h265",
+        "h.265", "hevc", "h264", "h.264", "x265", "x264", "avc", "av1",
+        "vp9", "10bit", "8bit", "atmos", "dolby", "hdr", "sdr", "uhd",
+        "fhd", "4k", "8k", "hq", "dl", "dv", "hlg", "bd", "hd", "sd",
+        "web", "raw", "internal", "subs", "subtitle", "subtitles", "aac",
+        "ac3", "eac3", "ddp", "dts", "5.1", "7.1",
+    };
+    return tags;
+}
+
 bool is_version_token(const std::string& token) {
     const std::string lower = lower_ascii(token);
-    static const std::vector<std::string> tags = {
-        "8k", "4k", "2160p", "1080p", "720p", "480p", "uhd", "fhd", "hd", "sd",
-        "60fps", "120fps", "hdr", "hdr10", "hdr10+", "sdr", "dolbyvision", "dv", "hlg",
-        "bluray", "blu-ray", "bd", "bdrip", "web-dl", "webrip", "web", "hdtv",
-        "tvrip", "dvdrip", "remux", "raw", "hq", "dl", "h265", "h.265",
-        "hevc", "x265", "h264", "h.264", "x264", "avc", "av1", "vp9",
-        "10bit", "8bit", "dolby", "atmos", "dts", "dts-hd", "truehd",
-        "aac", "ac3", "eac3", "ddp", "5.1", "7.1",
-        "video", "videos",
-    };
+    const auto& tags = ascii_version_words();
     if (std::find(tags.begin(), tags.end(), lower) != tags.end()) {
+        return true;
+    }
+    if (lower == "video" || lower == "videos") {
         return true;
     }
     static const std::vector<std::string> zh = {
@@ -346,16 +355,7 @@ std::string remove_ascii_word_case_insensitive(const std::string& value, const s
 
 std::string strip_embedded_version_words(const std::string& token, std::vector<std::string>& version_tags) {
     std::string remaining = token;
-    static const std::vector<std::string> ascii_tags = {
-        "dolbyvision", "hdr10+", "hdr10", "2160p", "1080p", "720p", "480p",
-        "120fps", "60fps", "webrip", "web-dl", "bluray", "blu-ray", "bdrip",
-        "remux", "hdtv", "tvrip", "dvdrip", "truehd", "dts-hd", "h265",
-        "h.265", "hevc", "h264", "h.264", "x265", "x264", "avc", "av1",
-        "vp9", "10bit", "8bit", "atmos", "dolby", "hdr", "sdr", "uhd",
-        "fhd", "4k", "8k", "hq", "dl", "dv", "hlg", "bd", "hd", "sd",
-        "web", "raw", "internal", "subs", "subtitle", "subtitles", "aac", "ac3", "eac3", "ddp", "dts",
-    };
-    for (const auto& tag : ascii_tags) {
+    for (const auto& tag : ascii_version_words()) {
         const std::string before = remaining;
         remaining = remove_ascii_word_case_insensitive(remaining, tag);
         if (before != remaining) {
@@ -378,7 +378,50 @@ std::string strip_embedded_version_words(const std::string& token, std::vector<s
     return trim(remaining);
 }
 
-const std::vector<std::regex>& version_directory_regexes() {
+std::vector<std::string> split_lines(const std::string& input) {
+    std::vector<std::string> lines;
+    std::string current;
+    for (const char ch : input) {
+        if (ch == '\n') {
+            lines.push_back(trim(current));
+            current.clear();
+        } else if (ch != '\r') {
+            current.push_back(ch);
+        }
+    }
+    lines.push_back(trim(current));
+    return lines;
+}
+
+std::vector<std::regex>& custom_version_directory_regexes() {
+    static std::vector<std::regex> patterns;
+    return patterns;
+}
+
+std::string set_custom_version_directory_regexes(const std::string& patterns_text) {
+    std::vector<std::regex> compiled;
+    int index = 0;
+    for (const auto& pattern : split_lines(patterns_text)) {
+        if (pattern.empty()) {
+            continue;
+        }
+        ++index;
+        if (pattern.size() > 512) {
+            return "invalid version directory regex #" + std::to_string(index) + ": pattern is too long";
+        }
+        try {
+            compiled.emplace_back(pattern, std::regex_constants::icase);
+        } catch (const std::regex_error& error) {
+            return "invalid version directory regex #" + std::to_string(index) +
+                   ": " + pattern + " (" + error.what() + ")";
+        }
+    }
+
+    custom_version_directory_regexes() = std::move(compiled);
+    return std::string();
+}
+
+bool is_version_directory_by_regex(const std::string& text, std::vector<std::string>& version_tags) {
     static const std::vector<std::regex> patterns = {
         std::regex(R"((8k|4k|2160p|1080p|720p|480p|uhd|fhd|hd|sd))", std::regex_constants::icase),
         std::regex(R"(((120|60|[2-9][0-9])\s*fps))", std::regex_constants::icase),
@@ -388,12 +431,14 @@ const std::vector<std::regex>& version_directory_regexes() {
         std::regex(R"((aac|eac3|ac3|ddp|dts\s*-?\s*hd|dts|truehd|atmos|5\.1|7\.1))", std::regex_constants::icase),
         std::regex(R"(第\s*(\d+|[一二三四五六七八九十零〇两]+)\s*(章|季))", std::regex_constants::icase),
     };
-    return patterns;
-}
-
-bool is_version_directory_by_regex(const std::string& text, std::vector<std::string>& version_tags) {
     const std::string normalized = normalize_text_separators(text);
-    for (const auto& pattern : version_directory_regexes()) {
+    for (const auto& pattern : patterns) {
+        if (std::regex_search(normalized, pattern)) {
+            version_tags.push_back(trim(text));
+            return true;
+        }
+    }
+    for (const auto& pattern : custom_version_directory_regexes()) {
         if (std::regex_search(normalized, pattern)) {
             version_tags.push_back(trim(text));
             return true;
@@ -644,8 +689,10 @@ ParseInfo parse_text(const std::string& text, bool filename) {
     info.cleaned_title = join_tokens(title_tokens);
     if (info.matches_version_dir_regex) {
         info.version_tags = merge_tags(info.version_tags, version_dir_tags);
-        info.cleaned_title.clear();
-        info.has_season = false;
+        if (info.cleaned_title.size() < 2) {
+            info.cleaned_title.clear();
+            info.has_season = false;
+        }
     }
     if (info.media_type_hint == "unknown" && info.has_year && !info.has_episode && !info.has_season) {
         info.media_type_hint = "movie";
@@ -973,6 +1020,10 @@ extern "C" char* player_core_cpp_media_series_title_json(
     const auto candidates = parse_path_candidates(input_string(source_type), input_string(path));
     const std::string title = candidates.empty() ? std::string() : candidates.front().title;
     return owned_c_string(json_string(title));
+}
+
+extern "C" char* player_core_cpp_set_version_directory_regexes(const char* patterns) {
+    return owned_c_string(set_custom_version_directory_regexes(input_string(patterns)));
 }
 
 extern "C" void player_core_cpp_free_string(char* value) {

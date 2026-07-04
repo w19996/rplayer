@@ -28,6 +28,7 @@ class RustCoreService {
   _RustTwoStringDart? _parseMediaIdentityJson;
   _RustTwoStringDart? _parseMediaPathCandidatesJson;
   _RustTwoStringDart? _mediaSeriesTitleJson;
+  _RustStringDart? _setVersionDirectoryRegexesJson;
   _RustTwoStringDart? _tmdbGetJson;
   _RustStringDart? _danmuLoadJson;
   _RustStringDart? _danmuVisibleJson;
@@ -134,6 +135,14 @@ class RustCoreService {
     final source = sourceType == SourceType.webdav ? 'webdav' : 'local';
     final text = _callTwoString(_mediaSeriesTitleJson, source, path);
     return jsonDecode(text) as String? ?? '';
+  }
+
+  void setVersionDirectoryRegexes(List<String> patterns) {
+    _ensureAvailable();
+    if (_setVersionDirectoryRegexesJson == null) {
+      throw StateError('Rust media parser is missing version regex support');
+    }
+    _callString(_setVersionDirectoryRegexesJson, [jsonEncode(patterns)]);
   }
 
   String tmdbGetJson(String url, String accessToken) {
@@ -467,6 +476,8 @@ class RustCoreService {
               'player_core_parse_media_path_candidates_json');
       _mediaSeriesTitleJson =
           _lookupOptionalTwoString('player_core_media_series_title_json');
+      _setVersionDirectoryRegexesJson = _lookupOptionalString(
+          'player_core_set_version_directory_regexes_json');
       _tmdbGetJson = _library!
           .lookupFunction<_RustTwoStringFn, _RustTwoStringDart>(
               'player_core_tmdb_get_json');

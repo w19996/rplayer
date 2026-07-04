@@ -18,6 +18,7 @@ class AppStore extends ChangeNotifier {
   TmdbConfig tmdbConfig = const TmdbConfig();
   DanmuConfig danmuConfig = const DanmuConfig();
   SyncConfig? syncConfig;
+  final List<String> versionDirectoryRegexes = [];
   bool loaded = false;
   bool metadataRefreshing = false;
   int metadataRevision = 0;
@@ -331,6 +332,7 @@ class AppStore extends ChangeNotifier {
       'tmdbConfig': tmdbConfig.toJson(),
       'danmuConfig': danmuConfig.toJson(),
       'syncConfig': syncConfig?.toJson(),
+      'versionDirectoryRegexes': versionDirectoryRegexes,
       'diagnosticLoggingEnabled': diagnosticLoggingEnabled,
     });
   }
@@ -372,6 +374,11 @@ class AppStore extends ChangeNotifier {
     final sync = json['syncConfig'];
     syncConfig =
         sync == null ? null : SyncConfig.fromJson(sync as Map<String, dynamic>);
+    versionDirectoryRegexes
+      ..clear()
+      ..addAll(normalizeVersionDirectoryRegexes(
+          json['versionDirectoryRegexes'] as List<dynamic>? ?? const []));
+    syncVersionDirectoryRegexesToCore(logErrors: false);
     diagnosticLoggingEnabled =
         json['diagnosticLoggingEnabled'] as bool? ?? false;
   }
@@ -519,6 +526,7 @@ class AppStore extends ChangeNotifier {
   Future<List<MediaItem>> scanSourceItems(MediaSourceConfig source) async {
     final stopwatch = Stopwatch()..start();
     addDiagnosticLog('scan source started: ${source.name}', category: 'scan');
+    syncVersionDirectoryRegexesToCore();
     var count = 0;
     final scanned = <MediaItem>[];
     await for (final item in scanner.scanSourceStream(source)) {
@@ -549,6 +557,7 @@ class AppStore extends ChangeNotifier {
       seriesPaths: seriesPaths,
     );
     replaceSource(updated);
+    syncVersionDirectoryRegexesToCore();
 
     if (entry.isDir) {
       final client = WebdavClient.fromSource(updated);
@@ -586,6 +595,7 @@ class AppStore extends ChangeNotifier {
       seriesPaths: seriesPaths,
     );
     replaceSource(updated);
+    syncVersionDirectoryRegexesToCore();
 
     if (entry.isDir) {
       var count = 0;
@@ -671,30 +681,32 @@ class AppStore extends ChangeNotifier {
     final removedItemIds = <String>{};
     items.removeWhere((item) {
       final itemPath = sourceItemPath(source, item);
-      if (item.sourceId != source.id ||
-          !sourcePathCovers(
+      final groupPath = item.groupPath;
+      final coveredByRemovedPath = sourcePathCovers(
             source,
             normalizedPath,
             itemPath,
             containerIsDir: pathIsDir,
             targetIsDir: false,
-          )) {
-        return false;
-      }
-      if (removedSelectedPaths.isNotEmpty &&
-          updated.selectedPaths.any(
-            (path) => sourcePathCovers(
-              updated,
-              path,
-              itemPath,
-              targetIsDir: false,
-            ),
-          )) {
+          ) ||
+          (groupPath.isNotEmpty &&
+              sourcePathCovers(
+                source,
+                normalizedPath,
+                groupPath,
+                containerIsDir: pathIsDir,
+                targetIsDir: true,
+              ));
+      if (item.sourceId != source.id || !coveredByRemovedPath) {
         return false;
       }
       removedItemIds.add(item.id);
       return true;
     });
+    addDiagnosticLog(
+      'remove selected path removed items=${removedItemIds.length}',
+      category: 'scan',
+    );
     rebuildItemIndex();
     for (final itemId in removedItemIds) {
       progress.remove(itemId);
@@ -821,6 +833,54 @@ class AppStore extends ChangeNotifier {
     unawaited(refreshMissingMetadata());
   }
 
+  List<String> normalizeVersionDirectoryRegexes(Iterable<dynamic> patterns) {
+    final seen = <String>{};
+    final normalized = <String>[];
+    for (final value in patterns) {
+      if (value is! String) continue;
+      final pattern = value.trim();
+      if (pattern.isEmpty || !seen.add(pattern)) continue;
+      normalized.add(pattern);
+    }
+    return normalized;
+  }
+
+  void syncVersionDirectoryRegexesToCore({bool logErrors = true}) {
+    try {
+      RustCoreService.instance
+          .setVersionDirectoryRegexes(versionDirectoryRegexes);
+    } catch (error) {
+      if (logErrors) {
+        addDiagnosticLog('version regex sync failed: $error',
+            category: 'parse');
+      }
+    }
+  }
+
+  Future<void> setVersionDirectoryRegexes(List<String> patterns) async {
+    final normalized = normalizeVersionDirectoryRegexes(patterns);
+    RustCoreService.instance.setVersionDirectoryRegexes(normalized);
+    versionDirectoryRegexes
+      ..clear()
+      ..addAll(normalized);
+    addDiagnosticLog(
+      'version regex config updated: count=${versionDirectoryRegexes.length}',
+      category: 'parse',
+    );
+    await saveSettings();
+    notifyListeners();
+  }
+
+  Future<void> addVersionDirectoryRegex(String pattern) async {
+    await setVersionDirectoryRegexes([...versionDirectoryRegexes, pattern]);
+  }
+
+  Future<void> removeVersionDirectoryRegexAt(int index) async {
+    if (index < 0 || index >= versionDirectoryRegexes.length) return;
+    final next = List<String>.from(versionDirectoryRegexes)..removeAt(index);
+    await setVersionDirectoryRegexes(next);
+  }
+
   Future<void> setDanmuConfig(DanmuConfig config) async {
     danmuConfig = config.copyWith(
       apiBaseUrl: config.normalizedApiBaseUrl,
@@ -874,6 +934,8 @@ class AppStore extends ChangeNotifier {
         addDiagnosticLog(tmdbLastStatus, category: 'match');
         return;
       }
+      final previousFailedItems =
+          force ? const <String>{} : tmdbAutoMatchFailedItems(autoMatchState);
       final failedItems = <String>{};
       var matched = 0;
       var failed = 0;
@@ -894,6 +956,18 @@ class AppStore extends ChangeNotifier {
           if (skipped <= 20 || skipped % 500 == 0) {
             addDiagnosticLog(
               'TMDB skip cached sample=$skipped: ${describeMediaItem(item)}',
+              category: 'match',
+            );
+          }
+          continue;
+        }
+        final failedKey = tmdbAutoMatchFailedItemKey(item);
+        if (!force && previousFailedItems.contains(failedKey)) {
+          failedItems.add(failedKey);
+          skipped++;
+          if (skipped <= 20 || skipped % 500 == 0) {
+            addDiagnosticLog(
+              'TMDB skip previous failed sample=$skipped: ${describeMediaItem(item)}',
               category: 'match',
             );
           }
@@ -1725,4 +1799,10 @@ String tmdbAutoMatchFailedItemKey(MediaItem item) {
     item.groupPath,
     item.manualSeries,
   ].join('\t');
+}
+
+Set<String> tmdbAutoMatchFailedItems(Map<String, dynamic>? state) {
+  return (state?['failedItems'] as List<dynamic>? ?? const [])
+      .whereType<String>()
+      .toSet();
 }
