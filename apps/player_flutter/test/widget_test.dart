@@ -92,32 +92,6 @@ void main() {
     expect(groups.single.title, 'Movie Name');
   });
 
-  test('single library entry resolves playable item even when matched', () {
-    const item = MediaItem(
-      id: 'source:/media/Parent/Movie Name.mp4',
-      sourceId: 'source',
-      sourceName: 'source',
-      type: SourceType.local,
-      title: 'Movie Name',
-      uri: '/media/Parent/Movie Name.mp4',
-      folderTitle: 'Parent',
-    );
-    final store = AppStore()..addOrReplaceItem(item);
-    const entry = LibraryHomeEntry(
-      folderId: 1,
-      sourceId: 'source',
-      folderPath: '/media/Parent',
-      itemId: 'source:/media/Parent/Movie Name.mp4',
-      showId: 1,
-      tmdbId: 1,
-      title: 'Movie Name',
-      localFileCount: 1,
-      matched: true,
-    );
-
-    expect(singleLibraryEntryItem(store, entry), item);
-  });
-
   test('webdav video covers fetch one queued remote frame', () async {
     final id = DateTime.now().microsecondsSinceEpoch;
     final store = AppStore();
@@ -419,6 +393,62 @@ void main() {
     );
   });
 
+  test('library entry removal prefers explicitly selected single file', () {
+    final source = MediaSourceConfig.local(
+      id: 'source',
+      name: 'source',
+      directory: '/media',
+    ).copyWith(
+      selectedPaths: const ['/media/Parent/Movie.mp4', '/media/Parent/'],
+    );
+    const item = MediaItem(
+      id: 'source:/media/Parent/Movie.mp4',
+      sourceId: 'source',
+      sourceName: 'source',
+      type: SourceType.local,
+      title: 'Movie',
+      uri: '/media/Parent/Movie.mp4',
+      folderTitle: 'Parent',
+    );
+    const entry = LibraryHomeEntry(
+      folderId: 1,
+      sourceId: 'source',
+      folderPath: '/media/Parent',
+      itemId: 'source:/media/Parent/Movie.mp4',
+      showId: 1,
+      tmdbId: 1,
+      title: 'Movie',
+      localFileCount: 1,
+    );
+    final store = AppStore()
+      ..sources.add(source)
+      ..addOrReplaceItem(item);
+
+    expect(libraryEntryRemovePath(store, source, entry),
+        '/media/Parent/Movie.mp4');
+  });
+
+  test('media group removal uses covering selected folder', () {
+    final source = MediaSourceConfig.local(
+      id: 'source',
+      name: 'source',
+      directory: '/media',
+    ).copyWith(selectedPaths: const ['/media/Show']);
+    const item = MediaItem(
+      id: 'source:/media/Show/01.mp4',
+      sourceId: 'source',
+      sourceName: 'source',
+      type: SourceType.local,
+      title: '01',
+      uri: '/media/Show/01.mp4',
+      folderTitle: 'Show',
+      groupPath: '/media/Show',
+    );
+    final group = mediaFolderGroups(const [item]).single;
+
+    expect(mediaGroupRemovePath(source, group), '/media/Show');
+  });
+
   test('removing a webdav folder removes its scanned children', () async {
     const selectedPath = '/dav/Q Show/';
     final source = MediaSourceConfig.webdav(
@@ -465,6 +495,51 @@ void main() {
     expect(store.items, [kept]);
     expect(store.progress, isEmpty);
     expect(store.metadata, isEmpty);
+  });
+
+  test('removing a selection deletes cached video covers', () async {
+    const selectedPath = '/media/Show';
+    final source = MediaSourceConfig.local(
+      id: 'source',
+      name: 'source',
+      directory: '/media',
+    ).copyWith(selectedPaths: const [selectedPath]);
+    const item = MediaItem(
+      id: 'source:/media/Show/01.mp4',
+      sourceId: 'source',
+      sourceName: 'source',
+      type: SourceType.local,
+      title: '01',
+      uri: '/media/Show/01.mp4',
+      folderTitle: 'Show',
+    );
+    final dir = await Directory.systemTemp.createTemp('rplayer-cover-test-');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(appChannel, (call) async {
+      if (call.method == 'appFilesDir') return dir.path;
+      if (call.method == 'videoThumbnail') return Uint8List.fromList([1, 2, 3]);
+      throw MissingPluginException();
+    });
+    final store = AppStore()
+      ..sources.add(source)
+      ..items.add(item)
+      ..rebuildItemIndex();
+
+    try {
+      await store.videoCoverBytes(item);
+      final coverDir = Directory('${dir.path}/video_covers');
+
+      expect(coverDir.listSync(), isNotEmpty);
+
+      await store.removeSelectedPath(source, selectedPath);
+
+      expect(coverDir.existsSync(), isTrue);
+      expect(coverDir.listSync(), isEmpty);
+    } finally {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(appChannel, null);
+      await dir.delete(recursive: true);
+    }
   });
 
   test('removing a webdav folder clears stale scanned children', () async {

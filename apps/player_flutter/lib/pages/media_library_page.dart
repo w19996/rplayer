@@ -152,6 +152,8 @@ class MediaLibraryPage extends StatelessWidget {
               store: store,
               entry: entry,
               onTap: () => openLibraryEntry(context, store, entry),
+              onLongPress: () => unawaited(
+                  showRemoveLibraryEntryDialog(context, store, entry)),
             );
           },
         ),
@@ -190,6 +192,8 @@ class MediaLibraryPage extends StatelessWidget {
               coverItem: group.items.first,
               itemCount: group.items.length,
               onTap: () {},
+              onLongPress: () =>
+                  unawaited(showRemoveMediaGroupDialog(context, store, group)),
             );
           },
         ),
@@ -325,6 +329,8 @@ class _LibrarySearchDelegate extends SearchDelegate<void> {
             store: store,
             entry: entry,
             onTap: () => _openEntry(context, entry),
+            onLongPress: () =>
+                unawaited(showRemoveLibraryEntryDialog(context, store, entry)),
           );
         }
         final group = matchedPending[index - matchedHome.length];
@@ -338,6 +344,8 @@ class _LibrarySearchDelegate extends SearchDelegate<void> {
           coverItem: group.items.first,
           itemCount: group.items.length,
           onTap: () {},
+          onLongPress: () =>
+              unawaited(showRemoveMediaGroupDialog(context, store, group)),
         );
       },
     );
@@ -455,7 +463,7 @@ Future<_LibraryPageData> _loadLibraryPageData(AppStore store) async {
   ]);
   final home = values[0] as List<LibraryHomeEntry>;
   final recent = values[1] as List<LibraryRecentEntry>;
-  await store.preloadCachedTmdbImages([
+  unawaited(store.preloadCachedTmdbImages([
     for (final entry in home)
       if (entry.posterPath != null) MapEntry(entry.posterPath!, 'w500'),
     for (final entry in recent.take(12))
@@ -465,7 +473,7 @@ Future<_LibraryPageData> _loadLibraryPageData(AppStore store) async {
         MapEntry(entry.backdropPath!, 'w780')
       else if (entry.posterPath != null)
         MapEntry(entry.posterPath!, 'w500'),
-  ]);
+  ]));
   return _LibraryPageData(
     home: home,
     recent: recent,
@@ -477,11 +485,13 @@ class _LibraryDbTile extends StatelessWidget {
     required this.store,
     required this.entry,
     required this.onTap,
+    required this.onLongPress,
   });
 
   final AppStore store;
   final LibraryHomeEntry entry;
   final VoidCallback onTap;
+  final VoidCallback onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -490,6 +500,7 @@ class _LibraryDbTile extends StatelessWidget {
     return InkWell(
       borderRadius: BorderRadius.circular(8),
       onTap: onTap,
+      onLongPress: onLongPress,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -553,6 +564,177 @@ class _LibraryDbTile extends StatelessWidget {
       ),
     );
   }
+}
+
+Future<void> showRemoveLibraryEntryDialog(
+  BuildContext context,
+  AppStore store,
+  LibraryHomeEntry entry,
+) async {
+  final source = libraryEntrySource(store, entry);
+  final path =
+      source == null ? null : libraryEntryRemovePath(store, source, entry);
+  if (source == null || path == null) {
+    showSnack(context, '找不到可取消的添加路径');
+    return;
+  }
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('取消添加'),
+      content: Text('从媒体库移除“${entry.title}”？'),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('返回'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('取消添加'),
+        ),
+      ],
+    ),
+  );
+  if (confirmed != true) return;
+  try {
+    await store.removeSelectedPath(source, path);
+    if (context.mounted) showSnack(context, '已取消添加');
+  } catch (error) {
+    if (context.mounted) showSnack(context, '取消添加失败：$error');
+  }
+}
+
+Future<void> showRemoveMediaGroupDialog(
+  BuildContext context,
+  AppStore store,
+  MediaFolderGroup group,
+) async {
+  final source = mediaGroupSource(store, group);
+  final path = source == null ? null : mediaGroupRemovePath(source, group);
+  if (source == null || path == null) {
+    showSnack(context, '找不到可取消的添加路径');
+    return;
+  }
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('取消添加'),
+      content: Text('从媒体库移除“${group.title}”？'),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('返回'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('取消添加'),
+        ),
+      ],
+    ),
+  );
+  if (confirmed != true) return;
+  try {
+    await store.removeSelectedPath(source, path);
+    if (context.mounted) showSnack(context, '已取消添加');
+  } catch (error) {
+    if (context.mounted) showSnack(context, '取消添加失败：$error');
+  }
+}
+
+MediaSourceConfig? libraryEntrySource(AppStore store, LibraryHomeEntry entry) {
+  for (final source in store.sources) {
+    if (source.id == entry.sourceId) return source;
+  }
+  return null;
+}
+
+String? libraryEntryRemovePath(
+  AppStore store,
+  MediaSourceConfig source,
+  LibraryHomeEntry entry,
+) {
+  final item = entry.itemId == null ? null : store.itemById(entry.itemId!);
+  final itemPath = item == null ? null : sourceItemPath(source, item);
+  if (itemPath != null) {
+    final itemIdentity = sourcePathIdentity(source, itemPath, isDir: false);
+    for (final selected in source.selectedPaths) {
+      if (!sourceStoredPathIsDir(source, selected) &&
+          sourcePathIdentity(source, selected, isDir: false) == itemIdentity) {
+        return selected;
+      }
+    }
+  }
+
+  final targets = [
+    if (entry.folderPath.isNotEmpty) (path: entry.folderPath, isDir: true),
+    if (itemPath?.isNotEmpty == true) (path: itemPath!, isDir: false),
+  ];
+  final matches = source.selectedPaths
+      .where((selected) => targets.any(
+            (target) => sourcePathCovers(
+              source,
+              selected,
+              target.path,
+              containerIsDir: sourceStoredPathIsDir(source, selected),
+              targetIsDir: target.isDir,
+            ),
+          ))
+      .toList()
+    ..sort((a, b) => b.length.compareTo(a.length));
+  if (matches.isNotEmpty) return matches.first;
+  return itemPath?.isNotEmpty == true
+      ? itemPath
+      : (entry.folderPath.isEmpty ? null : entry.folderPath);
+}
+
+MediaSourceConfig? mediaGroupSource(AppStore store, MediaFolderGroup group) {
+  if (group.items.isEmpty) return null;
+  final sourceId = group.items.first.sourceId;
+  for (final source in store.sources) {
+    if (source.id == sourceId) return source;
+  }
+  return null;
+}
+
+String? mediaGroupRemovePath(
+  MediaSourceConfig source,
+  MediaFolderGroup group,
+) {
+  final itemPaths = [
+    for (final item in group.items) sourceItemPath(source, item),
+  ].where((path) => path.isNotEmpty).toList();
+  for (final itemPath in itemPaths) {
+    final identity = sourcePathIdentity(source, itemPath, isDir: false);
+    for (final selected in source.selectedPaths) {
+      if (!sourceStoredPathIsDir(source, selected) &&
+          sourcePathIdentity(source, selected, isDir: false) == identity) {
+        return selected;
+      }
+    }
+  }
+
+  final targets = [
+    for (final item in group.items)
+      if (item.groupPath.isNotEmpty) (path: item.groupPath, isDir: true),
+    for (final itemPath in itemPaths) (path: itemPath, isDir: false),
+  ];
+  final matches = source.selectedPaths
+      .where((selected) => targets.any(
+            (target) => sourcePathCovers(
+              source,
+              selected,
+              target.path,
+              containerIsDir: sourceStoredPathIsDir(source, selected),
+              targetIsDir: target.isDir,
+            ),
+          ))
+      .toList()
+    ..sort((a, b) => b.length.compareTo(a.length));
+  if (matches.isNotEmpty) return matches.first;
+  if (itemPaths.isNotEmpty) return itemPaths.first;
+  return group.representative.groupPath.isEmpty
+      ? null
+      : group.representative.groupPath;
 }
 
 MediaItem? _libraryEntryCoverItem(AppStore store, LibraryHomeEntry entry) {
@@ -810,25 +992,10 @@ void openLibraryEntry(
 
 void pushLibraryEntry(
     NavigatorState navigator, AppStore store, LibraryHomeEntry entry) {
-  final item = singleLibraryEntryItem(store, entry);
-  if (item != null) {
-    navigator.push(PageRouteBuilder<void>(
-      transitionDuration: Duration.zero,
-      reverseTransitionDuration: Duration.zero,
-      pageBuilder: (_, __, ___) => VideoPlayerPage(store: store, item: item),
-    ));
-    return;
-  }
   navigator.push(
     appSlideRoute(
         (_) => MediaGroupPage(store: store, groupKey: entry.folderKey)),
   );
-}
-
-MediaItem? singleLibraryEntryItem(AppStore store, LibraryHomeEntry entry) {
-  if (entry.localFileCount != 1) return null;
-  final itemId = entry.itemId;
-  return itemId == null ? null : store.itemById(itemId);
 }
 
 class MediaGroupPage extends StatefulWidget {

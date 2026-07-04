@@ -94,6 +94,7 @@ class MediaTile extends StatelessWidget {
       this.displayTitle,
       this.coverItem,
       this.itemCount = 1,
+      this.onLongPress,
       super.key});
 
   final MediaItem item;
@@ -104,6 +105,7 @@ class MediaTile extends StatelessWidget {
   final String? displayTitle;
   final MediaItem? coverItem;
   final int itemCount;
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -112,6 +114,7 @@ class MediaTile extends StatelessWidget {
     return InkWell(
       borderRadius: BorderRadius.circular(8),
       onTap: onTap,
+      onLongPress: onLongPress,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

@@ -476,10 +476,13 @@ class AppStore extends ChangeNotifier {
 
   Future<void> removeSource(MediaSourceConfig source) async {
     addDiagnosticLog('remove source: ${source.name}', category: 'source');
+    final removedItems =
+        items.where((item) => item.sourceId == source.id).toList();
     sources.removeWhere((value) => value.id == source.id);
     items.removeWhere((item) => item.sourceId == source.id);
     rebuildItemIndex();
     metadata.removeWhere((itemId, _) => itemId.startsWith('${source.id}:'));
+    await deleteVideoCoversForItems(removedItems);
     await save();
     notifyListeners();
   }
@@ -679,6 +682,7 @@ class AppStore extends ChangeNotifier {
     );
     replaceSource(updated);
     final removedItemIds = <String>{};
+    final removedItems = <MediaItem>[];
     items.removeWhere((item) {
       final itemPath = sourceItemPath(source, item);
       final groupPath = item.groupPath;
@@ -701,6 +705,7 @@ class AppStore extends ChangeNotifier {
         return false;
       }
       removedItemIds.add(item.id);
+      removedItems.add(item);
       return true;
     });
     addDiagnosticLog(
@@ -721,6 +726,7 @@ class AppStore extends ChangeNotifier {
     folderOrientations.removeWhere(
       (key, _) => !liveFolderKeys.contains(normalizeMediaFolderKey(key)),
     );
+    await deleteVideoCoversForItems(removedItems);
     await save();
     notifyListeners();
   }
@@ -1677,6 +1683,29 @@ class AppStore extends ChangeNotifier {
       return await request;
     } finally {
       _videoCoverRequests.remove(key);
+    }
+  }
+
+  Future<void> deleteVideoCoversForItems(Iterable<MediaItem> items) async {
+    final keys = items.map(_videoCoverKey).toSet();
+    if (keys.isEmpty) return;
+    for (final key in keys) {
+      _videoCoverCache.remove(key);
+    }
+    try {
+      final dir = await videoCoverDirectory;
+      var deleted = 0;
+      for (final key in keys) {
+        final file = File(p.join(dir.path, '$key.jpg'));
+        if (!await file.exists()) continue;
+        await file.delete();
+        deleted++;
+      }
+      if (deleted > 0) {
+        addDiagnosticLog('video covers deleted: $deleted', category: 'cache');
+      }
+    } catch (error) {
+      addDiagnosticLog('video cover cleanup failed: $error', category: 'cache');
     }
   }
 
