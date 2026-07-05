@@ -435,6 +435,10 @@ int? inferredEpisodeNumber(MediaItem item) {
   final title = item.title.trim();
   final seasonEpisode = RegExp(r'[Ss]\d{1,2}[Ee](\d{1,3})').firstMatch(title);
   if (seasonEpisode != null) return int.tryParse(seasonEpisode.group(1)!);
+  final episodeToken =
+      RegExp(r'(?:^|[^A-Za-z0-9])(?:[Ee][Pp]?)(\d{1,3})(?=$|[^A-Za-z0-9])')
+          .firstMatch(title);
+  if (episodeToken != null) return int.tryParse(episodeToken.group(1)!);
   final leading = RegExp(r'^0*(\d{1,3})(?:\D|$)').firstMatch(title);
   if (leading == null) return null;
   final value = int.tryParse(leading.group(1)!);

@@ -654,9 +654,10 @@ ParseInfo parse_text(const std::string& text, bool filename) {
         if (stripped.empty()) {
             continue;
         }
-        if (is_episode_marker_token(token) || parse_ep_token(token, ep)) {
+        const bool has_ep_value = parse_ep_token(token, ep);
+        if (has_ep_value || is_episode_marker_token(token)) {
             info.media_type_hint = "tv";
-            if (ep > 0 && !info.has_episode) {
+            if (has_ep_value && ep > 0 && !info.has_episode) {
                 info.has_episode = true;
                 info.episode = ep;
             }

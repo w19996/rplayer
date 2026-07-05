@@ -59,6 +59,28 @@ void main() {
     expect(explicitTmdbId(item), 1668);
   });
 
+  test('infers episode from generic EP tokens', () {
+    for (final entry in const {
+      'A-B-EP68': 68,
+      'Show.E126.1080p': 126,
+      'name-ep007': 7,
+      'S01E02': 2,
+    }.entries) {
+      expect(
+        inferredEpisodeNumber(MediaItem(
+          id: 'source:/media/Show/${entry.key}.mp4',
+          sourceId: 'source',
+          sourceName: 'source',
+          type: SourceType.local,
+          title: entry.key,
+          uri: '/media/Show/${entry.key}.mp4',
+          folderTitle: 'Show',
+        )),
+        entry.value,
+      );
+    }
+  });
+
   test('uses series folder when video is inside a season folder', () {
     const item = MediaItem(
       id: 'source:C:/media/Low IQ Crime/Season 1/S01E01.mkv',

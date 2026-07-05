@@ -164,6 +164,22 @@ mod tests {
     }
 
     #[test]
+    fn parses_ep_number_tokens() {
+        for (file_name, episode) in [
+            ("Example-EP126.mp4", 126),
+            ("Example.E126.1080p.mkv", 126),
+            ("example-ep007.mp4", 7),
+            ("A-B-EP68.mp4", 68),
+        ] {
+            let identity = parse_media_identity("Example Show", file_name).unwrap();
+
+            assert_eq!(identity.kind, MediaKind::TvEpisode);
+            assert_eq!(identity.season, Some(1));
+            assert_eq!(identity.episode, Some(episode));
+        }
+    }
+
+    #[test]
     fn infers_episode_from_numeric_file_in_series_folder() {
         let identity = parse_media_identity("Example Show", "01~4K.mp4").unwrap();
 
@@ -301,6 +317,18 @@ mod tests {
             "Quark/Small Folder/Example Show"
         );
         assert_eq!(candidates[0].episode_number, Some(141));
+    }
+
+    #[test]
+    fn keeps_ep_number_token_files_under_their_direct_parent() {
+        let candidates = parse_media_path_candidates(
+            "webdav",
+            "/Quark/Small Folder/Example Show/Example-EP126.mp4",
+        )
+        .unwrap();
+
+        assert_eq!(candidates[0].title, "Example Show");
+        assert_eq!(candidates[0].episode_number, Some(126));
     }
 
     #[test]
