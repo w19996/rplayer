@@ -62,14 +62,12 @@ class ProfilePage extends StatelessWidget {
                 ),
                 ProfileActionCard(
                   icon: Icons.code_outlined,
-                  title: '版本匹配正则',
-                  subtitle: store.versionDirectoryRegexes.isEmpty
-                      ? '未添加自定义版本目录正则'
-                      : '${store.versionDirectoryRegexes.length} 条自定义规则',
+                  title: '自定义规则',
+                  subtitle:
+                      '版本 ${store.versionDirectoryRegexes.length} 条 / 集数 ${store.episodeRegexes.length} 条',
                   actionText: '进入',
                   onTap: () => Navigator.of(context).push(
-                    appSlideRoute(
-                        (_) => VersionRegexSettingsPage(store: store)),
+                    appSlideRoute((_) => CustomRulesSettingsPage(store: store)),
                   ),
                 ),
                 ProfileActionCard(
@@ -173,6 +171,51 @@ class TmdbSettingsPage extends StatelessWidget {
   }
 }
 
+class CustomRulesSettingsPage extends StatelessWidget {
+  const CustomRulesSettingsPage({required this.store, super.key});
+
+  final AppStore store;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('自定义规则')),
+      body: AnimatedBuilder(
+        animation: store,
+        builder: (context, _) {
+          return ListView(
+            padding: const EdgeInsets.all(22),
+            children: [
+              ProfileActionCard(
+                icon: Icons.folder_copy_outlined,
+                title: '版本目录正则',
+                subtitle: store.versionDirectoryRegexes.isEmpty
+                    ? '未添加自定义版本目录正则'
+                    : '${store.versionDirectoryRegexes.length} 条自定义规则',
+                actionText: '进入',
+                onTap: () => Navigator.of(context).push(
+                  appSlideRoute((_) => VersionRegexSettingsPage(store: store)),
+                ),
+              ),
+              ProfileActionCard(
+                icon: Icons.pin_outlined,
+                title: '集数正则',
+                subtitle: store.episodeRegexes.isEmpty
+                    ? '未添加自定义集数正则'
+                    : '${store.episodeRegexes.length} 条自定义规则',
+                actionText: '进入',
+                onTap: () => Navigator.of(context).push(
+                  appSlideRoute((_) => EpisodeRegexSettingsPage(store: store)),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
 class VersionRegexSettingsPage extends StatefulWidget {
   const VersionRegexSettingsPage({required this.store, super.key});
 
@@ -237,6 +280,127 @@ class _VersionRegexSettingsPageState extends State<VersionRegexSettingsPage> {
                 decoration: InputDecoration(
                   labelText: '目录正则',
                   helperText: '匹配到的目录会作为版本目录',
+                  suffixIcon: IconButton(
+                    tooltip: '添加',
+                    icon: saving
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.add),
+                    onPressed: saving ? null : addPattern,
+                  ),
+                ),
+                textInputAction: TextInputAction.done,
+                onSubmitted: (_) => addPattern(),
+              ),
+              const SizedBox(height: 18),
+              if (patterns.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 24),
+                  child: Center(
+                    child: Text(
+                      '暂无自定义正则',
+                      style: TextStyle(color: Colors.grey),
+                    ),
+                  ),
+                )
+              else
+                for (final entry in patterns.indexed)
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 10),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFFE7EAF0)),
+                    ),
+                    child: ListTile(
+                      title: Text(
+                        entry.$2,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      trailing: IconButton(
+                        tooltip: '删除',
+                        icon: const Icon(Icons.delete_outline),
+                        onPressed:
+                            saving ? null : () => removePattern(entry.$1),
+                      ),
+                    ),
+                  ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class EpisodeRegexSettingsPage extends StatefulWidget {
+  const EpisodeRegexSettingsPage({required this.store, super.key});
+
+  final AppStore store;
+
+  @override
+  State<EpisodeRegexSettingsPage> createState() =>
+      _EpisodeRegexSettingsPageState();
+}
+
+class _EpisodeRegexSettingsPageState extends State<EpisodeRegexSettingsPage> {
+  final controller = TextEditingController();
+  bool saving = false;
+
+  @override
+  void dispose() {
+    controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> addPattern() async {
+    final pattern = controller.text.trim();
+    if (pattern.isEmpty || saving) return;
+    setState(() => saving = true);
+    try {
+      await widget.store.addEpisodeRegex(pattern);
+      controller.clear();
+      if (mounted) showSnack(context, '集数正则已保存，重新扫描后生效');
+    } catch (error) {
+      if (mounted) showSnack(context, '集数正则无效：$error');
+    } finally {
+      if (mounted) setState(() => saving = false);
+    }
+  }
+
+  Future<void> removePattern(int index) async {
+    if (saving) return;
+    setState(() => saving = true);
+    try {
+      await widget.store.removeEpisodeRegexAt(index);
+      if (mounted) showSnack(context, '集数正则已删除，重新扫描后生效');
+    } catch (error) {
+      if (mounted) showSnack(context, '删除失败：$error');
+    } finally {
+      if (mounted) setState(() => saving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('集数匹配正则')),
+      body: AnimatedBuilder(
+        animation: widget.store,
+        builder: (context, _) {
+          final patterns = widget.store.episodeRegexes;
+          return ListView(
+            padding: const EdgeInsets.all(22),
+            children: [
+              TextField(
+                controller: controller,
+                decoration: InputDecoration(
+                  labelText: '文件名正则',
+                  helperText: r'第一个捕获组作为集数，例如 ^Part-(\d+)$',
                   suffixIcon: IconButton(
                     tooltip: '添加',
                     icon: saving

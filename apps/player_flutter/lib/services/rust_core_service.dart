@@ -29,6 +29,7 @@ class RustCoreService {
   _RustTwoStringDart? _parseMediaPathCandidatesJson;
   _RustTwoStringDart? _mediaSeriesTitleJson;
   _RustStringDart? _setVersionDirectoryRegexesJson;
+  _RustStringDart? _setEpisodeRegexesJson;
   _RustTwoStringDart? _tmdbGetJson;
   _RustStringDart? _danmuLoadJson;
   _RustStringDart? _danmuVisibleJson;
@@ -143,6 +144,14 @@ class RustCoreService {
       throw StateError('Rust media parser is missing version regex support');
     }
     _callString(_setVersionDirectoryRegexesJson, [jsonEncode(patterns)]);
+  }
+
+  void setEpisodeRegexes(List<String> patterns) {
+    _ensureAvailable();
+    if (_setEpisodeRegexesJson == null) {
+      throw StateError('Rust media parser is missing episode regex support');
+    }
+    _callString(_setEpisodeRegexesJson, [jsonEncode(patterns)]);
   }
 
   String tmdbGetJson(String url, String accessToken) {
@@ -478,6 +487,8 @@ class RustCoreService {
           _lookupOptionalTwoString('player_core_media_series_title_json');
       _setVersionDirectoryRegexesJson = _lookupOptionalString(
           'player_core_set_version_directory_regexes_json');
+      _setEpisodeRegexesJson =
+          _lookupOptionalString('player_core_set_episode_regexes_json');
       _tmdbGetJson = _library!
           .lookupFunction<_RustTwoStringFn, _RustTwoStringDart>(
               'player_core_tmdb_get_json');

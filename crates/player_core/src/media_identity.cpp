@@ -2,6 +2,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <regex>
 #include <sstream>
 #include <string>
@@ -393,13 +394,31 @@ std::vector<std::string> split_lines(const std::string& input) {
     return lines;
 }
 
-std::vector<std::regex>& custom_version_directory_regexes() {
-    static std::vector<std::regex> patterns;
+using RegexList = std::vector<std::regex>;
+
+std::shared_ptr<const RegexList>& custom_version_directory_regexes_ref() {
+    static std::shared_ptr<const RegexList> patterns = std::make_shared<RegexList>();
     return patterns;
 }
 
-std::string set_custom_version_directory_regexes(const std::string& patterns_text) {
-    std::vector<std::regex> compiled;
+std::shared_ptr<const RegexList>& custom_episode_regexes_ref() {
+    static std::shared_ptr<const RegexList> patterns = std::make_shared<RegexList>();
+    return patterns;
+}
+
+std::shared_ptr<const RegexList> custom_version_directory_regexes() {
+    return std::atomic_load(&custom_version_directory_regexes_ref());
+}
+
+std::shared_ptr<const RegexList> custom_episode_regexes() {
+    return std::atomic_load(&custom_episode_regexes_ref());
+}
+
+std::string set_custom_regexes(
+    const std::string& patterns_text,
+    const std::string& label,
+    std::shared_ptr<const RegexList>& target) {
+    auto compiled = std::make_shared<RegexList>();
     int index = 0;
     for (const auto& pattern : split_lines(patterns_text)) {
         if (pattern.empty()) {
@@ -407,18 +426,27 @@ std::string set_custom_version_directory_regexes(const std::string& patterns_tex
         }
         ++index;
         if (pattern.size() > 512) {
-            return "invalid version directory regex #" + std::to_string(index) + ": pattern is too long";
+            return "invalid " + label + " regex #" + std::to_string(index) + ": pattern is too long";
         }
         try {
-            compiled.emplace_back(pattern, std::regex_constants::icase);
+            compiled->emplace_back(pattern, std::regex_constants::icase);
         } catch (const std::regex_error& error) {
-            return "invalid version directory regex #" + std::to_string(index) +
+            return "invalid " + label + " regex #" + std::to_string(index) +
                    ": " + pattern + " (" + error.what() + ")";
         }
     }
 
-    custom_version_directory_regexes() = std::move(compiled);
+    const std::shared_ptr<const RegexList> frozen = compiled;
+    std::atomic_store(&target, frozen);
     return std::string();
+}
+
+std::string set_custom_version_directory_regexes(const std::string& patterns_text) {
+    return set_custom_regexes(patterns_text, "version directory", custom_version_directory_regexes_ref());
+}
+
+std::string set_custom_episode_regexes(const std::string& patterns_text) {
+    return set_custom_regexes(patterns_text, "episode", custom_episode_regexes_ref());
 }
 
 bool is_version_directory_by_regex(const std::string& text, std::vector<std::string>& version_tags) {
@@ -438,10 +466,26 @@ bool is_version_directory_by_regex(const std::string& text, std::vector<std::str
             return true;
         }
     }
-    for (const auto& pattern : custom_version_directory_regexes()) {
+    for (const auto& pattern : *custom_version_directory_regexes()) {
         if (std::regex_search(normalized, pattern)) {
             version_tags.push_back(trim(text));
             return true;
+        }
+    }
+    return false;
+}
+
+bool infer_episode_from_custom_regexes(const std::string& text, int& episode) {
+    const std::string normalized = normalize_text_separators(text);
+    for (const auto& pattern : *custom_episode_regexes()) {
+        std::smatch match;
+        if (std::regex_search(normalized, match, pattern)) {
+            const std::string number = match.size() > 1 ? match[1].str() : match[0].str();
+            int parsed = 0;
+            if (parse_u16_token(number, parsed) && parsed > 0 && parsed <= 999) {
+                episode = parsed;
+                return true;
+            }
         }
     }
     return false;
@@ -633,6 +677,13 @@ ParseInfo parse_text(const std::string& text, bool filename) {
     if (!info.has_episode && parse_chinese_between(stem, "第", "集", episode_from_cn)) {
         info.has_episode = true;
         info.episode = episode_from_cn;
+        info.media_type_hint = "tv";
+    }
+
+    int episode_from_custom = 0;
+    if (!info.has_episode && infer_episode_from_custom_regexes(stem, episode_from_custom)) {
+        info.has_episode = true;
+        info.episode = episode_from_custom;
         info.media_type_hint = "tv";
     }
 
@@ -1025,6 +1076,10 @@ extern "C" char* player_core_cpp_media_series_title_json(
 
 extern "C" char* player_core_cpp_set_version_directory_regexes(const char* patterns) {
     return owned_c_string(set_custom_version_directory_regexes(input_string(patterns)));
+}
+
+extern "C" char* player_core_cpp_set_episode_regexes(const char* patterns) {
+    return owned_c_string(set_custom_episode_regexes(input_string(patterns)));
 }
 
 extern "C" void player_core_cpp_free_string(char* value) {

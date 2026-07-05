@@ -21,6 +21,7 @@ class AppStore extends ChangeNotifier {
   DanmuConfig danmuConfig = const DanmuConfig();
   SyncConfig? syncConfig;
   final List<String> versionDirectoryRegexes = [];
+  final List<String> episodeRegexes = [];
   bool loaded = false;
   bool metadataRefreshing = false;
   int metadataRevision = 0;
@@ -335,6 +336,7 @@ class AppStore extends ChangeNotifier {
       'danmuConfig': danmuConfig.toJson(),
       'syncConfig': syncConfig?.toJson(),
       'versionDirectoryRegexes': versionDirectoryRegexes,
+      'episodeRegexes': episodeRegexes,
       'diagnosticLoggingEnabled': diagnosticLoggingEnabled,
     });
   }
@@ -378,9 +380,13 @@ class AppStore extends ChangeNotifier {
         sync == null ? null : SyncConfig.fromJson(sync as Map<String, dynamic>);
     versionDirectoryRegexes
       ..clear()
-      ..addAll(normalizeVersionDirectoryRegexes(
+      ..addAll(normalizeRegexPatterns(
           json['versionDirectoryRegexes'] as List<dynamic>? ?? const []));
-    syncVersionDirectoryRegexesToCore(logErrors: false);
+    episodeRegexes
+      ..clear()
+      ..addAll(normalizeRegexPatterns(
+          json['episodeRegexes'] as List<dynamic>? ?? const []));
+    syncParserRegexesToCore(logErrors: false);
     diagnosticLoggingEnabled =
         json['diagnosticLoggingEnabled'] as bool? ?? false;
   }
@@ -546,7 +552,7 @@ class AppStore extends ChangeNotifier {
   Future<List<MediaItem>> scanSourceItems(MediaSourceConfig source) async {
     final stopwatch = Stopwatch()..start();
     addDiagnosticLog('scan source started: ${source.name}', category: 'scan');
-    syncVersionDirectoryRegexesToCore();
+    syncParserRegexesToCore();
     var count = 0;
     final scanned = <MediaItem>[];
     await for (final item in scanner.scanSourceStream(source)) {
@@ -577,7 +583,7 @@ class AppStore extends ChangeNotifier {
       seriesPaths: seriesPaths,
     );
     replaceSource(updated);
-    syncVersionDirectoryRegexesToCore();
+    syncParserRegexesToCore();
 
     if (entry.isDir) {
       final client = WebdavClient.fromSource(updated);
@@ -616,7 +622,7 @@ class AppStore extends ChangeNotifier {
       seriesPaths: seriesPaths,
     );
     replaceSource(updated);
-    syncVersionDirectoryRegexesToCore();
+    syncParserRegexesToCore();
 
     if (entry.isDir) {
       var count = 0;
@@ -909,7 +915,7 @@ class AppStore extends ChangeNotifier {
     unawaited(refreshMissingMetadata());
   }
 
-  List<String> normalizeVersionDirectoryRegexes(Iterable<dynamic> patterns) {
+  List<String> normalizeRegexPatterns(Iterable<dynamic> patterns) {
     final seen = <String>{};
     final normalized = <String>[];
     for (final value in patterns) {
@@ -921,20 +927,20 @@ class AppStore extends ChangeNotifier {
     return normalized;
   }
 
-  void syncVersionDirectoryRegexesToCore({bool logErrors = true}) {
+  void syncParserRegexesToCore({bool logErrors = true}) {
     try {
       RustCoreService.instance
           .setVersionDirectoryRegexes(versionDirectoryRegexes);
+      RustCoreService.instance.setEpisodeRegexes(episodeRegexes);
     } catch (error) {
       if (logErrors) {
-        addDiagnosticLog('version regex sync failed: $error',
-            category: 'parse');
+        addDiagnosticLog('parser regex sync failed: $error', category: 'parse');
       }
     }
   }
 
   Future<void> setVersionDirectoryRegexes(List<String> patterns) async {
-    final normalized = normalizeVersionDirectoryRegexes(patterns);
+    final normalized = normalizeRegexPatterns(patterns);
     RustCoreService.instance.setVersionDirectoryRegexes(normalized);
     versionDirectoryRegexes
       ..clear()
@@ -955,6 +961,30 @@ class AppStore extends ChangeNotifier {
     if (index < 0 || index >= versionDirectoryRegexes.length) return;
     final next = List<String>.from(versionDirectoryRegexes)..removeAt(index);
     await setVersionDirectoryRegexes(next);
+  }
+
+  Future<void> setEpisodeRegexes(List<String> patterns) async {
+    final normalized = normalizeRegexPatterns(patterns);
+    RustCoreService.instance.setEpisodeRegexes(normalized);
+    episodeRegexes
+      ..clear()
+      ..addAll(normalized);
+    addDiagnosticLog(
+      'episode regex config updated: count=${episodeRegexes.length}',
+      category: 'parse',
+    );
+    await saveSettings();
+    notifyListeners();
+  }
+
+  Future<void> addEpisodeRegex(String pattern) async {
+    await setEpisodeRegexes([...episodeRegexes, pattern]);
+  }
+
+  Future<void> removeEpisodeRegexAt(int index) async {
+    if (index < 0 || index >= episodeRegexes.length) return;
+    final next = List<String>.from(episodeRegexes)..removeAt(index);
+    await setEpisodeRegexes(next);
   }
 
   Future<void> setDanmuConfig(DanmuConfig config) async {

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -79,6 +80,21 @@ void main() {
         entry.value,
       );
     }
+  });
+
+  test('persists custom episode regex settings', () {
+    final store = AppStore();
+
+    store.importSettingsJson(const {
+      'episodeRegexes': [' ^Part-(\\d+)\$ ', '^Part-(\\d+)\$'],
+    });
+
+    expect(store.episodeRegexes, [r'^Part-(\d+)$']);
+    expect(
+      (jsonDecode(store.exportSettings())
+          as Map<String, dynamic>)['episodeRegexes'],
+      [r'^Part-(\d+)$'],
+    );
   });
 
   test('uses series folder when video is inside a season folder', () {

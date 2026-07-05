@@ -74,6 +74,24 @@ pub fn media_series_title_json(source_type: &str, path: &str) -> Result<String> 
 pub fn set_version_directory_regexes_json(patterns_json: &str) -> Result<String> {
     let patterns: Vec<String> = serde_json::from_str(patterns_json)
         .context("failed to decode version directory regexes")?;
+    set_regexes_json(patterns, "version directory", |patterns_text| unsafe {
+        player_core_cpp_set_version_directory_regexes(patterns_text)
+    })
+}
+
+pub fn set_episode_regexes_json(patterns_json: &str) -> Result<String> {
+    let patterns: Vec<String> =
+        serde_json::from_str(patterns_json).context("failed to decode episode regexes")?;
+    set_regexes_json(patterns, "episode", |patterns_text| unsafe {
+        player_core_cpp_set_episode_regexes(patterns_text)
+    })
+}
+
+fn set_regexes_json(
+    patterns: Vec<String>,
+    label: &str,
+    run: impl FnOnce(*const c_char) -> *mut c_char,
+) -> Result<String> {
     let mut normalized = Vec::new();
     for pattern in patterns {
         let trimmed = pattern.trim();
@@ -81,15 +99,13 @@ pub fn set_version_directory_regexes_json(patterns_json: &str) -> Result<String>
             continue;
         }
         if trimmed.contains('\n') || trimmed.contains('\r') {
-            anyhow::bail!("version directory regex cannot contain line breaks");
+            anyhow::bail!("{label} regex cannot contain line breaks");
         }
         normalized.push(trimmed.to_string());
     }
-    let patterns_text =
-        CString::new(normalized.join("\n")).context("version directory regex contains nul byte")?;
-    let error = cpp_string(|| unsafe {
-        player_core_cpp_set_version_directory_regexes(patterns_text.as_ptr())
-    })?;
+    let patterns_text = CString::new(normalized.join("\n"))
+        .with_context(|| format!("{label} regex contains nul byte"))?;
+    let error = cpp_string(|| run(patterns_text.as_ptr()))?;
     if error.trim().is_empty() {
         Ok("{}".to_string())
     } else {
@@ -126,6 +142,7 @@ extern "C" {
         path: *const c_char,
     ) -> *mut c_char;
     fn player_core_cpp_set_version_directory_regexes(patterns: *const c_char) -> *mut c_char;
+    fn player_core_cpp_set_episode_regexes(patterns: *const c_char) -> *mut c_char;
     fn player_core_cpp_free_string(value: *mut c_char);
 }
 
@@ -391,6 +408,18 @@ mod tests {
             "D:/Shows/Example Show/My Edition"
         );
         assert_eq!(candidates[0].episode_number, Some(1));
+    }
+
+    #[test]
+    fn applies_custom_episode_regexes() {
+        set_episode_regexes_json(r#"["^Part-(\\d+)$"]"#).unwrap();
+        let candidates =
+            parse_media_path_candidates("local", "D:/Shows/Example Show/Part-68.mp4").unwrap();
+        set_episode_regexes_json("[]").unwrap();
+
+        assert_eq!(candidates[0].title, "Example Show");
+        assert_eq!(candidates[0].season_number, Some(1));
+        assert_eq!(candidates[0].episode_number, Some(68));
     }
 
     #[test]
