@@ -73,8 +73,8 @@ class _LocalBrowserPageState extends State<LocalBrowserPage> {
     }
   }
 
-  bool isSelected(LocalEntry entry) =>
-      widget.store.sourcePathAdded(source, entry.path, isDir: entry.isDir);
+  SourcePathSelectionState selectionState(LocalEntry entry) => widget.store
+      .sourcePathSelectionState(source, entry.path, isDir: entry.isDir);
 
   bool isManualSeries(LocalEntry entry) =>
       sourceManualSeriesPath(source, entry.path, isDir: entry.isDir);
@@ -158,7 +158,7 @@ class _LocalBrowserPageState extends State<LocalBrowserPage> {
                     subtitle:
                         Text(entry.isDir ? '文件夹' : readableBytes(entry.size)),
                     trailing: SourceEntryMenu(
-                      selected: isSelected(entry),
+                      selectionState: selectionState(entry),
                       manualSeries: isManualSeries(entry),
                       enabled:
                           !adding && (entry.isDir || isVideoName(entry.name)),

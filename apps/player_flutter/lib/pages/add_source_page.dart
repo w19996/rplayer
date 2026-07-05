@@ -222,9 +222,10 @@ class _WebdavBrowserPageState extends State<WebdavBrowserPage> {
     }
   }
 
-  bool isSelected(WebdavEntry entry) {
+  SourcePathSelectionState selectionState(WebdavEntry entry) {
     final entryPath = entry.isDir ? normalizeRemoteDir(entry.path) : entry.path;
-    return widget.store.sourcePathAdded(source, entryPath, isDir: entry.isDir);
+    return widget.store
+        .sourcePathSelectionState(source, entryPath, isDir: entry.isDir);
   }
 
   bool isManualSeries(WebdavEntry entry) {
@@ -302,8 +303,9 @@ class _WebdavBrowserPageState extends State<WebdavBrowserPage> {
                 final entry = entries[index - (hasParent ? 1 : 0)];
                 final entryPath =
                     entry.isDir ? normalizeRemoteDir(entry.path) : entry.path;
-                final selected = widget.store
-                    .sourcePathAdded(source, entryPath, isDir: entry.isDir);
+                final selected = widget.store.sourcePathSelectionState(
+                    source, entryPath,
+                    isDir: entry.isDir);
                 return ListTile(
                   leading:
                       Icon(entry.isDir ? Icons.folder : Icons.movie_outlined),
@@ -312,7 +314,7 @@ class _WebdavBrowserPageState extends State<WebdavBrowserPage> {
                   subtitle:
                       Text(entry.isDir ? '文件夹' : readableBytes(entry.size)),
                   trailing: SourceEntryMenu(
-                    selected: selected,
+                    selectionState: selected,
                     manualSeries: isManualSeries(entry),
                     enabled:
                         !adding && (entry.isDir || isVideoName(entry.name)),

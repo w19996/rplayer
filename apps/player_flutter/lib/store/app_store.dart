@@ -1,5 +1,7 @@
 part of 'package:player_flutter/main.dart';
 
+enum SourcePathSelectionState { none, partial, full }
+
 class AppStore extends ChangeNotifier {
   AppStore({this.scanner = const MediaScanService()});
 
@@ -34,6 +36,7 @@ class AppStore extends ChangeNotifier {
   final Set<String> _imageCacheMetadataWriteKeys = {};
   Future<void> _remoteVideoCoverChain = Future.value();
   int _lastScanNotifyMs = 0;
+  int _libraryRevision = 0;
   int _pathParseLogCount = 0;
   static const int _diagnosticLogPreviewLimit = 100;
 
@@ -91,7 +94,6 @@ class AppStore extends ChangeNotifier {
       'app load finished: sources=${sources.length}, items=${items.length}, metadata=${metadata.length}',
       category: 'app',
     );
-    unawaited(refreshMissingMetadata());
   }
 
   Future<void> save() async {
@@ -478,13 +480,26 @@ class AppStore extends ChangeNotifier {
     addDiagnosticLog('remove source: ${source.name}', category: 'source');
     final removedItems =
         items.where((item) => item.sourceId == source.id).toList();
+    final removedItemIds = removedItems.map((item) => item.id).toSet();
     sources.removeWhere((value) => value.id == source.id);
     items.removeWhere((item) => item.sourceId == source.id);
     rebuildItemIndex();
-    metadata.removeWhere((itemId, _) => itemId.startsWith('${source.id}:'));
+    markLibraryChanged();
+    for (final itemId in removedItemIds) {
+      progress.remove(itemId);
+      durations.remove(itemId);
+      lastPlayedAt.remove(itemId);
+      metadata.remove(itemId);
+    }
+    final liveFolderKeys = mediaFolderGroups(items)
+        .map((group) => normalizeMediaFolderKey(group.key))
+        .toSet();
+    folderOrientations.removeWhere(
+      (key, _) => !liveFolderKeys.contains(normalizeMediaFolderKey(key)),
+    );
+    notifyListeners();
     await deleteVideoCoversForItems(removedItems);
     await save();
-    notifyListeners();
   }
 
   Future<void> rescanAll({bool forceMetadataRefresh = false}) async {
@@ -498,6 +513,7 @@ class AppStore extends ChangeNotifier {
       ..clear()
       ..addAll(scanned);
     rebuildItemIndex();
+    markLibraryChanged();
     metadata.removeWhere((itemId, _) => !_itemIndexById.containsKey(itemId));
     await save();
     notifyListeners();
@@ -511,6 +527,7 @@ class AppStore extends ChangeNotifier {
     items.addAll(scanned);
     items.sort(compareMediaItems);
     rebuildItemIndex();
+    markLibraryChanged();
     metadata.removeWhere((itemId, _) => !_itemIndexById.containsKey(itemId));
     await save();
     notifyListeners();
@@ -579,6 +596,7 @@ class AppStore extends ChangeNotifier {
     }
     items.sort(compareMediaItems);
     rebuildItemIndex();
+    markLibraryChanged();
     await save();
     notifyListeners();
     unawaited(refreshMissingMetadata());
@@ -615,6 +633,7 @@ class AppStore extends ChangeNotifier {
     }
     items.sort(compareMediaItems);
     rebuildItemIndex();
+    markLibraryChanged();
     await save();
     notifyListeners();
     unawaited(refreshMissingMetadata());
@@ -670,17 +689,6 @@ class AppStore extends ChangeNotifier {
             : sourcePathIdentity(source, selectedPath);
     final pathIsDir = sourceStoredPathIsDir(source, normalizedPath);
     final removedSelectedPaths = selectedPathsCoveredBy(source, normalizedPath);
-    final selectedPaths = source.selectedPaths
-        .where((path) => !removedSelectedPaths.contains(path))
-        .toList();
-    final seriesPaths = source.seriesPaths
-        .where((path) => !removedSelectedPaths.contains(path))
-        .toList();
-    final updated = source.copyWith(
-      selectedPaths: selectedPaths..sort(),
-      seriesPaths: seriesPaths..sort(),
-    );
-    replaceSource(updated);
     final removedItemIds = <String>{};
     final removedItems = <MediaItem>[];
     items.removeWhere((item) {
@@ -712,7 +720,37 @@ class AppStore extends ChangeNotifier {
       'remove selected path removed items=${removedItemIds.length}',
       category: 'scan',
     );
+    bool keepSelectedPath(String path) {
+      if (removedSelectedPaths.contains(path)) return false;
+      final selectedPathIsDir = sourceStoredPathIsDir(source, path);
+      if (!sourcePathCovers(
+        source,
+        path,
+        normalizedPath,
+        containerIsDir: selectedPathIsDir,
+        targetIsDir: pathIsDir,
+      )) {
+        return true;
+      }
+      return items.any((item) =>
+          item.sourceId == source.id &&
+          sourcePathCovers(
+            source,
+            path,
+            sourceItemPath(source, item),
+            containerIsDir: selectedPathIsDir,
+            targetIsDir: false,
+          ));
+    }
+
+    final selectedPaths = source.selectedPaths.where(keepSelectedPath).toList();
+    final seriesPaths = source.seriesPaths.where(keepSelectedPath).toList();
+    replaceSource(source.copyWith(
+      selectedPaths: selectedPaths..sort(),
+      seriesPaths: seriesPaths..sort(),
+    ));
     rebuildItemIndex();
+    markLibraryChanged();
     for (final itemId in removedItemIds) {
       progress.remove(itemId);
       durations.remove(itemId);
@@ -759,6 +797,14 @@ class AppStore extends ChangeNotifier {
     }
   }
 
+  void markLibraryChanged() {
+    _libraryRevision++;
+    if (!metadataRefreshing) return;
+    metadataRefreshing = false;
+    tmdbLastStatus = 'TMDB refresh cancelled: library changed';
+    addDiagnosticLog(tmdbLastStatus, category: 'match');
+  }
+
   String itemStoredPath(MediaItem item) {
     if (item.type == SourceType.webdav) {
       final prefix = '${item.sourceId}:';
@@ -790,23 +836,47 @@ class AppStore extends ChangeNotifier {
     MediaSourceConfig source,
     String path, {
     required bool isDir,
+  }) =>
+      sourcePathSelectionState(source, path, isDir: isDir) !=
+      SourcePathSelectionState.none;
+
+  SourcePathSelectionState sourcePathSelectionState(
+    MediaSourceConfig source,
+    String path, {
+    required bool isDir,
   }) {
     final identity = sourcePathIdentity(source, path, isDir: isDir);
-    if (source.selectedPaths.contains(identity)) return true;
+    if (source.selectedPaths.contains(identity)) {
+      return SourcePathSelectionState.full;
+    }
     final sourcePaths = _itemPathsBySource[source.id];
-    if (sourcePaths == null || sourcePaths.isEmpty) return false;
-    if (!isDir) return sourcePaths.contains(identity);
-    return sourcePaths.any((itemPath) {
-      return isDir
-          ? sourcePathCovers(
-              source,
-              identity,
-              itemPath,
-              containerIsDir: true,
-              targetIsDir: false,
-            )
-          : itemPath == identity;
-    });
+    if (!isDir) {
+      return sourcePaths?.contains(identity) == true
+          ? SourcePathSelectionState.full
+          : SourcePathSelectionState.none;
+    }
+    final hasSelectedChild = source.selectedPaths.any((selectedPath) =>
+        selectedPath != identity &&
+        sourcePathCovers(
+          source,
+          identity,
+          selectedPath,
+          containerIsDir: true,
+          targetIsDir: sourceStoredPathIsDir(source, selectedPath),
+        ));
+    final hasVideoChild = sourcePaths?.any((itemPath) {
+          return sourcePathCovers(
+            source,
+            identity,
+            itemPath,
+            containerIsDir: true,
+            targetIsDir: false,
+          );
+        }) ==
+        true;
+    return hasSelectedChild || hasVideoChild
+        ? SourcePathSelectionState.partial
+        : SourcePathSelectionState.none;
   }
 
   MediaItem? itemById(String id) {
@@ -919,6 +989,7 @@ class AppStore extends ChangeNotifier {
       return;
     }
     final stopwatch = Stopwatch()..start();
+    final libraryRevision = _libraryRevision;
     metadataRefreshing = true;
     tmdbLastStatus = 'TMDB refresh started';
     addDiagnosticLog(
@@ -998,6 +1069,7 @@ class AppStore extends ChangeNotifier {
         category: 'match',
       );
 
+      final backgroundWrites = <Future<void>>[];
       var cursor = 0;
       var processedGroups = 0;
       var lastMetadataNotifyMs = DateTime.now().millisecondsSinceEpoch;
@@ -1005,7 +1077,7 @@ class AppStore extends ChangeNotifier {
         while (true) {
           if (cursor >= targetGroups.length) return;
           final group = targetGroups[cursor++];
-          if (!metadataRefreshing) return;
+          if (!metadataRefreshStillCurrent(libraryRevision)) return;
           addDiagnosticLog(
             'TMDB worker group: ${group.title} key=${group.key} items=${group.items.length}',
             category: 'match',
@@ -1019,6 +1091,7 @@ class AppStore extends ChangeNotifier {
               cachedTitle: cachedTitle,
             );
           } catch (error) {
+            if (!metadataRefreshStillCurrent(libraryRevision)) return;
             failed += group.items.length;
             failedItems.addAll(group.items.map(tmdbAutoMatchFailedItemKey));
             tmdbLastStatus = 'TMDB error: ${group.title} - $error';
@@ -1026,9 +1099,13 @@ class AppStore extends ChangeNotifier {
             notifyListeners();
             continue;
           }
+          if (!metadataRefreshStillCurrent(libraryRevision)) return;
           if (values.isNotEmpty) {
-            final entries = values.entries.toList(growable: false);
+            final entries = values.entries
+                .where((entry) => _itemIndexById.containsKey(entry.key))
+                .toList(growable: false);
             for (final entry in entries) {
+              if (!metadataRefreshStillCurrent(libraryRevision)) return;
               metadata[entry.key] = entry.value;
               metadataRevision++;
               matched++;
@@ -1043,8 +1120,13 @@ class AppStore extends ChangeNotifier {
               notifyListeners();
               await Future<void>.delayed(Duration.zero);
             }
-            for (final entry in entries.skip(1)) {
-              await saveMetadataToDatabase(group.key, entry.key, entry.value);
+            final remaining = entries.skip(1).toList(growable: false);
+            if (remaining.isNotEmpty) {
+              backgroundWrites.add(_saveMetadataEntriesForLibraryRevision(
+                group.key,
+                remaining,
+                libraryRevision,
+              ));
             }
           } else {
             failed += group.items.length;
@@ -1065,6 +1147,23 @@ class AppStore extends ChangeNotifier {
       await Future.wait([
         for (var i = 0; i < workerCount; i++) worker(),
       ]);
+      if (!metadataRefreshStillCurrent(libraryRevision)) return;
+      if (backgroundWrites.isNotEmpty) {
+        unawaited(_finishTmdbAutoMatchAfterBackgroundWrites(
+          backgroundWrites,
+          autoMatchFingerprint,
+          Set<String>.from(failedItems),
+          libraryRevision,
+          stopwatch,
+          matched,
+          failed,
+          skipped,
+        ));
+        tmdbLastStatus =
+            'TMDB refresh visible data ready: $matched matched, $failed failed, $skipped skipped';
+        addDiagnosticLog(tmdbLastStatus, category: 'match');
+        return;
+      }
       await _markTmdbAutoMatchComplete(autoMatchFingerprint, failedItems);
       metadataRevision++;
       tmdbLastStatus =
@@ -1074,8 +1173,10 @@ class AppStore extends ChangeNotifier {
         category: 'match',
       );
     } finally {
-      metadataRefreshing = false;
-      notifyListeners();
+      if (libraryRevision == _libraryRevision) {
+        metadataRefreshing = false;
+        notifyListeners();
+      }
     }
   }
 
@@ -1083,6 +1184,61 @@ class AppStore extends ChangeNotifier {
     if (groupCount <= 0) return 0;
     final maxWorkers = force ? 8 : 6;
     return math.min(maxWorkers, groupCount);
+  }
+
+  bool metadataRefreshStillCurrent(int libraryRevision) =>
+      metadataRefreshing && libraryRevision == _libraryRevision;
+
+  Future<void> _saveMetadataEntriesForLibraryRevision(
+    String titleKey,
+    List<MapEntry<String, MediaMetadata>> entries,
+    int libraryRevision,
+  ) async {
+    var written = 0;
+    for (final entry in entries) {
+      if (libraryRevision != _libraryRevision ||
+          !_itemIndexById.containsKey(entry.key)) {
+        addDiagnosticLog(
+          'TMDB background metadata write cancelled: written=$written',
+          category: 'match',
+        );
+        return;
+      }
+      await saveMetadataToDatabase(titleKey, entry.key, entry.value);
+      written++;
+    }
+    addDiagnosticLog(
+      'TMDB background metadata write finished: written=$written',
+      category: 'match',
+    );
+  }
+
+  Future<void> _finishTmdbAutoMatchAfterBackgroundWrites(
+    List<Future<void>> writes,
+    String autoMatchFingerprint,
+    Set<String> failedItems,
+    int libraryRevision,
+    Stopwatch stopwatch,
+    int matched,
+    int failed,
+    int skipped,
+  ) async {
+    try {
+      await Future.wait(writes);
+      if (libraryRevision != _libraryRevision) return;
+      await _markTmdbAutoMatchComplete(autoMatchFingerprint, failedItems);
+      metadataRevision++;
+      tmdbLastStatus =
+          'TMDB refresh done: $matched matched, $failed failed, $skipped skipped';
+      addDiagnosticLog(
+        '$tmdbLastStatus, elapsed=${stopwatch.elapsedMilliseconds}ms',
+        category: 'match',
+      );
+      notifyListeners();
+    } catch (error) {
+      addDiagnosticLog('TMDB background metadata write failed: $error',
+          category: 'match');
+    }
   }
 
   Set<String> explicitlySelectedItemIds(Iterable<MediaItem> values) {

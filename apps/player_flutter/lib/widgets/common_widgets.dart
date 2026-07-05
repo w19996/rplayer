@@ -487,7 +487,7 @@ class MediaPosterFallback extends StatelessWidget {
 
 class SourceEntryMenu extends StatelessWidget {
   const SourceEntryMenu({
-    required this.selected,
+    required this.selectionState,
     required this.manualSeries,
     required this.enabled,
     required this.onAdd,
@@ -497,7 +497,7 @@ class SourceEntryMenu extends StatelessWidget {
     super.key,
   });
 
-  final bool selected;
+  final SourcePathSelectionState selectionState;
   final bool manualSeries;
   final bool enabled;
   final VoidCallback onAdd;
@@ -507,15 +507,30 @@ class SourceEntryMenu extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final selected = selectionState != SourcePathSelectionState.none;
+    final full = selectionState == SourcePathSelectionState.full;
     return PopupMenuButton<String>(
       enabled: enabled,
+      tooltip: manualSeries
+          ? '剧集'
+          : full
+              ? '全部选择'
+              : selected
+                  ? '部分选择'
+                  : '未选择',
       icon: Icon(
         manualSeries
             ? Icons.live_tv_outlined
-            : selected
+            : full
                 ? Icons.check_circle
-                : Icons.more_vert,
-        color: selected ? const Color(0xFF2E7AF6) : null,
+                : selected
+                    ? Icons.indeterminate_check_box
+                    : Icons.more_vert,
+        color: full
+            ? const Color(0xFF2E7AF6)
+            : selected
+                ? const Color(0xFFF59E0B)
+                : null,
       ),
       onSelected: (value) {
         if (value == 'add') onAdd();

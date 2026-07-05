@@ -595,16 +595,76 @@ void main() {
       ..sources.add(source)
       ..items.addAll(const [removed, kept])
       ..rebuildItemIndex();
+    store.metadataRefreshing = true;
     var notified = false;
     store.addListener(() {
       notified = true;
       expect(store.items, [kept]);
+      expect(store.metadataRefreshing, isFalse);
     });
 
     final pending = store.removeSelectedPath(source, selectedPath);
 
     expect(notified, isTrue);
     expect(store.sources.single.selectedPaths, isEmpty);
+    await store.saveStarted.future;
+    store.finishSave.complete();
+    await pending;
+  });
+
+  test('removing a source notifies before slow save finishes', () async {
+    final source = MediaSourceConfig.local(
+      id: 'source',
+      name: 'source',
+      directory: '/media',
+    );
+    final keptSource = MediaSourceConfig.local(
+      id: 'kept',
+      name: 'kept',
+      directory: '/other',
+    );
+    const removed = MediaItem(
+      id: 'source:/media/Show/01.mkv',
+      sourceId: 'source',
+      sourceName: 'source',
+      type: SourceType.local,
+      title: '01',
+      uri: '/media/Show/01.mkv',
+      folderTitle: 'Show',
+    );
+    const kept = MediaItem(
+      id: 'kept:/other/Show/01.mkv',
+      sourceId: 'kept',
+      sourceName: 'kept',
+      type: SourceType.local,
+      title: '01',
+      uri: '/other/Show/01.mkv',
+      folderTitle: 'Show',
+    );
+    final store = _SlowSaveStore()
+      ..sources.addAll([source, keptSource])
+      ..items.addAll(const [removed, kept])
+      ..progress[removed.id] = 1
+      ..durations[removed.id] = 2
+      ..lastPlayedAt[removed.id] = 3
+      ..folderOrientations[mediaFolderKey(removed)] = 'landscape'
+      ..rebuildItemIndex();
+    store.metadataRefreshing = true;
+    var notified = false;
+    store.addListener(() {
+      notified = true;
+      expect(store.sources, [keptSource]);
+      expect(store.items, [kept]);
+      expect(store.metadataRefreshing, isFalse);
+      expect(store.progress, isEmpty);
+      expect(store.durations, isEmpty);
+      expect(store.lastPlayedAt, isEmpty);
+      expect(store.folderOrientations, isEmpty);
+    });
+
+    final pending = store.removeSource(source);
+
+    expect(notified, isTrue);
     await store.saveStarted.future;
     store.finishSave.complete();
     await pending;
@@ -806,6 +866,94 @@ void main() {
 
     expect(store.sources.single.selectedPaths, ['/dav/Parent/']);
     expect(store.items, [kept]);
+  });
+
+  test('removing only child under selected webdav parent clears parent',
+      () async {
+    const selectedPath = '/dav/Parent/Q Show/';
+    final source = MediaSourceConfig.webdav(
+      id: 'source',
+      name: 'WebDAV',
+      baseUrl: 'https://example.com',
+      username: '',
+      password: '',
+      directory: '/',
+      selectedPaths: const ['/dav/Parent/'],
+    );
+    const removed = MediaItem(
+      id: 'source:/dav/Parent/Q Show/01.mkv',
+      sourceId: 'source',
+      sourceName: 'WebDAV',
+      type: SourceType.webdav,
+      title: '01',
+      uri: 'https://example.com/dav/Parent/Q%20Show/01.mkv',
+    );
+    const keptOutsideParent = MediaItem(
+      id: 'source:/dav/Other/01.mkv',
+      sourceId: 'source',
+      sourceName: 'WebDAV',
+      type: SourceType.webdav,
+      title: '01',
+      uri: 'https://example.com/dav/Other/01.mkv',
+    );
+    final store = AppStore()
+      ..sources.add(source)
+      ..items.addAll(const [removed, keptOutsideParent])
+      ..rebuildItemIndex();
+
+    await store.removeSelectedPath(source, selectedPath);
+
+    expect(store.sources.single.selectedPaths, isEmpty);
+    expect(store.items, [keptOutsideParent]);
+    expect(
+      store.sourcePathAdded(store.sources.single, '/dav/Parent/', isDir: true),
+      isFalse,
+    );
+  });
+
+  test('source path selection state separates none partial and full', () {
+    final source = MediaSourceConfig.webdav(
+      id: 'source',
+      name: 'WebDAV',
+      baseUrl: 'https://example.com',
+      username: '',
+      password: '',
+      directory: '/',
+      selectedPaths: const ['/dav/Full/'],
+    );
+    const partialItem = MediaItem(
+      id: 'source:/dav/Partial/01.mkv',
+      sourceId: 'source',
+      sourceName: 'WebDAV',
+      type: SourceType.webdav,
+      title: '01',
+      uri: 'https://example.com/dav/Partial/01.mkv',
+    );
+    final store = AppStore()
+      ..sources.add(source)
+      ..items.add(partialItem)
+      ..rebuildItemIndex();
+
+    expect(
+      store.sourcePathSelectionState(source, '/dav/Full/', isDir: true),
+      SourcePathSelectionState.full,
+    );
+    expect(
+      store.sourcePathSelectionState(source, '/dav/Partial/', isDir: true),
+      SourcePathSelectionState.partial,
+    );
+    expect(
+      store.sourcePathSelectionState(source, '/dav/Empty/', isDir: true),
+      SourcePathSelectionState.none,
+    );
+    expect(
+      store.sourcePathSelectionState(
+        source,
+        '/dav/Partial/01.mkv',
+        isDir: false,
+      ),
+      SourcePathSelectionState.full,
+    );
   });
 
   test('imports database folder orientation keys for playback lookup', () {

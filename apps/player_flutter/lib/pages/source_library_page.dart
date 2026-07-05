@@ -269,9 +269,11 @@ class _AddedSourceSelectionsPageState extends State<AddedSourceSelectionsPage> {
                       );
                     }
                     final entry = entries[index - (hasParent ? 1 : 0)];
-                    final selected = widget.store.sourcePathAdded(
-                        current, entry.path,
-                        isDir: entry.isDir);
+                    final selectionState = widget.store
+                        .sourcePathSelectionState(current, entry.path,
+                            isDir: entry.isDir);
+                    final selected =
+                        selectionState != SourcePathSelectionState.none;
                     final removing = removingPath == entry.path;
                     return ListTile(
                       leading: Icon(
@@ -285,18 +287,22 @@ class _AddedSourceSelectionsPageState extends State<AddedSourceSelectionsPage> {
                           ? entry.path
                           : '${readableBytes(entry.size)} · ${entry.path}'),
                       trailing: selected
-                          ? TextButton(
+                          ? TextButton.icon(
                               onPressed: removing
                                   ? null
                                   : () =>
                                       unawaited(_remove(current, entry.path)),
-                              child: removing
+                              icon: removing
                                   ? const SizedBox.square(
                                       dimension: 18,
                                       child: CircularProgressIndicator(
                                           strokeWidth: 2),
                                     )
-                                  : const Text('取消添加'),
+                                  : Icon(selectionState ==
+                                          SourcePathSelectionState.full
+                                      ? Icons.check_circle
+                                      : Icons.indeterminate_check_box),
+                              label: const Text('取消添加'),
                             )
                           : entry.isDir
                               ? const Icon(Icons.chevron_right)
