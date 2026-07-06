@@ -17,6 +17,7 @@ val targetAbis = (project.findProperty("targetAbi") as String?)
     ?.map { it.trim() }
     ?.filter { it.isNotEmpty() }
     ?: listOf("arm64-v8a")
+val androidAbis = listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
 
 android {
     namespace = "com.example.player_flutter"
@@ -74,8 +75,9 @@ android {
 
     packaging {
         jniLibs {
-            excludes.add("lib/x86/**")
-            excludes.add("lib/x86_64/**")
+            androidAbis
+                .filterNot { targetAbis.contains(it) }
+                .forEach { excludes.add("lib/$it/**") }
         }
     }
 }
