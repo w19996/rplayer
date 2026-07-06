@@ -32,6 +32,7 @@ class AppStore extends ChangeNotifier {
   Future<void> _diagnosticLogWriteChain = Future.value();
   Future<void> _metadataDatabaseWriteChain = Future.value();
   Future<void> _backgroundDatabaseWriteChain = Future.value();
+  Future<void> _databaseWriteChain = Future.value();
   final Map<String, Uint8List?> _imageCache = {};
   final Map<String, Uint8List?> _videoCoverCache = {};
   final Map<String, Future<Uint8List?>> _videoCoverRequests = {};
@@ -120,7 +121,17 @@ class AppStore extends ChangeNotifier {
     }
   }
 
-  Future<void> saveMediaStateDatabase() async {
+  Future<T> _queueDatabaseWrite<T>(Future<T> Function() write) async {
+    final run = _databaseWriteChain.catchError((_) {}).then((_) => write());
+    _databaseWriteChain = run.then<void>((_) {}, onError: (_) {});
+    return run;
+  }
+
+  Future<void> saveMediaStateDatabase() {
+    return _queueDatabaseWrite(_saveMediaStateDatabaseNow);
+  }
+
+  Future<void> _saveMediaStateDatabaseNow() async {
     final stopwatch = Stopwatch()..start();
     try {
       final db = await metadataDatabaseFile;
@@ -192,7 +203,11 @@ class AppStore extends ChangeNotifier {
     }
   }
 
-  Future<void> pruneMetadataDatabase() async {
+  Future<void> pruneMetadataDatabase() {
+    return _queueDatabaseWrite(_pruneMetadataDatabaseNow);
+  }
+
+  Future<void> _pruneMetadataDatabaseNow() async {
     final stopwatch = Stopwatch()..start();
     try {
       final liveItemIds = items.map((item) => item.id).toSet().toList();
@@ -219,8 +234,8 @@ class AppStore extends ChangeNotifier {
 
   Future<void> saveMetadataToDatabase(
       String titleKey, String itemId, MediaMetadata value) async {
-    final write = _metadataDatabaseWriteChain.then(
-      (_) => _saveMetadataToDatabaseNow(titleKey, itemId, value),
+    final write = _queueDatabaseWrite(
+      () => _saveMetadataToDatabaseNow(titleKey, itemId, value),
     );
     _metadataDatabaseWriteChain = write.catchError((_) {});
     await write;
@@ -264,8 +279,16 @@ class AppStore extends ChangeNotifier {
   }
 
   Future<void> waitForPendingDatabaseWrites() async {
+    await _databaseWriteChain.catchError((_) {});
     await _metadataDatabaseWriteChain.catchError((_) {});
     await _backgroundDatabaseWriteChain.catchError((_) {});
+  }
+
+  Future<Uint8List> databaseBytesForUpload() {
+    return _queueDatabaseWrite(() async {
+      final db = await metadataDatabaseFile;
+      return db.readAsBytes();
+    });
   }
 
   Map<String, dynamic> homeImageCacheMetadata(MediaMetadata value) => {
@@ -286,8 +309,8 @@ class AppStore extends ChangeNotifier {
       'database write image cache metadata queued: item=$itemId, poster=${value.posterPath}',
       category: 'database',
     );
-    final write = _backgroundDatabaseWriteChain.catchError((_) {}).then(
-      (_) async {
+    final write = _queueDatabaseWrite(
+      () async {
         try {
           await RustCoreService.instance.metadataCacheImagesAsync(
             dbPath,

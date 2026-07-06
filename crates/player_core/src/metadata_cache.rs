@@ -813,7 +813,7 @@ fn open(db_path: &str) -> Result<Connection> {
         }
     }
     let conn = Connection::open(db_path)?;
-    conn.busy_timeout(Duration::from_secs(8))?;
+    conn.busy_timeout(Duration::from_secs(30))?;
     conn.execute_batch(
         "pragma journal_mode = truncate;
          pragma synchronous = normal;",

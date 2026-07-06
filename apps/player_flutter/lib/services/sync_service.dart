@@ -118,7 +118,7 @@ Future<void> uploadState(BuildContext context, AppStore store) async {
       final db = await store.metadataDatabaseFile;
       if (await db.exists()) {
         await client.ensureParentCollections(config.databasePath);
-        final bytes = await db.readAsBytes();
+        final bytes = await store.databaseBytesForUpload();
         if (context.mounted) {
           showSnack(
             context,
