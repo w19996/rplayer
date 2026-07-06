@@ -97,21 +97,32 @@ Future<void> uploadState(BuildContext context, AppStore store) async {
   final config = store.syncConfig;
   if (config == null) return showSnack(context, '请先设置同步 WebDAV');
   try {
+    showSnack(context, '正在上传同步数据...', loading: true);
     store.addDiagnosticLog('sync upload started', category: 'sync');
     final client = WebdavClient.fromSync(config);
     if (config.syncConfigFile) {
+      if (context.mounted) showSnack(context, '正在上传配置文件...', loading: true);
       await client.ensureParentCollections(config.configPath);
       await client.putText(config.configPath, store.exportSettings());
       store.addDiagnosticLog('sync uploaded settings: ${config.configPath}',
           category: 'sync');
     }
     if (config.syncDatabase) {
+      if (context.mounted) showSnack(context, '正在准备数据库上传...', loading: true);
       await store.saveMediaStateDatabase();
       await store.replaceMetadataDatabase();
       final db = await store.metadataDatabaseFile;
       if (await db.exists()) {
         await client.ensureParentCollections(config.databasePath);
-        await client.putBytes(config.databasePath, await db.readAsBytes());
+        final bytes = await db.readAsBytes();
+        if (context.mounted) {
+          showSnack(
+            context,
+            '正在上传数据库（${formatFileSize(bytes.length)}）...',
+            loading: true,
+          );
+        }
+        await client.putBytes(config.databasePath, bytes);
         store.addDiagnosticLog('sync uploaded database: ${config.databasePath}',
             category: 'sync');
       }
@@ -127,18 +138,32 @@ Future<void> downloadState(BuildContext context, AppStore store) async {
   final config = store.syncConfig;
   if (config == null) return showSnack(context, '请先设置同步 WebDAV');
   try {
+    showSnack(context, '正在下载同步数据...', loading: true);
     store.addDiagnosticLog('sync download started', category: 'sync');
     final client = WebdavClient.fromSync(config);
     if (config.syncConfigFile) {
+      if (context.mounted) showSnack(context, '正在下载配置文件...', loading: true);
       final text = await client.getText(config.configPath);
+      if (context.mounted) showSnack(context, '正在恢复配置文件...', loading: true);
       await store.importState(text);
       store.addDiagnosticLog('sync downloaded settings: ${config.configPath}',
           category: 'sync');
     }
     if (config.syncDatabase) {
+      if (context.mounted) {
+        showSnack(context, '正在下载数据库，文件较大时请稍候...', loading: true);
+      }
       final bytes = await client.getBytes(config.databasePath);
+      if (context.mounted) {
+        showSnack(
+          context,
+          '正在写入数据库（${formatFileSize(bytes.length)}）...',
+          loading: true,
+        );
+      }
       final db = await store.metadataDatabaseFile;
       await db.writeAsBytes(bytes, flush: true);
+      if (context.mounted) showSnack(context, '正在加载数据库...', loading: true);
       await store.reloadDatabaseBackedState();
       store.addDiagnosticLog('sync downloaded database: ${config.databasePath}',
           category: 'sync');
@@ -204,6 +229,44 @@ void openPlayer(BuildContext context, AppStore store, MediaItem item) {
   );
 }
 
-void showSnack(BuildContext context, String message) {
-  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+String formatFileSize(int bytes) {
+  const units = ['B', 'KB', 'MB', 'GB'];
+  var value = bytes.toDouble();
+  var unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex++;
+  }
+  final text =
+      unitIndex == 0 ? value.toStringAsFixed(0) : value.toStringAsFixed(1);
+  return '$text ${units[unitIndex]}';
+}
+
+void showSnack(
+  BuildContext context,
+  String message, {
+  bool loading = false,
+}) {
+  final messenger = ScaffoldMessenger.of(context)..clearSnackBars();
+  messenger.showSnackBar(
+    SnackBar(
+      duration: loading ? const Duration(days: 1) : const Duration(seconds: 4),
+      content: Row(
+        children: [
+          if (loading) ...[
+            const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Colors.white,
+              ),
+            ),
+            const SizedBox(width: 12),
+          ],
+          Expanded(child: Text(message)),
+        ],
+      ),
+    ),
+  );
 }
