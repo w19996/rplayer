@@ -1921,13 +1921,16 @@ class AppStore extends ChangeNotifier {
             },
           );
       final bytes = remote ? await _queueRemoteVideoCover(load) : await load();
-      if (bytes == null || bytes.isEmpty) {
+      final resolvedBytes = bytes?.isNotEmpty == true
+          ? bytes
+          : await _mediaKitVideoCoverBytes(item, headers);
+      if (resolvedBytes == null || resolvedBytes.isEmpty) {
         _videoCoverCache[key] = null;
         return null;
       }
-      _videoCoverCache[key] = bytes;
-      await file.writeAsBytes(bytes, flush: true);
-      return bytes;
+      _videoCoverCache[key] = resolvedBytes;
+      await file.writeAsBytes(resolvedBytes, flush: true);
+      return resolvedBytes;
     } on MissingPluginException {
       final bytes = await _mediaKitVideoCoverBytes(item, headers);
       if (bytes == null || bytes.isEmpty) {
@@ -1938,10 +1941,16 @@ class AppStore extends ChangeNotifier {
       await file.writeAsBytes(bytes, flush: true);
       return bytes;
     } on PlatformException catch (error) {
-      addDiagnosticLog('video cover unavailable: ${item.id} - $error',
+      addDiagnosticLog('platform video cover unavailable: ${item.id} - $error',
           category: 'cache');
-      _videoCoverCache[key] = null;
-      return null;
+      final bytes = await _mediaKitVideoCoverBytes(item, headers);
+      if (bytes == null || bytes.isEmpty) {
+        _videoCoverCache[key] = null;
+        return null;
+      }
+      _videoCoverCache[key] = bytes;
+      await file.writeAsBytes(bytes, flush: true);
+      return bytes;
     }
   }
 

@@ -2,7 +2,7 @@ use anyhow::Result;
 use base64::{engine::general_purpose, Engine as _};
 use rusqlite::{params, Connection};
 use serde_json::{Map, Value};
-use std::{collections::HashSet, fs, path::Path};
+use std::{collections::HashSet, fs, path::Path, time::Duration};
 use url::Url;
 
 use crate::media::parse_media_path_candidates;
@@ -813,6 +813,11 @@ fn open(db_path: &str) -> Result<Connection> {
         }
     }
     let conn = Connection::open(db_path)?;
+    conn.busy_timeout(Duration::from_secs(8))?;
+    conn.execute_batch(
+        "pragma journal_mode = truncate;
+         pragma synchronous = normal;",
+    )?;
     reset_incompatible_legacy_schema(&conn)?;
     conn.execute_batch(
         "create table if not exists sources(
