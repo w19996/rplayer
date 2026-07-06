@@ -214,18 +214,36 @@ jobs:
       - name: Build Windows x64
         run: flutter build windows --release --no-pub
 
+      - name: Set up Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
       - name: Package Windows x64
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force build\ci | Out-Null
           Copy-Item ..\..\target\release\player_core.dll build\windows\x64\runner\Release\player_core.dll -Force
+          Remove-Item build\windows\x64\runner\Release\rplayer_data -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item build\windows\x64\runner\Release\player_diagnostic_logs_*.txt -Force -ErrorAction SilentlyContinue
           Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath build\ci\rplayer-windows-x64.zip -Force
+
+      - name: Build Windows x64 installer
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path pubspec.yaml -Pattern '^version:\s*(.+)$').Matches[0].Groups[1].Value.Split('+')[0]
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path $iscc)) { $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe" }
+          $release = (Resolve-Path build\windows\x64\runner\Release).Path
+          $output = (Resolve-Path build\ci).Path
+          & $iscc windows\installer\rplayer.iss "/DAppVersion=$version" "/DReleaseDir=$release" "/DOutputDir=$output"
 
       - name: Upload Windows x64
         uses: actions/upload-artifact@v4
         with:
           name: windows-x64
-          path: apps/player_flutter/build/ci/rplayer-windows-x64.zip
+          path: |
+            apps/player_flutter/build/ci/rplayer-windows-x64.zip
+            apps/player_flutter/build/ci/rplayer-windows-x64-setup.exe
           if-no-files-found: error
 
   windows-x86:
