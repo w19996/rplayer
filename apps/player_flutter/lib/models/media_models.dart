@@ -54,8 +54,9 @@ class MediaSourceConfig {
   final List<String> selectedPaths;
   final List<String> seriesPaths;
 
-  String get displayPath =>
-      type == SourceType.local ? directory : '$baseUrl$directory';
+  String get displayPath => type == SourceType.local
+      ? (directory.isEmpty ? '此电脑' : directory)
+      : '$baseUrl$directory';
 
   Map<String, String> get headers {
     if (username.isEmpty && password.isEmpty) return {};

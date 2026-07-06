@@ -10,6 +10,25 @@ import 'package:player_flutter/main.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  late Directory testAppFilesDir;
+
+  setUp(() async {
+    testAppFilesDir =
+        await Directory.systemTemp.createTemp('player_flutter_test_');
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(appChannel, (call) async {
+      if (call.method == 'appFilesDir') return testAppFilesDir.path;
+      return null;
+    });
+  });
+
+  tearDown(() async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(appChannel, null);
+    if (await testAppFilesDir.exists()) {
+      await testAppFilesDir.delete(recursive: true);
+    }
+  });
 
   test('media library groups videos by folder', () {
     const sourceId = 'source';
@@ -1260,6 +1279,29 @@ void main() {
     expect(store.items, isEmpty);
   });
 
+  test('adding a local selection creates draft source', () async {
+    final store = _NoSaveStore();
+    final source = MediaSourceConfig.local(
+      id: 'draft',
+      name: '本地存储',
+      directory: '',
+    );
+
+    await store.addLocalSelection(
+      source,
+      const LocalEntry(
+        name: 'Movie.mp4',
+        path: '/media/Folder/Movie.mp4',
+        isDir: false,
+        size: 1,
+      ),
+    );
+
+    expect(store.sources.single.id, 'draft');
+    expect(store.sources.single.selectedPaths, ['/media/Folder/Movie.mp4']);
+    expect(store.items.single.uri, '/media/Folder/Movie.mp4');
+  });
+
   test('single selected webdav file uses filename for unmatched TMDB lookup',
       () {
     final source = MediaSourceConfig.webdav(
@@ -1434,6 +1476,24 @@ void main() {
     expect(find.text('WebDAV'), findsOneWidget);
   });
 
+  testWidgets('opening local browser adds no source until a path is selected',
+      (WidgetTester tester) async {
+    final store = AppStore()..loaded = true;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AddSourcePage(store: store),
+      ),
+    );
+
+    await tester.tap(find.text('本地目录'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(store.sources, isEmpty);
+    expect(find.byType(LocalBrowserPage), findsOneWidget);
+  });
+
   testWidgets('added source browser uses a pop guard',
       (WidgetTester tester) async {
     final store = AppStore()
@@ -1466,6 +1526,11 @@ class _SlowSaveStore extends AppStore {
     if (!saveStarted.isCompleted) saveStarted.complete();
     await finishSave.future;
   }
+}
+
+class _NoSaveStore extends AppStore {
+  @override
+  Future<void> save() async {}
 }
 
 class _BlockingScanner extends MediaScanService {

@@ -12,6 +12,11 @@ val keystorePropertiesFile = rootProject.file("key.properties")
 if (keystorePropertiesFile.exists()) {
     keystorePropertiesFile.inputStream().use { keystoreProperties.load(it) }
 }
+val targetAbis = (project.findProperty("targetAbi") as String?)
+    ?.split(",")
+    ?.map { it.trim() }
+    ?.filter { it.isNotEmpty() }
+    ?: listOf("arm64-v8a")
 
 android {
     namespace = "com.example.player_flutter"
@@ -36,7 +41,7 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
         ndk {
-            abiFilters.add("arm64-v8a")
+            abiFilters.addAll(targetAbis)
         }
     }
 
@@ -69,7 +74,6 @@ android {
 
     packaging {
         jniLibs {
-            excludes.add("lib/armeabi-v7a/**")
             excludes.add("lib/x86/**")
             excludes.add("lib/x86_64/**")
         }

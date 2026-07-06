@@ -27,7 +27,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
+  android:
+    name: Android armv7, armv8, universal
     runs-on: ubuntu-latest
 
     defaults:
@@ -53,7 +54,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
+          targets: armv7-linux-androideabi,aarch64-linux-android
 
       - name: Set up Android NDK
         id: setup-ndk
@@ -81,7 +82,7 @@ jobs:
             cargo install cargo-ndk --locked
           fi
 
-      - name: Build Rust/C++ core for Android arm64-v8a
+      - name: Build Rust/C++ core for Android
         working-directory: .
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
@@ -90,9 +91,12 @@ jobs:
           rm -rf apps/player_flutter/android/app/src/main/jniLibs
           cargo ndk \
             --link-libcxx-shared \
+            -t armeabi-v7a \
             -t arm64-v8a \
             -o apps/player_flutter/android/app/src/main/jniLibs \
             build -p player_core --release
+          test -f apps/player_flutter/android/app/src/main/jniLibs/armeabi-v7a/libplayer_core.so
+          test -f apps/player_flutter/android/app/src/main/jniLibs/armeabi-v7a/libc++_shared.so
           test -f apps/player_flutter/android/app/src/main/jniLibs/arm64-v8a/libplayer_core.so
           test -f apps/player_flutter/android/app/src/main/jniLibs/arm64-v8a/libc++_shared.so
 
@@ -135,24 +139,27 @@ jobs:
             "storeFile=upload-keystore.jks" \
             > android/key.properties
 
-      - name: Build Android Debug APK
-        run: flutter build apk --debug --target-platform android-arm64 --no-pub
+      - name: Build Android armv7 APK
+        run: |
+          flutter build apk --release --target-platform android-arm --android-project-arg=targetAbi=armeabi-v7a --no-pub
+          mkdir -p build/ci
+          cp build/app/outputs/flutter-apk/app-release.apk build/ci/rplayer-android-armeabi-v7a.apk
 
-      - name: Build Android Release APK
-        run: flutter build apk --release --target-platform android-arm64 --no-pub
+      - name: Build Android armv8 APK
+        run: |
+          flutter build apk --release --target-platform android-arm64 --android-project-arg=targetAbi=arm64-v8a --no-pub
+          cp build/app/outputs/flutter-apk/app-release.apk build/ci/rplayer-android-arm64-v8a.apk
 
-      - name: Upload Debug APK
+      - name: Build Android universal APK
+        run: |
+          flutter build apk --release --target-platform android-arm,android-arm64 --android-project-arg=targetAbi=armeabi-v7a,arm64-v8a --no-pub
+          cp build/app/outputs/flutter-apk/app-release.apk build/ci/rplayer-android-universal.apk
+
+      - name: Upload Android APKs
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug-apk
-          path: apps/player_flutter/build/app/outputs/flutter-apk/app-debug.apk
-          if-no-files-found: error
-
-      - name: Upload Release APK - arm64-v8a
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-arm64-v8a-release-apk
-          path: apps/player_flutter/build/app/outputs/flutter-apk/app-release.apk
+          name: android-release-apks
+          path: apps/player_flutter/build/ci/*.apk
           if-no-files-found: error
 
       - name: Upload Rust Android libraries
@@ -163,3 +170,69 @@ jobs:
             apps/player_flutter/android/app/src/main/jniLibs/**/libplayer_core.so
             apps/player_flutter/android/app/src/main/jniLibs/**/libc++_shared.so
           if-no-files-found: error
+
+  windows-x64:
+    name: Windows x64
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        working-directory: apps/player_flutter
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build Rust/C++ core for Windows x64
+        working-directory: .
+        run: cargo build -p player_core --release
+
+      - name: Build Windows x64
+        run: flutter build windows --release --no-pub
+
+      - name: Package Windows x64
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build\ci | Out-Null
+          Copy-Item ..\..\target\release\player_core.dll build\windows\x64\runner\Release\player_core.dll -Force
+          Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath build\ci\rplayer-windows-x64.zip -Force
+
+      - name: Upload Windows x64
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: apps/player_flutter/build/ci/rplayer-windows-x64.zip
+          if-no-files-found: error
+
+  windows-x86:
+    name: Windows x86 unsupported by Flutter stable
+    runs-on: windows-latest
+    steps:
+      - name: Explain Windows x86 support
+        run: |
+          echo "Flutter stable does not expose a Windows x86 build target in 'flutter build windows'."
+          echo "Windows x64 is built by the windows-x64 job."

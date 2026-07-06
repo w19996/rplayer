@@ -22,6 +22,7 @@ dependencies:
   media_kit_libs_android_video:
     path: ../../third_party/media_kit_libs_android_video
   permission_handler: ^12.0.3
+  media_kit_libs_windows_video: ^1.0.11
 
 dev_dependencies:
   flutter_test:

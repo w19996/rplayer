@@ -21,12 +21,30 @@ class _LocalBrowserPageState extends State<LocalBrowserPage> {
         orElse: () => widget.source,
       );
 
+  bool get isWindowsRoot => Platform.isWindows && path.isEmpty;
+
+  bool isWindowsDriveRoot(String value) =>
+      Platform.isWindows && RegExp(r'^[A-Za-z]:[\\/]?$').hasMatch(value);
+
+  Future<List<LocalEntry>> windowsDriveEntries() async {
+    final entries = <LocalEntry>[];
+    for (var code = 65; code <= 90; code++) {
+      final root = '${String.fromCharCode(code)}:\\';
+      if (await Directory(root).exists()) {
+        entries.add(LocalEntry(name: root, path: root, isDir: true));
+      }
+    }
+    return entries;
+  }
+
   Future<List<LocalEntry>> load() async {
     final granted =
         await ensureLocalStorageAccess(context, showDeniedMessage: false);
     if (!granted) {
       throw Exception('没有本地存储访问权限，请在系统设置中允许访问视频或所有文件。');
     }
+
+    if (isWindowsRoot) return windowsDriveEntries();
 
     final dir = Directory(path);
     if (!await dir.exists()) {
@@ -44,7 +62,17 @@ class _LocalBrowserPageState extends State<LocalBrowserPage> {
   }
 
   void goParent() {
+    if (isWindowsDriveRoot(path)) {
+      refresh('');
+      return;
+    }
     if (path != widget.source.directory) refresh(p.dirname(path));
+  }
+
+  String get title {
+    if (path == widget.source.directory) return widget.source.name;
+    if (isWindowsDriveRoot(path)) return path;
+    return p.basename(path);
   }
 
   Future<void> addEntry(LocalEntry entry, {bool asSeries = false}) async {
@@ -105,9 +133,7 @@ class _LocalBrowserPageState extends State<LocalBrowserPage> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: Text(path == widget.source.directory
-              ? widget.source.name
-              : p.basename(path)),
+          title: Text(title),
           actions: [
             IconButton(
                 tooltip: '刷新',

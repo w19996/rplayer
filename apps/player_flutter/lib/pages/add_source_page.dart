@@ -30,7 +30,11 @@ class AddSourcePage extends StatelessWidget {
                           source.type == SourceType.local &&
                           source.directory == dir)
                       .firstOrNull ??
-                  await store.addLocalDirectory(dir);
+                  MediaSourceConfig.local(
+                    id: newId(),
+                    name: localSourceName(dir),
+                    directory: dir,
+                  );
               if (context.mounted) {
                 Navigator.pushReplacement(
                   context,

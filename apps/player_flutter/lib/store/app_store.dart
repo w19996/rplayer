@@ -41,13 +41,18 @@ class AppStore extends ChangeNotifier {
   int _pathParseLogCount = 0;
   static const int _diagnosticLogPreviewLimit = 100;
 
+  String _desktopAppFilesPath() {
+    return p.join(p.dirname(Platform.resolvedExecutable), 'rplayer_data');
+  }
+
   Future<Directory> get appFilesDirectory async {
-    var path = Directory.systemTemp.path;
+    String? path;
     try {
-      path = await appChannel.invokeMethod<String>('appFilesDir') ?? path;
+      path = await appChannel.invokeMethod<String>('appFilesDir');
     } on MissingPluginException {
-      path = Directory.systemTemp.path;
+      path = _desktopAppFilesPath();
     }
+    path ??= _desktopAppFilesPath();
     final dir = Directory(path);
     if (!await dir.exists()) await dir.create(recursive: true);
     return dir;
@@ -435,12 +440,9 @@ class AppStore extends ChangeNotifier {
 
   Future<MediaSourceConfig> addLocalDirectory(String dir) async {
     addDiagnosticLog('add local source: $dir', category: 'source');
-    final name = dir == defaultLocalStorageRoot()
-        ? '本地存储'
-        : (p.basename(dir).isEmpty ? '本地目录' : p.basename(dir));
     final source = MediaSourceConfig.local(
       id: newId(),
-      name: name,
+      name: localSourceName(dir),
       directory: dir,
     );
     sources.add(source);
@@ -621,7 +623,11 @@ class AppStore extends ChangeNotifier {
       selectedPaths: selectedPaths,
       seriesPaths: seriesPaths,
     );
-    replaceSource(updated);
+    if (sources.any((value) => value.id == updated.id)) {
+      replaceSource(updated);
+    } else {
+      sources.add(updated);
+    }
     syncParserRegexesToCore();
 
     if (entry.isDir) {
@@ -1897,15 +1903,15 @@ class AppStore extends ChangeNotifier {
 
   Future<Uint8List?> _loadVideoCoverBytes(
       MediaItem item, String key, File file) async {
+    final remote = item.type == SourceType.webdav;
+    final headers = remote
+        ? sources
+                .where((source) => source.id == item.sourceId)
+                .firstOrNull
+                ?.headers ??
+            const <String, String>{}
+        : const <String, String>{};
     try {
-      final remote = item.type == SourceType.webdav;
-      final headers = remote
-          ? sources
-                  .where((source) => source.id == item.sourceId)
-                  .firstOrNull
-                  ?.headers ??
-              const <String, String>{}
-          : const <String, String>{};
       Future<Uint8List?> load() => appChannel.invokeMethod<Uint8List>(
             'videoThumbnail',
             {
@@ -1923,13 +1929,60 @@ class AppStore extends ChangeNotifier {
       await file.writeAsBytes(bytes, flush: true);
       return bytes;
     } on MissingPluginException {
-      _videoCoverCache[key] = null;
-      return null;
+      final bytes = await _mediaKitVideoCoverBytes(item, headers);
+      if (bytes == null || bytes.isEmpty) {
+        _videoCoverCache[key] = null;
+        return null;
+      }
+      _videoCoverCache[key] = bytes;
+      await file.writeAsBytes(bytes, flush: true);
+      return bytes;
     } on PlatformException catch (error) {
       addDiagnosticLog('video cover unavailable: ${item.id} - $error',
           category: 'cache');
       _videoCoverCache[key] = null;
       return null;
+    }
+  }
+
+  Future<Uint8List?> _mediaKitVideoCoverBytes(
+      MediaItem item, Map<String, String> headers) async {
+    if (Platform.isAndroid || Platform.isIOS) return null;
+    final player = Player();
+    try {
+      await player.setVolume(0);
+      await player.open(
+        Media(
+          item.type == SourceType.local
+              ? Uri.file(item.uri).toString()
+              : item.uri,
+          httpHeaders: headers.isEmpty ? null : headers,
+          start: const Duration(seconds: 1),
+        ),
+      );
+      final watch = Stopwatch()..start();
+      while (watch.elapsed < const Duration(seconds: 6)) {
+        final state = player.state;
+        if ((state.width ?? 0) > 0 &&
+            (state.height ?? 0) > 0 &&
+            state.position > Duration.zero) {
+          break;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+      final bytes = await player.screenshot(format: 'image/jpeg');
+      if (bytes == null || bytes.isEmpty) {
+        addDiagnosticLog('media_kit video cover empty: ${item.id}',
+            category: 'cache');
+        return null;
+      }
+      return bytes;
+    } catch (error) {
+      addDiagnosticLog('media_kit video cover unavailable: ${item.id} - $error',
+          category: 'cache');
+      return null;
+    } finally {
+      await player.dispose();
     }
   }
 

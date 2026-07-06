@@ -658,7 +658,14 @@ String readableBytes(int? value) {
 
 String defaultLocalStorageRoot() {
   if (Platform.isAndroid) return '/storage/emulated/0';
-  return Directory.current.path;
+  if (Platform.isWindows) return '';
+  return '/';
+}
+
+String localSourceName(String dir) {
+  if (dir == defaultLocalStorageRoot()) return '本地存储';
+  final name = p.basename(dir);
+  return name.isEmpty ? '本地目录' : name;
 }
 
 Future<bool> ensureLocalStorageAccess(BuildContext context,
