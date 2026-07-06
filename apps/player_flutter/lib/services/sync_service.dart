@@ -108,9 +108,13 @@ Future<void> uploadState(BuildContext context, AppStore store) async {
           category: 'sync');
     }
     if (config.syncDatabase) {
-      if (context.mounted) showSnack(context, '正在准备数据库上传...', loading: true);
+      if (context.mounted) {
+        showSnack(context, '正在等待数据库写入完成...', loading: true);
+      }
+      await store.waitForPendingDatabaseWrites();
+      if (context.mounted) showSnack(context, '正在保存数据库状态...', loading: true);
       await store.saveMediaStateDatabase();
-      await store.replaceMetadataDatabase();
+      await store.waitForPendingDatabaseWrites();
       final db = await store.metadataDatabaseFile;
       if (await db.exists()) {
         await client.ensureParentCollections(config.databasePath);
@@ -161,6 +165,7 @@ Future<void> downloadState(BuildContext context, AppStore store) async {
           loading: true,
         );
       }
+      await store.waitForPendingDatabaseWrites();
       final db = await store.metadataDatabaseFile;
       await db.writeAsBytes(bytes, flush: true);
       if (context.mounted) showSnack(context, '正在加载数据库...', loading: true);

@@ -31,6 +31,7 @@ class AppStore extends ChangeNotifier {
   int diagnosticLogCount = 0;
   Future<void> _diagnosticLogWriteChain = Future.value();
   Future<void> _metadataDatabaseWriteChain = Future.value();
+  Future<void> _backgroundDatabaseWriteChain = Future.value();
   final Map<String, Uint8List?> _imageCache = {};
   final Map<String, Uint8List?> _videoCoverCache = {};
   final Map<String, Future<Uint8List?>> _videoCoverRequests = {};
@@ -262,6 +263,11 @@ class AppStore extends ChangeNotifier {
     }
   }
 
+  Future<void> waitForPendingDatabaseWrites() async {
+    await _metadataDatabaseWriteChain.catchError((_) {});
+    await _backgroundDatabaseWriteChain.catchError((_) {});
+  }
+
   Map<String, dynamic> homeImageCacheMetadata(MediaMetadata value) => {
         'posterPath': value.posterPath,
       };
@@ -280,24 +286,28 @@ class AppStore extends ChangeNotifier {
       'database write image cache metadata queued: item=$itemId, poster=${value.posterPath}',
       category: 'database',
     );
-    unawaited(() async {
-      try {
-        await RustCoreService.instance.metadataCacheImagesAsync(
-          dbPath,
-          metadataJson,
-          tmdbConfig.imageBaseUrl,
-        );
-        addDiagnosticLog(
-          'database write image cache metadata finished: item=$itemId, jsonBytes=${metadataJson.length}',
-          category: 'database',
-        );
-      } catch (error) {
-        addDiagnosticLog(
-          'database write image cache metadata failed: item=$itemId - $error',
-          category: 'database',
-        );
-      }
-    }());
+    final write = _backgroundDatabaseWriteChain.catchError((_) {}).then(
+      (_) async {
+        try {
+          await RustCoreService.instance.metadataCacheImagesAsync(
+            dbPath,
+            metadataJson,
+            tmdbConfig.imageBaseUrl,
+          );
+          addDiagnosticLog(
+            'database write image cache metadata finished: item=$itemId, jsonBytes=${metadataJson.length}',
+            category: 'database',
+          );
+        } catch (error) {
+          addDiagnosticLog(
+            'database write image cache metadata failed: item=$itemId - $error',
+            category: 'database',
+          );
+        }
+      },
+    );
+    _backgroundDatabaseWriteChain = write.catchError((_) {});
+    unawaited(write);
   }
 
   String _normalizedImagePath(String value) {
@@ -315,9 +325,8 @@ class AppStore extends ChangeNotifier {
 
   Future<void> replaceMetadataDatabase() async {
     final db = await metadataDatabaseFile;
-    addDiagnosticLog('database replace metadata started: ${db.path}',
+    addDiagnosticLog('database refresh metadata started: ${db.path}',
         category: 'database');
-    await RustCoreService.instance.metadataReplaceAllAsync(db.path, const {});
     final groups = mediaFolderGroups(items);
     var written = 0;
     for (final group in groups) {
@@ -328,7 +337,8 @@ class AppStore extends ChangeNotifier {
         written++;
       }
     }
-    addDiagnosticLog('database replace metadata finished: written=$written',
+    await pruneMetadataDatabase();
+    addDiagnosticLog('database refresh metadata finished: written=$written',
         category: 'database');
   }
 
