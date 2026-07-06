@@ -662,7 +662,7 @@ class ProfileActionCard extends StatelessWidget {
     required this.icon,
     required this.title,
     required this.subtitle,
-    required this.actionText,
+    this.actionText,
     required this.onTap,
     super.key,
   });
@@ -670,7 +670,7 @@ class ProfileActionCard extends StatelessWidget {
   final IconData icon;
   final String title;
   final String subtitle;
-  final String actionText;
+  final String? actionText;
   final VoidCallback onTap;
 
   @override
@@ -681,25 +681,32 @@ class ProfileActionCard extends StatelessWidget {
       decoration: BoxDecoration(
           color: const Color(0xFFF5F7FB),
           borderRadius: BorderRadius.circular(8)),
-      child: Row(
-        children: [
-          Icon(icon, color: const Color(0xFF2E7AF6), size: 28),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title, style: const TextStyle(fontSize: 16)),
-                const SizedBox(height: 5),
-                Text(subtitle,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.grey)),
-              ],
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: actionText == null ? onTap : null,
+        child: Row(
+          children: [
+            Icon(icon, color: const Color(0xFF2E7AF6), size: 28),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, style: const TextStyle(fontSize: 16)),
+                  const SizedBox(height: 5),
+                  Text(subtitle,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Colors.grey)),
+                ],
+              ),
             ),
-          ),
-          TextButton(onPressed: onTap, child: Text(actionText)),
-        ],
+            if (actionText == null)
+              const Icon(Icons.chevron_right)
+            else
+              TextButton(onPressed: onTap, child: Text(actionText!)),
+          ],
+        ),
       ),
     );
   }

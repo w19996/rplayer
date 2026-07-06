@@ -55,7 +55,6 @@ class ProfilePage extends StatelessWidget {
                   subtitle: tmdb.enabled
                       ? '${tmdb.language} / ${tmdb.region} / ${tmdbEndpointLabel(tmdb.apiBaseUrl)} / ${tmdbEndpointHost(tmdb.apiBaseUrl)}'
                       : 'API、海报、简介和演员信息',
-                  actionText: '进入',
                   onTap: () => Navigator.of(context).push(
                     appSlideRoute((_) => TmdbSettingsPage(store: store)),
                   ),
@@ -65,7 +64,6 @@ class ProfilePage extends StatelessWidget {
                   title: '自定义规则',
                   subtitle:
                       '版本 ${store.versionDirectoryRegexes.length} 条 / 集数 ${store.episodeRegexes.length} 条',
-                  actionText: '进入',
                   onTap: () => Navigator.of(context).push(
                     appSlideRoute((_) => CustomRulesSettingsPage(store: store)),
                   ),
@@ -78,7 +76,6 @@ class ProfilePage extends StatelessWidget {
                           ? '${Uri.parse(danmu.requestBaseUrl).host} / token ${danmu.normalizedApiToken.isEmpty ? '默认' : '已设置'}'
                           : '已开启，未配置弹幕服务')
                       : '已关闭，进入后可开启和配置弹幕服务',
-                  actionText: '进入',
                   onTap: () => Navigator.of(context).push(
                     appSlideRoute((_) => DanmuSettingsPage(store: store)),
                   ),
@@ -89,7 +86,6 @@ class ProfilePage extends StatelessWidget {
                   subtitle: sync == null
                       ? '配置 WebDAV，同步配置文件和数据库'
                       : '${sync.syncConfigFile ? '配置 ' : ''}${sync.syncDatabase ? '数据库' : ''}',
-                  actionText: '进入',
                   onTap: () => Navigator.of(context).push(
                     appSlideRoute((_) => SyncSettingsPage(store: store)),
                   ),
@@ -100,7 +96,6 @@ class ProfilePage extends StatelessWidget {
                   subtitle: store.diagnosticLoggingEnabled
                       ? '已开启，记录数据库、扫描、匹配、缓存、同步和播放事件'
                       : '已关闭，不记录新的诊断日志',
-                  actionText: '进入',
                   onTap: () => Navigator.of(context).push(
                     appSlideRoute(
                         (_) => DiagnosticLogSettingsPage(store: store)),
@@ -192,7 +187,6 @@ class CustomRulesSettingsPage extends StatelessWidget {
                 subtitle: store.versionDirectoryRegexes.isEmpty
                     ? '未添加自定义版本目录正则'
                     : '${store.versionDirectoryRegexes.length} 条自定义规则',
-                actionText: '进入',
                 onTap: () => Navigator.of(context).push(
                   appSlideRoute((_) => VersionRegexSettingsPage(store: store)),
                 ),
@@ -203,7 +197,6 @@ class CustomRulesSettingsPage extends StatelessWidget {
                 subtitle: store.episodeRegexes.isEmpty
                     ? '未添加自定义集数正则'
                     : '${store.episodeRegexes.length} 条自定义规则',
-                actionText: '进入',
                 onTap: () => Navigator.of(context).push(
                   appSlideRoute((_) => EpisodeRegexSettingsPage(store: store)),
                 ),
