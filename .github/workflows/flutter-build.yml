@@ -155,11 +155,25 @@ jobs:
           flutter build apk --release --target-platform android-arm,android-arm64 --android-project-arg=targetAbi=armeabi-v7a,arm64-v8a --no-pub
           cp build/app/outputs/flutter-apk/app-release.apk build/ci/rplayer-android-universal.apk
 
-      - name: Upload Android APKs
+      - name: Upload Android armv7 APK
         uses: actions/upload-artifact@v4
         with:
-          name: android-release-apks
-          path: apps/player_flutter/build/ci/*.apk
+          name: rplayer-android-armeabi-v7a
+          path: apps/player_flutter/build/ci/rplayer-android-armeabi-v7a.apk
+          if-no-files-found: error
+
+      - name: Upload Android armv8 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: rplayer-android-arm64-v8a
+          path: apps/player_flutter/build/ci/rplayer-android-arm64-v8a.apk
+          if-no-files-found: error
+
+      - name: Upload Android universal APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: rplayer-android-universal
+          path: apps/player_flutter/build/ci/rplayer-android-universal.apk
           if-no-files-found: error
 
       - name: Upload Rust Android libraries
@@ -237,13 +251,18 @@ jobs:
           $output = (Resolve-Path build\ci).Path
           & $iscc windows\installer\rplayer.iss "/DAppVersion=$version" "/DReleaseDir=$release" "/DOutputDir=$output"
 
-      - name: Upload Windows x64
+      - name: Upload Windows x64 portable zip
         uses: actions/upload-artifact@v4
         with:
-          name: windows-x64
-          path: |
-            apps/player_flutter/build/ci/rplayer-windows-x64.zip
-            apps/player_flutter/build/ci/rplayer-windows-x64-setup.exe
+          name: rplayer-windows-x64-portable
+          path: apps/player_flutter/build/ci/rplayer-windows-x64.zip
+          if-no-files-found: error
+
+      - name: Upload Windows x64 installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: rplayer-windows-x64-installer
+          path: apps/player_flutter/build/ci/rplayer-windows-x64-setup.exe
           if-no-files-found: error
 
   windows-x86:
