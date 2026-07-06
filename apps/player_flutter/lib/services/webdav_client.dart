@@ -75,11 +75,28 @@ class WebdavClient {
     }
   }
 
-  Future<void> putBytes(String path, List<int> bytes) async {
-    final response = await http.put(source.resolve(path),
-        headers: source.headers, body: bytes);
+  Future<void> putFile(
+    String path,
+    File file, {
+    void Function(int sent, int total)? onProgress,
+  }) async {
+    final total = await file.length();
+    final request = http.StreamedRequest('PUT', source.resolve(path))
+      ..headers.addAll(source.headers)
+      ..contentLength = total;
+    var sent = 0;
+    onProgress?.call(sent, total);
+    final responseFuture = request.send();
+    await request.sink.addStream(file.openRead().map((chunk) {
+      sent += chunk.length;
+      onProgress?.call(sent, total);
+      return chunk;
+    }));
+    await request.sink.close();
+    final response = await responseFuture;
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('WebDAV ${response.statusCode}: ${response.body}');
+      final body = await response.stream.bytesToString();
+      throw Exception('WebDAV ${response.statusCode}: $body');
     }
   }
 
@@ -112,13 +129,32 @@ class WebdavClient {
     return response.body;
   }
 
-  Future<List<int>> getBytes(String path) async {
-    final response =
-        await http.get(source.resolve(path), headers: source.headers);
+  Future<void> getFile(
+    String path,
+    File file, {
+    void Function(int received, int total)? onProgress,
+  }) async {
+    if (!await file.parent.exists()) await file.parent.create(recursive: true);
+    final request = http.Request('GET', source.resolve(path))
+      ..headers.addAll(source.headers);
+    final response = await request.send();
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('WebDAV ${response.statusCode}: ${response.body}');
+      final body = await response.stream.bytesToString();
+      throw Exception('WebDAV ${response.statusCode}: $body');
     }
-    return response.bodyBytes;
+    final total = response.contentLength ?? -1;
+    var received = 0;
+    onProgress?.call(received, total);
+    final sink = file.openWrite();
+    try {
+      await for (final chunk in response.stream) {
+        received += chunk.length;
+        sink.add(chunk);
+        onProgress?.call(received, total);
+      }
+    } finally {
+      await sink.close();
+    }
   }
 }
 

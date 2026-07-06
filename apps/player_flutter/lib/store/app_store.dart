@@ -284,10 +284,12 @@ class AppStore extends ChangeNotifier {
     await _backgroundDatabaseWriteChain.catchError((_) {});
   }
 
-  Future<Uint8List> databaseBytesForUpload() {
+  Future<File> databaseSnapshotForUpload() {
     return _queueDatabaseWrite(() async {
       final db = await metadataDatabaseFile;
-      return db.readAsBytes();
+      final snapshot = File('${db.path}.upload');
+      if (await snapshot.exists()) await snapshot.delete();
+      return db.copy(snapshot.path);
     });
   }
 

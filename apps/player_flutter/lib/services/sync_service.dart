@@ -96,6 +96,7 @@ Future<void> showSyncConfigDialog(BuildContext context, AppStore store) async {
 Future<void> uploadState(BuildContext context, AppStore store) async {
   final config = store.syncConfig;
   if (config == null) return showSnack(context, '请先设置同步 WebDAV');
+  final uploadProgress = transferProgress(context, '正在上传数据库');
   try {
     showSnack(context, '正在上传同步数据...', loading: true);
     store.addDiagnosticLog('sync upload started', category: 'sync');
@@ -118,15 +119,16 @@ Future<void> uploadState(BuildContext context, AppStore store) async {
       final db = await store.metadataDatabaseFile;
       if (await db.exists()) {
         await client.ensureParentCollections(config.databasePath);
-        final bytes = await store.databaseBytesForUpload();
-        if (context.mounted) {
-          showSnack(
-            context,
-            '正在上传数据库（${formatFileSize(bytes.length)}）...',
-            loading: true,
+        final snapshot = await store.databaseSnapshotForUpload();
+        try {
+          await client.putFile(
+            config.databasePath,
+            snapshot,
+            onProgress: uploadProgress,
           );
+        } finally {
+          if (await snapshot.exists()) await snapshot.delete();
         }
-        await client.putBytes(config.databasePath, bytes);
         store.addDiagnosticLog('sync uploaded database: ${config.databasePath}',
             category: 'sync');
       }
@@ -141,6 +143,7 @@ Future<void> uploadState(BuildContext context, AppStore store) async {
 Future<void> downloadState(BuildContext context, AppStore store) async {
   final config = store.syncConfig;
   if (config == null) return showSnack(context, '请先设置同步 WebDAV');
+  final downloadProgress = transferProgress(context, '正在下载数据库');
   try {
     showSnack(context, '正在下载同步数据...', loading: true);
     store.addDiagnosticLog('sync download started', category: 'sync');
@@ -157,17 +160,32 @@ Future<void> downloadState(BuildContext context, AppStore store) async {
       if (context.mounted) {
         showSnack(context, '正在下载数据库，文件较大时请稍候...', loading: true);
       }
-      final bytes = await client.getBytes(config.databasePath);
-      if (context.mounted) {
-        showSnack(
-          context,
-          '正在写入数据库（${formatFileSize(bytes.length)}）...',
-          loading: true,
-        );
-      }
       await store.waitForPendingDatabaseWrites();
       final db = await store.metadataDatabaseFile;
-      await db.writeAsBytes(bytes, flush: true);
+      final temp = File('${db.path}.download');
+      final backup = File('${db.path}.backup');
+      if (await temp.exists()) await temp.delete();
+      if (await backup.exists()) await backup.delete();
+      await client.getFile(
+        config.databasePath,
+        temp,
+        onProgress: downloadProgress,
+      );
+      if (context.mounted) showSnack(context, '正在写入数据库...', loading: true);
+      if (await db.exists()) await db.rename(backup.path);
+      try {
+        await temp.rename(db.path);
+      } catch (_) {
+        if (await backup.exists() && !await db.exists()) {
+          await backup.rename(db.path);
+        }
+        rethrow;
+      }
+      if (await backup.exists()) {
+        try {
+          await backup.delete();
+        } catch (_) {}
+      }
       if (context.mounted) showSnack(context, '正在加载数据库...', loading: true);
       await store.reloadDatabaseBackedState();
       store.addDiagnosticLog('sync downloaded database: ${config.databasePath}',
@@ -245,6 +263,39 @@ String formatFileSize(int bytes) {
   final text =
       unitIndex == 0 ? value.toStringAsFixed(0) : value.toStringAsFixed(1);
   return '$text ${units[unitIndex]}';
+}
+
+void showTransferProgress(
+  BuildContext context,
+  String label,
+  int done,
+  int total,
+) {
+  if (!context.mounted) return;
+  final size = total > 0
+      ? '${formatFileSize(done)} / ${formatFileSize(total)}'
+      : formatFileSize(done);
+  final percent = total > 0 ? '（${done * 100 ~/ total}%）' : '';
+  showSnack(context, '$label：$size$percent', loading: true);
+}
+
+void Function(int done, int total) transferProgress(
+  BuildContext context,
+  String label,
+) {
+  var lastPercent = -1;
+  var lastBytes = -1024 * 1024;
+  return (done, total) {
+    final percent = total > 0 ? done * 100 ~/ total : -1;
+    if (done != total &&
+        percent == lastPercent &&
+        done - lastBytes < 1024 * 1024) {
+      return;
+    }
+    lastPercent = percent;
+    lastBytes = done;
+    showTransferProgress(context, label, done, total);
+  };
 }
 
 void showSnack(
