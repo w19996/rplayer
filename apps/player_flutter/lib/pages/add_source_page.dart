@@ -52,6 +52,16 @@ class AddSourcePage extends StatelessWidget {
               appSlideRoute((_) => WebdavSourceFormPage(store: store)),
             ),
           ),
+          AddSourceTile(
+            icon: Icons.cloud_sync_outlined,
+            title: 'OpenList',
+            onTap: () => Navigator.of(context).pushReplacement(
+              appSlideRoute((_) => WebdavSourceFormPage(
+                    store: store,
+                    sourceType: SourceType.openlist,
+                  )),
+            ),
+          ),
         ],
       ),
     );
@@ -59,16 +69,25 @@ class AddSourcePage extends StatelessWidget {
 }
 
 class WebdavSourceFormPage extends StatefulWidget {
-  const WebdavSourceFormPage({required this.store, this.source, super.key});
+  const WebdavSourceFormPage({
+    required this.store,
+    this.source,
+    this.sourceType = SourceType.webdav,
+    super.key,
+  });
 
   final AppStore store;
   final MediaSourceConfig? source;
+  final SourceType sourceType;
 
   @override
   State<WebdavSourceFormPage> createState() => _WebdavSourceFormPageState();
 }
 
 class _WebdavSourceFormPageState extends State<WebdavSourceFormPage> {
+  SourceType get type => widget.source?.type ?? widget.sourceType;
+  String get label => sourceTypeLabel(type);
+
   late final name =
       TextEditingController(text: widget.source?.name ?? '我的 WebDAV');
   late final baseUrl =
@@ -77,9 +96,19 @@ class _WebdavSourceFormPageState extends State<WebdavSourceFormPage> {
       TextEditingController(text: widget.source?.username ?? '');
   late final password =
       TextEditingController(text: widget.source?.password ?? '');
+  late final otpCode =
+      TextEditingController(text: widget.source?.otpCode ?? '');
   late final directory =
       TextEditingController(text: widget.source?.directory ?? '/');
   bool busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.source == null && type == SourceType.openlist) {
+      name.text = '我的 OpenList';
+    }
+  }
 
   @override
   void dispose() {
@@ -87,6 +116,7 @@ class _WebdavSourceFormPageState extends State<WebdavSourceFormPage> {
     baseUrl.dispose();
     username.dispose();
     password.dispose();
+    otpCode.dispose();
     directory.dispose();
     super.dispose();
   }
@@ -99,6 +129,7 @@ class _WebdavSourceFormPageState extends State<WebdavSourceFormPage> {
         baseUrl: baseUrl.text.trim(),
         username: username.text.trim(),
         password: password.text,
+        otpCode: otpCode.text.trim(),
         directory: directory.text.trim(),
       );
       final editing = widget.source;
@@ -108,7 +139,9 @@ class _WebdavSourceFormPageState extends State<WebdavSourceFormPage> {
         Navigator.pop(context);
         return;
       }
-      final source = await widget.store.addWebdavSource(draft);
+      final source = type == SourceType.openlist
+          ? await widget.store.addOpenlistSource(draft)
+          : await widget.store.addWebdavSource(draft);
       if (!mounted) return;
       Navigator.pushReplacement(
         context,
@@ -116,7 +149,9 @@ class _WebdavSourceFormPageState extends State<WebdavSourceFormPage> {
             (_) => WebdavBrowserPage(store: widget.store, source: source)),
       );
     } catch (e) {
-      if (mounted) showSnack(context, 'WebDAV 添加失败：$e');
+      if (mounted) {
+        showSnack(context, '$label \u6DFB\u52A0\u5931\u8D25\uFF1A$e');
+      }
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -126,7 +161,8 @@ class _WebdavSourceFormPageState extends State<WebdavSourceFormPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-          title: Text(widget.source == null ? '添加 WebDAV 源' : '编辑 WebDAV 源'),
+          title: Text(
+              '${widget.source == null ? '\u6DFB\u52A0' : '\u7F16\u8F91'} $label \u6E90'),
           centerTitle: true),
       body: ListView(
         padding: const EdgeInsets.all(22),
@@ -145,6 +181,16 @@ class _WebdavSourceFormPageState extends State<WebdavSourceFormPage> {
               controller: password,
               decoration: const InputDecoration(labelText: '密码'),
               obscureText: true),
+          if (type == SourceType.openlist)
+            TextField(
+                controller: otpCode,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'OTP Code\uFF08\u53EF\u9009\uFF09',
+                  hintText:
+                      '\u672A\u542F\u7528\u4E24\u6B65\u9A8C\u8BC1\u53EF\u7559\u7A7A',
+                  floatingLabelBehavior: FloatingLabelBehavior.always,
+                )),
           TextField(
               controller: directory,
               decoration: const InputDecoration(labelText: '目录路径，例如 /Movies/')),
@@ -185,7 +231,7 @@ class _WebdavBrowserPageState extends State<WebdavBrowserPage> {
         orElse: () => widget.source,
       );
 
-  WebdavClient get client => WebdavClient.fromSource(source);
+  RemoteFileClient get client => remoteClientForSource(source);
 
   Future<List<WebdavEntry>> load() => client.list(path);
 
@@ -334,7 +380,7 @@ class _WebdavBrowserPageState extends State<WebdavBrowserPage> {
                       openPlayer(
                           context,
                           widget.store,
-                          MediaItem.webdav(
+                          MediaItem.remote(
                               source: widget.source, entry: entry));
                     }
                   },

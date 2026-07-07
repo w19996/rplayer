@@ -503,9 +503,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         final savedPosition = Duration(milliseconds: saved);
         syncDanmuClock(savedPosition);
       }
-      final uri = currentItem.type == SourceType.local
-          ? Uri.file(currentItem.uri).toString()
-          : currentItem.uri;
+      final playback = isRemoteSourceType(currentItem.type)
+          ? await remoteClientForSource(source).playback(currentItem)
+          : RemotePlayback(Uri.file(currentItem.uri).toString(), const {});
+      final uri = playback.uri;
       updateLoadingPercent(
           math.max(initialBufferingPercentage, 12), 'open start');
       logVideoLoading(
@@ -518,7 +519,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       await player.open(
         Media(
           uri,
-          httpHeaders: source.headers.isEmpty ? null : source.headers,
+          httpHeaders: playback.headers.isEmpty ? null : playback.headers,
           start: saved > 0 ? Duration(milliseconds: saved) : null,
         ),
       );

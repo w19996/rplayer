@@ -87,7 +87,7 @@ class MediaScanService {
 
   Stream<MediaItem> scanWebdavSelectionsStream(
       MediaSourceConfig source) async* {
-    final client = WebdavClient.fromSource(source);
+    final client = remoteClientForSource(source);
     final chunk = <WebdavEntry>[];
 
     Future<List<MediaItem>> flushChunk() async {
@@ -149,7 +149,7 @@ List<MediaItem> _webdavEntriesToItemsWorker(
   List<WebdavEntry> entries,
 ) {
   return entries
-      .map((entry) => MediaItem.webdav(source: source, entry: entry))
+      .map((entry) => MediaItem.remote(source: source, entry: entry))
       .map((item) => applyManualSeriesPath(source, item))
       .toList(growable: false);
 }

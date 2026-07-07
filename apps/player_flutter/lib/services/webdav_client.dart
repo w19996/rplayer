@@ -1,6 +1,25 @@
 part of 'package:player_flutter/main.dart';
 
-class WebdavClient {
+abstract class RemoteFileClient {
+  Stream<WebdavEntry> scanVideosStream(String path, {required int maxDepth});
+  Future<WebdavEntry?> findFile(String path);
+  Future<List<WebdavEntry>> list(String path);
+  Future<RemotePlayback> playback(MediaItem item);
+}
+
+RemoteFileClient remoteClientForSource(MediaSourceConfig source) =>
+    source.type == SourceType.openlist
+        ? OpenlistClient.fromSource(source)
+        : WebdavClient.fromSource(source);
+
+class RemotePlayback {
+  const RemotePlayback(this.uri, this.headers);
+
+  final String uri;
+  final Map<String, String> headers;
+}
+
+class WebdavClient implements RemoteFileClient {
   const WebdavClient(this.source);
 
   factory WebdavClient.fromSource(MediaSourceConfig source) =>
@@ -16,6 +35,7 @@ class WebdavClient {
     return scanVideosStream(path, maxDepth: maxDepth).toList();
   }
 
+  @override
   Stream<WebdavEntry> scanVideosStream(String path,
       {required int maxDepth}) async* {
     Stream<WebdavEntry> walk(String current, int depth) async* {
@@ -32,6 +52,7 @@ class WebdavClient {
     yield* walk(path, 0);
   }
 
+  @override
   Future<WebdavEntry?> findFile(String path) async {
     final parent = parentPath(path);
     final name = Uri.decodeComponent(
@@ -45,6 +66,12 @@ class WebdavClient {
     return null;
   }
 
+  @override
+  Future<RemotePlayback> playback(MediaItem item) async {
+    return RemotePlayback(item.uri, source.headers);
+  }
+
+  @override
   Future<List<WebdavEntry>> list(String path) async {
     final uri = source.resolve(path);
     final request = http.Request('PROPFIND', uri)
@@ -156,6 +183,169 @@ class WebdavClient {
       await sink.close();
     }
   }
+}
+
+class OpenlistClient implements RemoteFileClient {
+  OpenlistClient(this.source);
+
+  factory OpenlistClient.fromSource(MediaSourceConfig source) =>
+      OpenlistClient(source);
+
+  final MediaSourceConfig source;
+  String? _token;
+
+  Uri _api(String path) {
+    final base = source.baseUrl.endsWith('/')
+        ? source.baseUrl.substring(0, source.baseUrl.length - 1)
+        : source.baseUrl;
+    return Uri.parse('$base$path');
+  }
+
+  Future<Map<String, String>> _headers() async {
+    final headers = {'Content-Type': 'application/json'};
+    if (source.username.isEmpty && source.password.isEmpty) return headers;
+    _token ??= await _login();
+    return {...headers, 'Authorization': _token!};
+  }
+
+  Future<String> _login() async {
+    final response = await http.post(
+      _api('/api/auth/login'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'username': source.username,
+        'password': source.password,
+        'otp_code': source.otpCode,
+      }),
+    );
+    final data = _openlistJson(response, 'OpenList login');
+    final token = (data['data'] as Map?)?['token'] as String?;
+    if (token == null || token.isEmpty) {
+      throw Exception('OpenList login failed: missing token');
+    }
+    return token;
+  }
+
+  Future<Map<String, dynamic>> _post(
+      String path, Map<String, dynamic> body) async {
+    final response = await http.post(
+      _api(path),
+      headers: await _headers(),
+      body: jsonEncode(body),
+    );
+    return _openlistJson(response, 'OpenList $path');
+  }
+
+  @override
+  Future<List<WebdavEntry>> list(String path) async {
+    final normalized = normalizeRemoteDir(path);
+    final json = await _post('/api/fs/list', {
+      'path': normalized,
+      'password': '',
+      'page': 1,
+      'per_page': 0,
+      'refresh': false,
+    });
+    final data = json['data'] as Map? ?? const {};
+    final content = data['content'] as List? ?? const [];
+    return content
+        .whereType<Map>()
+        .map((entry) => _entry(normalized, entry))
+        .toList(growable: false);
+  }
+
+  WebdavEntry _entry(String parent, Map entry) {
+    final name = entry['name'] as String? ?? '';
+    final isDir = entry['is_dir'] == true;
+    final path = _joinRemote(parent, name, isDir: isDir);
+    final sign = entry['sign'] as String? ?? '';
+    return WebdavEntry(
+      name: name,
+      path: path,
+      url: _downloadUrl(path, sign),
+      isDir: isDir,
+      size: (entry['size'] as num?)?.toInt(),
+    );
+  }
+
+  @override
+  Stream<WebdavEntry> scanVideosStream(String path,
+      {required int maxDepth}) async* {
+    Stream<WebdavEntry> walk(String current, int depth) async* {
+      final entries = await list(current);
+      for (final entry in entries) {
+        if (entry.isDir && depth < maxDepth) {
+          yield* walk(entry.path, depth + 1);
+        } else if (!entry.isDir && isVideoName(entry.name)) {
+          yield entry;
+        }
+      }
+    }
+
+    yield* walk(path, 0);
+  }
+
+  @override
+  Future<WebdavEntry?> findFile(String path) async {
+    final parent = parentPath(path);
+    final entries = await list(parent);
+    return entries
+        .where((entry) => !entry.isDir && entry.path == path)
+        .firstOrNull;
+  }
+
+  @override
+  Future<RemotePlayback> playback(MediaItem item) async {
+    final path = sourceItemPath(source, item);
+    final json = await _post('/api/fs/get', {
+      'path': path,
+      'password': '',
+    });
+    final data = json['data'] as Map? ?? const {};
+    final url = (data['url'] ?? data['raw_url']) as String?;
+    if (url == null || url.isEmpty) {
+      final sign = data['sign'] as String? ?? '';
+      return RemotePlayback(
+        sign.isEmpty ? item.uri : _downloadUrl(path, sign),
+        const {},
+      );
+    }
+    final headers = (data['header'] ?? data['headers']) as Map?;
+    return RemotePlayback(
+      url,
+      headers == null
+          ? const {}
+          : headers.map((key, value) => MapEntry('$key', '$value')),
+    );
+  }
+
+  String _downloadUrl(String path, String sign) {
+    final base = source.baseUrl.endsWith('/')
+        ? source.baseUrl.substring(0, source.baseUrl.length - 1)
+        : source.baseUrl;
+    final encoded = path
+        .split('/')
+        .where((part) => part.isNotEmpty)
+        .map(Uri.encodeComponent)
+        .join('/');
+    final url = '$base/d/$encoded';
+    return sign.isEmpty ? url : '$url?sign=${Uri.encodeQueryComponent(sign)}';
+  }
+}
+
+Map<String, dynamic> _openlistJson(http.Response response, String label) {
+  final body = jsonDecode(response.body) as Map<String, dynamic>;
+  final code = (body['code'] as num?)?.toInt() ?? response.statusCode;
+  if (response.statusCode < 200 || response.statusCode >= 300 || code != 200) {
+    throw Exception('$label $code: ${body['message'] ?? response.body}');
+  }
+  return body;
+}
+
+String _joinRemote(String parent, String name, {required bool isDir}) {
+  final root = normalizeRemoteDir(parent);
+  final path = root == '/' ? '/$name' : '$root$name';
+  return isDir ? normalizeRemoteDir(path) : path;
 }
 
 List<WebdavEntry> parseWebdavEntries(

@@ -1,6 +1,27 @@
 part of 'package:player_flutter/main.dart';
 
-enum SourceType { local, webdav }
+enum SourceType { local, webdav, openlist }
+
+SourceType sourceTypeFromValue(String value) => switch (value) {
+      'webdav' => SourceType.webdav,
+      'openlist' => SourceType.openlist,
+      _ => SourceType.local,
+    };
+
+String sourceTypeValue(SourceType type) => switch (type) {
+      SourceType.webdav => 'webdav',
+      SourceType.openlist => 'openlist',
+      SourceType.local => 'local',
+    };
+
+bool isRemoteSourceType(SourceType type) =>
+    type == SourceType.webdav || type == SourceType.openlist;
+
+String sourceTypeLabel(SourceType type) => switch (type) {
+      SourceType.webdav => 'WebDAV',
+      SourceType.openlist => 'OpenList',
+      SourceType.local => 'Local',
+    };
 
 class MediaSourceConfig {
   const MediaSourceConfig({
@@ -11,6 +32,7 @@ class MediaSourceConfig {
     this.baseUrl = '',
     this.username = '',
     this.password = '',
+    this.otpCode = '',
     this.selectedPaths = const [],
     this.seriesPaths = const [],
   });
@@ -27,6 +49,7 @@ class MediaSourceConfig {
     required String baseUrl,
     required String username,
     required String password,
+    String otpCode = '',
     required String directory,
     List<String> selectedPaths = const [],
     List<String> seriesPaths = const [],
@@ -38,6 +61,32 @@ class MediaSourceConfig {
       baseUrl: baseUrl,
       username: username,
       password: password,
+      otpCode: otpCode,
+      directory: directory,
+      selectedPaths: selectedPaths,
+      seriesPaths: seriesPaths,
+    );
+  }
+
+  factory MediaSourceConfig.openlist({
+    required String id,
+    required String name,
+    required String baseUrl,
+    required String username,
+    required String password,
+    String otpCode = '',
+    required String directory,
+    List<String> selectedPaths = const [],
+    List<String> seriesPaths = const [],
+  }) {
+    return MediaSourceConfig(
+      id: id,
+      name: name,
+      type: SourceType.openlist,
+      baseUrl: baseUrl,
+      username: username,
+      password: password,
+      otpCode: otpCode,
       directory: directory,
       selectedPaths: selectedPaths,
       seriesPaths: seriesPaths,
@@ -51,6 +100,7 @@ class MediaSourceConfig {
   final String baseUrl;
   final String username;
   final String password;
+  final String otpCode;
   final List<String> selectedPaths;
   final List<String> seriesPaths;
 
@@ -59,6 +109,7 @@ class MediaSourceConfig {
       : '$baseUrl$directory';
 
   Map<String, String> get headers {
+    if (type != SourceType.webdav) return {};
     if (username.isEmpty && password.isEmpty) return {};
     return {
       'Authorization':
@@ -82,6 +133,7 @@ class MediaSourceConfig {
     String? baseUrl,
     String? username,
     String? password,
+    String? otpCode,
     List<String>? selectedPaths,
     List<String>? seriesPaths,
   }) {
@@ -93,6 +145,7 @@ class MediaSourceConfig {
       baseUrl: baseUrl ?? this.baseUrl,
       username: username ?? this.username,
       password: password ?? this.password,
+      otpCode: otpCode ?? this.otpCode,
       selectedPaths: selectedPaths ?? this.selectedPaths,
       seriesPaths: seriesPaths ?? this.seriesPaths,
     );
@@ -102,13 +155,12 @@ class MediaSourceConfig {
       MediaSourceConfig(
         id: json['id'] as String,
         name: json['name'] as String,
-        type: (json['type'] as String) == 'webdav'
-            ? SourceType.webdav
-            : SourceType.local,
+        type: sourceTypeFromValue(json['type'] as String? ?? 'local'),
         directory: json['directory'] as String,
         baseUrl: json['baseUrl'] as String? ?? '',
         username: json['username'] as String? ?? '',
         password: json['password'] as String? ?? '',
+        otpCode: json['otpCode'] as String? ?? '',
         selectedPaths: (json['selectedPaths'] as List<dynamic>? ?? const [])
             .whereType<String>()
             .toList(),
@@ -120,11 +172,12 @@ class MediaSourceConfig {
   Map<String, dynamic> toJson() => {
         'id': id,
         'name': name,
-        'type': type == SourceType.webdav ? 'webdav' : 'local',
+        'type': sourceTypeValue(type),
         'directory': directory,
         'baseUrl': baseUrl,
         'username': username,
         'password': password,
+        'otpCode': otpCode,
         'selectedPaths': selectedPaths,
         'seriesPaths': seriesPaths,
       };
@@ -183,6 +236,11 @@ class MediaItem {
 
   factory MediaItem.webdav(
       {required MediaSourceConfig source, required WebdavEntry entry}) {
+    return MediaItem.remote(source: source, entry: entry);
+  }
+
+  factory MediaItem.remote(
+      {required MediaSourceConfig source, required WebdavEntry entry}) {
     final title = p.basenameWithoutExtension(entry.name);
     final candidate = RustCoreService.instance
         .tryParseMediaPathCandidate(SourceType.webdav, entry.path);
@@ -192,9 +250,9 @@ class MediaItem {
       id: '${source.id}:${entry.path}',
       sourceId: source.id,
       sourceName: source.name,
-      type: SourceType.webdav,
+      type: source.type,
       title: title,
-      uri: entry.url,
+      uri: source.type == SourceType.openlist ? entry.path : entry.url,
       folderTitle: folderTitle,
       matchTitle: candidate?.title ?? title,
       matchYear: candidate?.year,
@@ -274,9 +332,7 @@ class MediaItem {
         id: json['id'] as String,
         sourceId: json['sourceId'] as String,
         sourceName: json['sourceName'] as String,
-        type: (json['type'] as String) == 'webdav'
-            ? SourceType.webdav
-            : SourceType.local,
+        type: sourceTypeFromValue(json['type'] as String? ?? 'local'),
         title: json['title'] as String,
         uri: json['uri'] as String,
         folderTitle: json['folderTitle'] as String? ?? '',
@@ -296,7 +352,7 @@ class MediaItem {
         'id': id,
         'sourceId': sourceId,
         'sourceName': sourceName,
-        'type': type == SourceType.webdav ? 'webdav' : 'local',
+        'type': sourceTypeValue(type),
         'title': title,
         'uri': uri,
         'folderTitle': folderTitle,
@@ -1268,6 +1324,7 @@ class WebdavSourceDraft {
     required this.baseUrl,
     required this.username,
     required this.password,
+    this.otpCode = '',
     required this.directory,
   });
 
@@ -1275,6 +1332,7 @@ class WebdavSourceDraft {
   final String baseUrl;
   final String username;
   final String password;
+  final String otpCode;
   final String directory;
 }
 

@@ -18,7 +18,7 @@ class SourceLibraryPage extends StatelessWidget {
         count: count,
         onOpen: () => Navigator.of(context).push(
           appSlideRoute(
-            (_) => source.type == SourceType.webdav
+            (_) => isRemoteSourceType(source.type)
                 ? WebdavBrowserPage(store: store, source: source)
                 : LocalBrowserPage(store: store, source: source),
           ),
@@ -28,7 +28,7 @@ class SourceLibraryPage extends StatelessWidget {
             (_) => AddedSourceSelectionsPage(store: store, source: source),
           ),
         ),
-        onEdit: source.type == SourceType.webdav
+        onEdit: isRemoteSourceType(source.type)
             ? () => Navigator.of(context).push(
                   appSlideRoute(
                     (_) => WebdavSourceFormPage(
@@ -59,6 +59,7 @@ class SourceLibraryPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final localSources = _sourcesOf(SourceType.local);
     final webdavSources = _sourcesOf(SourceType.webdav);
+    final openlistSources = _sourcesOf(SourceType.openlist);
 
     return ColoredBox(
       color: Colors.white,
@@ -103,6 +104,7 @@ class SourceLibraryPage extends StatelessWidget {
                 children: [
                   ..._sourceSection(context, '本地目录', localSources),
                   ..._sourceSection(context, 'WebDAV', webdavSources),
+                  ..._sourceSection(context, 'OpenList', openlistSources),
                   const SizedBox(height: 22),
                 ],
               ),
@@ -140,8 +142,8 @@ class _AddedSourceSelectionsPageState extends State<AddedSourceSelectionsPage> {
   Future<List<_AddedSourceEntry>> load() async {
     final current = source;
     if (current == null) return const [];
-    if (current.type == SourceType.webdav) {
-      final entries = await WebdavClient.fromSource(current).list(path);
+    if (isRemoteSourceType(current.type)) {
+      final entries = await remoteClientForSource(current).list(path);
       return entries
           .map(_AddedSourceEntry.webdav)
           .where((entry) =>
@@ -178,7 +180,7 @@ class _AddedSourceSelectionsPageState extends State<AddedSourceSelectionsPage> {
     final current = source;
     if (current == null || path == current.directory) return;
     refresh(
-        current.type == SourceType.webdav ? parentPath(path) : p.dirname(path));
+        isRemoteSourceType(current.type) ? parentPath(path) : p.dirname(path));
   }
 
   Future<void> _remove(MediaSourceConfig source, String path) async {
@@ -363,11 +365,11 @@ class _AddedSourceEntry {
   final LocalEntry? local;
 
   MediaItem? toMediaItem(MediaSourceConfig source) {
-    if (source.type == SourceType.webdav) {
+    if (isRemoteSourceType(source.type)) {
       final entry = webdav;
       return entry == null
           ? null
-          : MediaItem.webdav(source: source, entry: entry);
+          : MediaItem.remote(source: source, entry: entry);
     }
     final entry = local;
     return entry == null

@@ -28,7 +28,7 @@ String sourcePathIdentity(
   String path, {
   bool? isDir,
 }) {
-  if (source.type == SourceType.webdav) {
+  if (isRemoteSourceType(source.type)) {
     return isDir == true || path.endsWith('/')
         ? normalizeRemoteDir(path)
         : path;
@@ -37,7 +37,7 @@ String sourcePathIdentity(
 }
 
 bool sourceStoredPathIsDir(MediaSourceConfig source, String path) {
-  if (source.type == SourceType.webdav) return path.endsWith('/');
+  if (isRemoteSourceType(source.type)) return path.endsWith('/');
   return !isVideoName(path);
 }
 
@@ -77,7 +77,7 @@ Set<String> selectedPathsCoveredBy(
   String selectedPath,
 ) {
   final normalizedPath =
-      source.type == SourceType.webdav && selectedPath.endsWith('/')
+      isRemoteSourceType(source.type) && selectedPath.endsWith('/')
           ? normalizeRemoteDir(selectedPath)
           : sourcePathIdentity(source, selectedPath);
   final pathIsDir = sourceStoredPathIsDir(source, normalizedPath);
@@ -95,7 +95,7 @@ Set<String> selectedPathsCoveredBy(
 }
 
 String sourceItemPath(MediaSourceConfig source, MediaItem item) {
-  if (source.type == SourceType.webdav) {
+  if (isRemoteSourceType(source.type)) {
     final prefix = '${source.id}:';
     return item.id.startsWith(prefix) ? item.id.substring(prefix.length) : '';
   }
@@ -103,7 +103,7 @@ String sourceItemPath(MediaSourceConfig source, MediaItem item) {
 }
 
 String mediaPathName(MediaSourceConfig source, String path) {
-  final value = source.type == SourceType.webdav
+  final value = isRemoteSourceType(source.type)
       ? path.trimRight().split('/').where((part) => part.isNotEmpty).lastOrNull
       : p.basename(path);
   if (value == null || value.isEmpty) return path;
@@ -464,7 +464,7 @@ String mediaFolderKey(MediaItem item) {
   final parsedGroupPath = normalizedItemGroupPath(item);
   if (parsedGroupPath.isNotEmpty) {
     return normalizeMediaFolderKey(
-      '${item.sourceId}:${item.type == SourceType.webdav ? 'webdav' : 'local'}:$parsedGroupPath',
+      '${item.sourceId}:${sourceTypeValue(item.type)}:$parsedGroupPath',
     );
   }
   if (item.type == SourceType.local) {
@@ -486,7 +486,7 @@ String mediaFolderKey(MediaItem item) {
 String normalizedItemGroupPath(MediaItem item) {
   final value = item.groupPath.trim().replaceAll('\\', '/');
   if (value.isEmpty) return '';
-  if (item.type == SourceType.webdav && !value.startsWith('/')) {
+  if (isRemoteSourceType(item.type) && !value.startsWith('/')) {
     return '/$value';
   }
   return value;

@@ -109,7 +109,7 @@ class MediaTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final remote = item.type == SourceType.webdav;
+    final remote = isRemoteSourceType(item.type);
     final rating = metadata?.voteAverage;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -224,7 +224,7 @@ class RecentMediaTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final remote = item.type == SourceType.webdav;
+    final remote = isRemoteSourceType(item.type);
     final imagePath = metadata?.stillPath ?? metadata?.backdropPath;
     final hasTime = progressMs > 0 || durationMs > 0;
     final timeText = durationMs > 0

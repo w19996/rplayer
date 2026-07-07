@@ -526,7 +526,8 @@ class _LibraryDbTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final coverItem = _libraryEntryCoverItem(store, entry);
-    final remote = coverItem?.type == SourceType.webdav;
+    final remote =
+        coverItem == null ? false : isRemoteSourceType(coverItem.type);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -799,7 +800,9 @@ class _RecentDbTile extends StatelessWidget {
                       size: imagePath == recent.posterPath ? 'w500' : 'w780',
                       fit: BoxFit.cover,
                       fallback: MediaPosterFallback(
-                        remote: item?.type == SourceType.webdav,
+                        remote: item == null
+                            ? false
+                            : isRemoteSourceType(item.type),
                       ),
                     )
                   else if (item != null)
@@ -808,7 +811,7 @@ class _RecentDbTile extends StatelessWidget {
                       item: item,
                       fit: BoxFit.cover,
                       fallback: MediaPosterFallback(
-                        remote: item.type == SourceType.webdav,
+                        remote: isRemoteSourceType(item.type),
                       ),
                     )
                   else
@@ -2388,10 +2391,10 @@ String playButtonLabel(int episode, int progressMs) {
 }
 
 String itemFolderLine(MediaItem item) {
-  if (item.type == SourceType.webdav) {
+  if (isRemoteSourceType(item.type)) {
     final uri = Uri.tryParse(item.uri);
     final path = uri == null ? item.uri : Uri.decodeComponent(uri.path);
-    return 'WebDAV: ${item.sourceName} - ${parentPath(path)}';
+    return '${sourceTypeLabel(item.type)}: ${item.sourceName} - ${parentPath(path)}';
   }
   return '本地: ${item.sourceName} - ${p.dirname(item.uri)}';
 }
@@ -2465,7 +2468,9 @@ class _EpisodeDbCard extends StatelessWidget {
                       size: 'w780',
                       fit: BoxFit.cover,
                       fallback: MediaPosterFallback(
-                        remote: item?.type == SourceType.webdav,
+                        remote: item == null
+                            ? false
+                            : isRemoteSourceType(item.type),
                       ),
                     )
                   else if (item != null)
@@ -2474,7 +2479,7 @@ class _EpisodeDbCard extends StatelessWidget {
                       item: item,
                       fit: BoxFit.cover,
                       fallback: MediaPosterFallback(
-                        remote: item.type == SourceType.webdav,
+                        remote: isRemoteSourceType(item.type),
                       ),
                     )
                   else
@@ -2666,7 +2671,7 @@ class _EpisodeCard extends StatelessWidget {
                       size: 'w780',
                       fit: BoxFit.cover,
                       fallback: MediaPosterFallback(
-                          remote: item.type == SourceType.webdav),
+                          remote: isRemoteSourceType(item.type)),
                     )
                   else
                     VideoCoverImage(
@@ -2674,7 +2679,7 @@ class _EpisodeCard extends StatelessWidget {
                       item: item,
                       fit: BoxFit.cover,
                       fallback: MediaPosterFallback(
-                          remote: item.type == SourceType.webdav),
+                          remote: isRemoteSourceType(item.type)),
                     ),
                   const Center(
                     child: CircleAvatar(

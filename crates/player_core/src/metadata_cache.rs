@@ -828,6 +828,7 @@ fn open(db_path: &str) -> Result<Connection> {
            root_path text default '/',
            username text,
            password text,
+           otp_code text,
            credential_id text,
            created_at integer not null,
            updated_at integer not null
@@ -1222,6 +1223,7 @@ fn open(db_path: &str) -> Result<Connection> {
     )?;
     add_column_if_missing(&conn, "sources", "username", "text")?;
     add_column_if_missing(&conn, "sources", "password", "text")?;
+    add_column_if_missing(&conn, "sources", "otp_code", "text")?;
     add_column_if_missing(
         &conn,
         "source_folders",
@@ -1397,7 +1399,7 @@ fn export_library_state_json(conn: &Connection) -> Result<String> {
     let mut sources = Vec::new();
     let mut stmt = conn.prepare(
         "select id, name, type, coalesce(base_url, ''), coalesce(root_path, '/'),
-                coalesce(username, ''), coalesce(password, '')
+                coalesce(username, ''), coalesce(password, ''), coalesce(otp_code, '')
          from sources
          order by created_at, id",
     )?;
@@ -1410,10 +1412,11 @@ fn export_library_state_json(conn: &Connection) -> Result<String> {
             row.get::<_, String>(4)?,
             row.get::<_, String>(5)?,
             row.get::<_, String>(6)?,
+            row.get::<_, String>(7)?,
         ))
     })?;
     for row in rows {
-        let (id, name, source_type, base_url, root_path, username, password) = row?;
+        let (id, name, source_type, base_url, root_path, username, password, otp_code) = row?;
         let selected_paths = query_selected_paths(conn, &id)?;
         let series_paths = query_series_paths(conn, &id)?;
         let mut object = Map::new();
@@ -1424,6 +1427,7 @@ fn export_library_state_json(conn: &Connection) -> Result<String> {
         object.insert("baseUrl".to_string(), Value::String(base_url));
         object.insert("username".to_string(), Value::String(username));
         object.insert("password".to_string(), Value::String(password));
+        object.insert("otpCode".to_string(), Value::String(otp_code));
         object.insert(
             "selectedPaths".to_string(),
             Value::Array(selected_paths.into_iter().map(Value::String).collect()),
@@ -1687,21 +1691,25 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
             .and_then(Value::as_str)
             .unwrap_or(source_id);
         let base_url = source.get("baseUrl").and_then(Value::as_str).unwrap_or("");
-        let root_path = source
-            .get("directory")
-            .and_then(Value::as_str)
-            .unwrap_or(if source_type == "webdav" { "/" } else { "" });
+        let root_path = source.get("directory").and_then(Value::as_str).unwrap_or(
+            if is_remote_source_type(source_type) {
+                "/"
+            } else {
+                ""
+            },
+        );
         let username = source.get("username").and_then(Value::as_str).unwrap_or("");
         let password = source.get("password").and_then(Value::as_str).unwrap_or("");
-        let credential_id = if source_type == "webdav" {
+        let otp_code = source.get("otpCode").and_then(Value::as_str).unwrap_or("");
+        let credential_id = if is_remote_source_type(source_type) {
             Some(format!("source:{source_id}"))
         } else {
             None
         };
         live_source_ids.insert(source_id.to_string());
         conn.execute(
-            "insert into sources(id, name, type, base_url, root_path, username, password, credential_id, created_at, updated_at)
-             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+            "insert into sources(id, name, type, base_url, root_path, username, password, otp_code, credential_id, created_at, updated_at)
+             values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
              on conflict(id) do update set
                name=excluded.name,
                type=excluded.type,
@@ -1709,6 +1717,7 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
                root_path=excluded.root_path,
                username=excluded.username,
                password=excluded.password,
+               otp_code=excluded.otp_code,
                credential_id=excluded.credential_id,
                updated_at=excluded.updated_at",
             params![
@@ -1719,6 +1728,7 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
                 normalize_folder_path(root_path),
                 empty_to_null(username),
                 empty_to_null(password),
+                empty_to_null(otp_code),
                 credential_id,
                 now
             ],
@@ -1778,7 +1788,8 @@ fn sync_library_from_state_json(conn: &Connection, state_json: &str) -> Result<(
         let uri = item.get("uri").and_then(Value::as_str).unwrap_or("");
         let relative_path = item_relative_path(item_type, uri);
         let parsed_candidates =
-            parse_media_path_candidates(item_type, &relative_path).unwrap_or_default();
+            parse_media_path_candidates(parser_source_type(item_type), &relative_path)
+                .unwrap_or_default();
         let parsed = parsed_candidates.first();
         let manual_series = item
             .get("manualSeries")
@@ -3292,12 +3303,24 @@ fn cleanup_orphan_tmdb(conn: &Connection) -> Result<()> {
 }
 
 fn item_relative_path(item_type: &str, uri: &str) -> String {
-    if item_type == "webdav" {
+    if is_remote_source_type(item_type) {
         if let Ok(url) = Url::parse(uri) {
             return normalize_resource_path(&percent_decode(url.path()));
         }
     }
     normalize_resource_path(uri)
+}
+
+fn is_remote_source_type(source_type: &str) -> bool {
+    source_type == "webdav" || source_type == "openlist"
+}
+
+fn parser_source_type(source_type: &str) -> &str {
+    if is_remote_source_type(source_type) {
+        "webdav"
+    } else {
+        "local"
+    }
 }
 
 fn parent_path(path: &str) -> String {

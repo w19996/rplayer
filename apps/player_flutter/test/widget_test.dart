@@ -1474,6 +1474,7 @@ void main() {
 
     expect(find.text('本地目录'), findsOneWidget);
     expect(find.text('WebDAV'), findsOneWidget);
+    expect(find.text('OpenList'), findsOneWidget);
   });
 
   testWidgets('opening local browser adds no source until a path is selected',
@@ -1492,6 +1493,28 @@ void main() {
 
     expect(store.sources, isEmpty);
     expect(find.byType(LocalBrowserPage), findsOneWidget);
+  });
+
+  testWidgets('openlist form uses Chinese default name',
+      (WidgetTester tester) async {
+    final store = AppStore()..loaded = true;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AddSourcePage(store: store),
+      ),
+    );
+
+    await tester.tap(find.text('OpenList'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('\u6211\u7684 OpenList'), findsOneWidget);
+    expect(find.text('添加 OpenList 源'), findsOneWidget);
+    expect(find.text('OTP Code\uFF08\u53EF\u9009\uFF09'), findsOneWidget);
+    expect(
+        find.text(
+            '\u672A\u542F\u7528\u4E24\u6B65\u9A8C\u8BC1\u53EF\u7559\u7A7A'),
+        findsOneWidget);
   });
 
   testWidgets('added source browser uses a pop guard',

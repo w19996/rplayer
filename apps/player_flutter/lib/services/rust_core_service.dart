@@ -122,7 +122,7 @@ class RustCoreService {
   List<RustSearchCandidate> parseMediaPathCandidates(
       SourceType sourceType, String path) {
     _ensureAvailable();
-    final source = sourceType == SourceType.webdav ? 'webdav' : 'local';
+    final source = isRemoteSourceType(sourceType) ? 'webdav' : 'local';
     final text = _callTwoString(_parseMediaPathCandidatesJson, source, path);
     final data = jsonDecode(text) as List<dynamic>;
     return data
@@ -133,7 +133,7 @@ class RustCoreService {
 
   String mediaSeriesTitle(SourceType sourceType, String path) {
     _ensureAvailable();
-    final source = sourceType == SourceType.webdav ? 'webdav' : 'local';
+    final source = isRemoteSourceType(sourceType) ? 'webdav' : 'local';
     final text = _callTwoString(_mediaSeriesTitleJson, source, path);
     return jsonDecode(text) as String? ?? '';
   }

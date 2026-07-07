@@ -495,6 +495,25 @@ class AppStore extends ChangeNotifier {
       baseUrl: draft.baseUrl,
       username: draft.username,
       password: draft.password,
+      otpCode: draft.otpCode,
+      directory: normalizeRemoteDir(draft.directory),
+    );
+    sources.add(source);
+    await save();
+    notifyListeners();
+    return source;
+  }
+
+  Future<MediaSourceConfig> addOpenlistSource(WebdavSourceDraft draft) async {
+    addDiagnosticLog('add openlist source: ${draft.baseUrl}${draft.directory}',
+        category: 'source');
+    final source = MediaSourceConfig.openlist(
+      id: newId(),
+      name: draft.name.isEmpty ? 'OpenList' : draft.name,
+      baseUrl: draft.baseUrl,
+      username: draft.username,
+      password: draft.password,
+      otpCode: draft.otpCode,
       directory: normalizeRemoteDir(draft.directory),
     );
     sources.add(source);
@@ -512,6 +531,7 @@ class AppStore extends ChangeNotifier {
       baseUrl: draft.baseUrl,
       username: draft.username,
       password: draft.password,
+      otpCode: draft.otpCode,
       directory: normalizeRemoteDir(draft.directory),
     );
     replaceSource(updated);
@@ -623,18 +643,18 @@ class AppStore extends ChangeNotifier {
     syncParserRegexesToCore();
 
     if (entry.isDir) {
-      final client = WebdavClient.fromSource(updated);
+      final client = remoteClientForSource(updated);
       var count = 0;
       await for (final video
           in client.scanVideosStream(entry.path, maxDepth: 8)) {
         addOrReplaceItem(applyManualSeriesPath(
-            updated, MediaItem.webdav(source: updated, entry: video)));
+            updated, MediaItem.remote(source: updated, entry: video)));
         count++;
         notifyScanProgress(count);
       }
     } else if (isVideoName(entry.name)) {
       addOrReplaceItem(applyManualSeriesPath(
-          updated, MediaItem.webdav(source: updated, entry: entry)));
+          updated, MediaItem.remote(source: updated, entry: entry)));
       notifyScanProgress(1);
     }
     items.sort(compareMediaItems);
@@ -731,7 +751,7 @@ class AppStore extends ChangeNotifier {
       category: 'scan',
     );
     final normalizedPath =
-        source.type == SourceType.webdav && selectedPath.endsWith('/')
+        isRemoteSourceType(source.type) && selectedPath.endsWith('/')
             ? normalizeRemoteDir(selectedPath)
             : sourcePathIdentity(source, selectedPath);
     final pathIsDir = sourceStoredPathIsDir(source, normalizedPath);
@@ -853,7 +873,7 @@ class AppStore extends ChangeNotifier {
   }
 
   String itemStoredPath(MediaItem item) {
-    if (item.type == SourceType.webdav) {
+    if (isRemoteSourceType(item.type)) {
       final prefix = '${item.sourceId}:';
       return item.id.startsWith(prefix) ? item.id.substring(prefix.length) : '';
     }
@@ -864,7 +884,7 @@ class AppStore extends ChangeNotifier {
     if (!diagnosticLoggingEnabled) return;
     _pathParseLogCount++;
     if (_pathParseLogCount > 20 && _pathParseLogCount % 500 != 0) return;
-    final source = item.type == SourceType.webdav ? 'webdav' : 'local';
+    final source = sourceTypeValue(item.type);
     addDiagnosticLog(
       'path parse result sample=$_pathParseLogCount source=$source item=${item.id} title="${item.title}" folder="${item.folderTitle}" match="${item.matchTitle}" year=${item.matchYear} season=${item.season} episode=${item.episode} kind=${item.mediaKind} size=${item.size}',
       category: 'parse',
@@ -1938,19 +1958,23 @@ class AppStore extends ChangeNotifier {
 
   Future<Uint8List?> _loadVideoCoverBytes(
       MediaItem item, String key, File file) async {
-    final remote = item.type == SourceType.webdav;
-    final headers = remote
-        ? sources
-                .where((source) => source.id == item.sourceId)
-                .firstOrNull
-                ?.headers ??
-            const <String, String>{}
+    final remote = isRemoteSourceType(item.type);
+    final source =
+        sources.where((source) => source.id == item.sourceId).firstOrNull;
+    var uri = item.uri;
+    var headers = remote
+        ? source?.headers ?? const <String, String>{}
         : const <String, String>{};
+    if (source?.type == SourceType.openlist) {
+      final playback = await remoteClientForSource(source!).playback(item);
+      uri = playback.uri;
+      headers = playback.headers;
+    }
     try {
       Future<Uint8List?> load() => appChannel.invokeMethod<Uint8List>(
             'videoThumbnail',
             {
-              'uri': item.uri,
+              'uri': uri,
               'remote': remote,
               'headers': headers,
             },
