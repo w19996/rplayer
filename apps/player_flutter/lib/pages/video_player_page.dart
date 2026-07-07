@@ -915,7 +915,6 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
 
     orientationLocked = true;
     final landscape = width >= height;
-    await widget.store.rememberFolderOrientation(currentItem, landscape);
     if (landscape) {
       await applyLandscapeVideoOrientation();
     } else {
@@ -924,6 +923,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       await SystemChrome.setPreferredOrientations(
           [DeviceOrientation.portraitUp]);
     }
+    unawaited(widget.store.rememberFolderOrientation(currentItem, landscape));
   }
 
   Future<void> applyRememberedOrientation() async {

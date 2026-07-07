@@ -73,6 +73,59 @@ void main() {
     }
   });
 
+  test('openlist playback accepts blank or string headers', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    var call = 0;
+    final subscription = server.listen((request) async {
+      await utf8.decoder.bind(request).join();
+      request.response.headers.contentType = ContentType.json;
+      if (request.uri.path == '/api/auth/login') {
+        request.response.write(jsonEncode({
+          'code': 200,
+          'data': {'token': 'token-1'},
+        }));
+      } else if (request.uri.path == '/api/fs/get') {
+        call++;
+        request.response.write(jsonEncode({
+          'code': 200,
+          'data': {
+            'url': 'https://cdn.example/Movie.mp4',
+            'header':
+                call == 1 ? '' : '{"Referer":"https://openlist.example/"}',
+          },
+        }));
+      }
+      await request.response.close();
+    });
+
+    try {
+      final source = MediaSourceConfig.openlist(
+        id: 'openlist',
+        name: 'OpenList',
+        baseUrl: 'http://${server.address.host}:${server.port}',
+        username: 'admin',
+        password: 'secret',
+        directory: '/',
+      );
+      final client = OpenlistClient.fromSource(source);
+      const item = MediaItem(
+        id: 'openlist:/Movie.mp4',
+        sourceId: 'openlist',
+        sourceName: 'OpenList',
+        type: SourceType.openlist,
+        title: 'Movie',
+        uri: '/Movie.mp4',
+      );
+
+      expect((await client.playback(item)).headers, isEmpty);
+      expect((await client.playback(item)).headers,
+          {'Referer': 'https://openlist.example/'});
+    } finally {
+      await subscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
   test('webdav file transfer streams progress', () async {
     final payload = List<int>.generate(256 * 1024, (index) => index % 251);
     var stored = <int>[];

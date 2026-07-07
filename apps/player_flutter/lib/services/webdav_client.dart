@@ -310,12 +310,9 @@ class OpenlistClient implements RemoteFileClient {
         const {},
       );
     }
-    final headers = (data['header'] ?? data['headers']) as Map?;
     return RemotePlayback(
       url,
-      headers == null
-          ? const {}
-          : headers.map((key, value) => MapEntry('$key', '$value')),
+      _openlistPlaybackHeaders(data['header'] ?? data['headers']),
     );
   }
 
@@ -331,6 +328,21 @@ class OpenlistClient implements RemoteFileClient {
     final url = '$base/d/$encoded';
     return sign.isEmpty ? url : '$url?sign=${Uri.encodeQueryComponent(sign)}';
   }
+}
+
+Map<String, String> _openlistPlaybackHeaders(Object? value) {
+  if (value is Map) {
+    return value.map((key, value) => MapEntry('$key', '$value'));
+  }
+  if (value is String && value.trim().isNotEmpty) {
+    try {
+      final decoded = jsonDecode(value);
+      if (decoded is Map) {
+        return decoded.map((key, value) => MapEntry('$key', '$value'));
+      }
+    } catch (_) {}
+  }
+  return const {};
 }
 
 Map<String, dynamic> _openlistJson(http.Response response, String label) {
