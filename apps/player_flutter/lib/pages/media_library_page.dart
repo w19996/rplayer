@@ -465,9 +465,10 @@ Future<_LibraryPageData> _loadLibraryPageData(AppStore store) async {
     store,
     values[0] as List<LibraryHomeEntry>,
   );
-  final recent = (values[1] as List<LibraryRecentEntry>)
-      .where((entry) => store.itemById(entry.itemId) != null)
-      .toList();
+  final recent = filterRecentByMediaGroup(
+    store,
+    values[1] as List<LibraryRecentEntry>,
+  );
   unawaited(store.preloadCachedTmdbImages([
     for (final entry in home)
       if (entry.posterPath != null) MapEntry(entry.posterPath!, 'w500'),
@@ -483,6 +484,20 @@ Future<_LibraryPageData> _loadLibraryPageData(AppStore store) async {
     home: home,
     recent: recent,
   );
+}
+
+List<LibraryRecentEntry> filterRecentByMediaGroup(
+  AppStore store,
+  Iterable<LibraryRecentEntry> recent,
+) {
+  final seenGroups = <String>{};
+  final filtered = <LibraryRecentEntry>[];
+  for (final entry in recent) {
+    final item = store.itemById(entry.itemId);
+    if (item == null || !seenGroups.add(mediaFolderKey(item))) continue;
+    filtered.add(entry);
+  }
+  return filtered;
 }
 
 List<LibraryHomeEntry> filterLiveLibraryHome(

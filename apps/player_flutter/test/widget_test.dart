@@ -60,6 +60,80 @@ void main() {
     expect(groups.single.items, hasLength(2));
   });
 
+  test('recent media keeps only newest item per media group', () {
+    const first = MediaItem(
+      id: 'source:/media/Show/01.mkv',
+      sourceId: 'source',
+      sourceName: 'source',
+      type: SourceType.local,
+      title: '01',
+      uri: '/media/Show/01.mkv',
+      folderTitle: 'Show',
+    );
+    const second = MediaItem(
+      id: 'source:/media/Show/02.mkv',
+      sourceId: 'source',
+      sourceName: 'source',
+      type: SourceType.local,
+      title: '02',
+      uri: '/media/Show/02.mkv',
+      folderTitle: 'Show',
+    );
+    const other = MediaItem(
+      id: 'source:/media/Other/01.mkv',
+      sourceId: 'source',
+      sourceName: 'source',
+      type: SourceType.local,
+      title: '01',
+      uri: '/media/Other/01.mkv',
+      folderTitle: 'Other',
+    );
+    const firstRecent = LibraryRecentEntry(
+      fileId: 1,
+      itemId: 'source:/media/Show/01.mkv',
+      relativePath: 'Show/01.mkv',
+      filename: '01.mkv',
+      positionMs: 1000,
+      lastPlayedAt: 300,
+    );
+    const secondRecent = LibraryRecentEntry(
+      fileId: 2,
+      itemId: 'source:/media/Show/02.mkv',
+      relativePath: 'Show/02.mkv',
+      filename: '02.mkv',
+      positionMs: 1000,
+      lastPlayedAt: 200,
+    );
+    const otherRecent = LibraryRecentEntry(
+      fileId: 3,
+      itemId: 'source:/media/Other/01.mkv',
+      relativePath: 'Other/01.mkv',
+      filename: '01.mkv',
+      positionMs: 1000,
+      lastPlayedAt: 100,
+    );
+    const staleRecent = LibraryRecentEntry(
+      fileId: 4,
+      itemId: 'missing',
+      relativePath: 'Missing/01.mkv',
+      filename: '01.mkv',
+      positionMs: 1000,
+      lastPlayedAt: 400,
+    );
+    final store = AppStore()
+      ..addOrReplaceItem(first)
+      ..addOrReplaceItem(second)
+      ..addOrReplaceItem(other);
+
+    expect(
+      filterRecentByMediaGroup(
+        store,
+        const [staleRecent, firstRecent, secondRecent, otherRecent],
+      ),
+      [firstRecent, otherRecent],
+    );
+  });
+
   test('extracts explicit TMDB id from folder or file names', () {
     expect(explicitTmdbIdFromText('Friends tmdb-1668'), 1668);
     expect(explicitTmdbIdFromText('Friends TMDBID=1668'), 1668);
