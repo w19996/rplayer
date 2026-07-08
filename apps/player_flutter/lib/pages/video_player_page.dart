@@ -85,6 +85,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   bool loadingVisible = false;
   bool danmuLoading = false;
   bool inPictureInPicture = false;
+  bool playbackWindowFullscreen = false;
   bool windowFocusLost = false;
   bool multiWindowActive = false;
   bool competingWindowActive = false;
@@ -685,6 +686,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     controlsRevision.dispose();
     danmuSearchController.dispose();
     danmuSearchEpisodeController.dispose();
+    unawaited(setPlaybackWindowFullscreen(false));
     SystemChrome.setPreferredOrientations(DeviceOrientation.values);
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
         overlays: SystemUiOverlay.values);
@@ -1210,6 +1212,39 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       scheduleControlsAutoHide();
     }
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+  }
+
+  Future<void> togglePlaybackFullscreen() async {
+    if (Platform.isWindows) {
+      await setPlaybackWindowFullscreen(!playbackWindowFullscreen);
+      return;
+    }
+    await toggleFullscreen();
+  }
+
+  Future<void> setPlaybackWindowFullscreen(bool enabled) async {
+    if (!Platform.isWindows) return;
+    try {
+      final active = await appChannel.invokeMethod<bool>(
+            'setFullscreen',
+            enabled,
+          ) ??
+          enabled;
+      setStateIfMounted(() => playbackWindowFullscreen = active);
+      notifyControlsChanged();
+    } catch (_) {}
+  }
+
+  Future<void> handleEscapePressed() async {
+    if (Platform.isWindows && playbackWindowFullscreen) {
+      await setPlaybackWindowFullscreen(false);
+      return;
+    }
+    if (fullscreen) {
+      await toggleFullscreen();
+      return;
+    }
+    if (mounted) Navigator.of(context).maybePop();
   }
 
   void setControlsVisible(bool visible) {
@@ -2074,8 +2109,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
               const SizedBox(width: 6),
               statusText(network,
                   size: isLandscape ? 13 : 11, weight: FontWeight.w700),
-              const SizedBox(width: 8),
-              buildBatteryIndicator(),
+              if (Platform.isAndroid) ...[
+                const SizedBox(width: 8),
+                buildBatteryIndicator(),
+              ],
             ],
           ),
         ),
@@ -2111,42 +2148,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
                   shadows: controlShadows),
             ),
           ),
-          IconButton(
-            color: Colors.white,
-            onPressed: openDanmuPanel,
-            icon: shadowIcon(Icons.chat_bubble_outline,
-                size: isLandscape ? 24 : 21),
-            padding: EdgeInsets.zero,
-            constraints: BoxConstraints.tightFor(
-                width: isLandscape ? 36 : 34, height: isLandscape ? 36 : 34),
-          ),
         ],
       ),
-    );
-  }
-
-  Widget buildSideTools(
-      BuildContext context, BoxConstraints constraints, bool isLandscape) {
-    final safeTop = MediaQuery.paddingOf(context).top;
-    final buttons = [
-      controlIconButton(
-          icon: Icons.screen_rotation_alt_outlined,
-          onPressed: () => rotateScreen(context),
-          size: isLandscape ? 24 : 21),
-      controlIconButton(
-          icon: Icons.fit_screen_outlined,
-          onPressed: showFitModes,
-          size: isLandscape ? 24 : 21),
-    ];
-    return Positioned(
-      left: isLandscape ? 32 : 20,
-      top: isLandscape
-          ? math.max(96, constraints.maxHeight * 0.34)
-          : safeTop + 92,
-      child: isLandscape
-          ? Column(
-              children: [buttons[0], const SizedBox(height: 28), buttons[1]])
-          : Row(children: [buttons[0], const SizedBox(width: 22), buttons[1]]),
     );
   }
 
@@ -2851,6 +2854,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     final safeBottom = MediaQuery.paddingOf(context).bottom;
     final compact = !isLandscape;
     final denseLandscape = isLandscape && constraints.maxWidth < 740;
+    final leftTimeWidth = compact ? 52.0 : (denseLandscape ? 58.0 : 78.0);
+    final rightTimeWidth = compact ? 58.0 : (denseLandscape ? 64.0 : 92.0);
     final playButtonSize = compact ? 52.0 : (denseLandscape ? 50.0 : 56.0);
     final displayedPosition = dragPreviewPosition ?? position;
     final playButton = DecoratedBox(
@@ -2886,6 +2891,61 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       onPressed: openEpisodePanel,
       size: compact || denseLandscape ? 25 : 28,
     );
+    final rotateButton = controlIconButton(
+        icon: Icons.screen_rotation_alt_outlined,
+        onPressed: () => rotateScreen(context),
+        size: compact || denseLandscape ? 22 : 24);
+    final fitButton = controlIconButton(
+        icon: Icons.fit_screen_outlined,
+        onPressed: showFitModes,
+        size: compact || denseLandscape ? 22 : 24);
+    final fullscreenButton = controlIconButton(
+        icon:
+            playbackWindowFullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
+        onPressed: togglePlaybackFullscreen,
+        size: compact || denseLandscape ? 23 : 25);
+    final danmuButton = controlIconButton(
+        icon: Icons.chat_bubble_outline,
+        onPressed: openDanmuPanel,
+        size: compact || denseLandscape ? 22 : 24);
+    final sideSlotWidth = compact ? 48.0 : (denseLandscape ? 50.0 : 56.0);
+    Widget sideSlot(Widget child, {Alignment alignment = Alignment.center}) =>
+        SizedBox(
+          width: sideSlotWidth,
+          child: Align(alignment: alignment, child: child),
+        );
+    final centerControls = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        buildSeekButton(-10),
+        SizedBox(width: compact ? 18 : (denseLandscape ? 6 : 8)),
+        playButton,
+        SizedBox(width: compact ? 18 : (denseLandscape ? 6 : 8)),
+        buildSeekButton(10),
+      ],
+    );
+    final leftControls = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        sideSlot(
+            statusText('1.0x', size: compact ? 13 : (denseLandscape ? 13 : 14)),
+            alignment: Alignment.centerLeft),
+        sideSlot(statusText(fitShortLabel,
+            size: compact ? 13 : (denseLandscape ? 13 : 14))),
+        sideSlot(rotateButton),
+        sideSlot(fitButton),
+        sideSlot(fullscreenButton),
+      ],
+    );
+    final rightControls = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        sideSlot(danmuButton),
+        sideSlot(audioButton),
+        sideSlot(subtitleButton),
+        sideSlot(episodeButton, alignment: Alignment.centerRight),
+      ],
+    );
 
     return Positioned(
       left: compact ? 16 : 56,
@@ -2899,7 +2959,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
             Row(
               children: [
                 SizedBox(
-                    width: compact ? 52 : (denseLandscape ? 58 : 78),
+                    width: leftTimeWidth,
                     child: statusText(formatDuration(displayedPosition),
                         size: compact ? 12 : (denseLandscape ? 13 : 15))),
                 Expanded(
@@ -2925,7 +2985,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
                   ),
                 ),
                 SizedBox(
-                  width: compact ? 58 : (denseLandscape ? 64 : 92),
+                  width: rightTimeWidth,
                   child: Align(
                       alignment: Alignment.centerRight,
                       child: statusText(formatDuration(duration),
@@ -2935,66 +2995,33 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
             ),
             SizedBox(height: compact ? 10 : (denseLandscape ? 8 : 12)),
             if (compact) ...[
-              SizedBox(
-                height: 52,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    buildSeekButton(-10),
-                    const SizedBox(width: 18),
-                    playButton,
-                    const SizedBox(width: 18),
-                    buildSeekButton(10),
-                  ],
-                ),
-              ),
+              SizedBox(height: 52, child: Center(child: centerControls)),
               const SizedBox(height: 10),
               SizedBox(
                 height: 38,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    SizedBox(
-                        width: 48,
-                        child: Center(child: statusText('1.0x', size: 13))),
-                    SizedBox(
-                        width: 48,
-                        child:
-                            Center(child: statusText(fitShortLabel, size: 13))),
-                    audioButton,
-                    subtitleButton,
-                    episodeButton,
-                  ],
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Row(
+                    children: [
+                      leftControls,
+                      const SizedBox(width: 18),
+                      rightControls,
+                    ],
+                  ),
                 ),
               ),
             ] else
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  SizedBox(
-                      width: denseLandscape ? 48 : 60,
-                      child: Center(
-                          child: statusText('1.0x',
-                              size: denseLandscape ? 13 : 14))),
-                  SizedBox(
-                      width: denseLandscape ? 48 : 60,
-                      child: Center(
-                          child: statusText(fitShortLabel,
-                              size: denseLandscape ? 13 : 14))),
-                  const Spacer(),
-                  buildSeekButton(-10),
-                  SizedBox(width: denseLandscape ? 6 : 8),
-                  playButton,
-                  SizedBox(width: denseLandscape ? 6 : 8),
-                  buildSeekButton(10),
-                  const Spacer(),
-                  audioButton,
-                  SizedBox(width: denseLandscape ? 8 : 12),
-                  subtitleButton,
-                  SizedBox(width: denseLandscape ? 8 : 12),
-                  episodeButton,
-                ],
+              SizedBox(
+                height: 56,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    Align(alignment: Alignment.centerLeft, child: leftControls),
+                    Align(alignment: Alignment.center, child: centerControls),
+                    Align(
+                        alignment: Alignment.centerRight, child: rightControls),
+                  ],
+                ),
               ),
           ],
         ),
@@ -3020,8 +3047,6 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
                     child: RepaintBoundary(
                         child: buildStatusOverlay(isLandscape))),
               if (!controlsLocked) buildTitleOverlay(context, isLandscape),
-              if (!controlsLocked)
-                buildSideTools(context, constraints, isLandscape),
               buildLockButton(context, constraints, isLandscape),
               if (!controlsLocked && dragPreviewPosition != null)
                 Center(
@@ -3073,68 +3098,80 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          final isLandscape = constraints.maxWidth >= constraints.maxHeight;
-          return GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onHorizontalDragStart: inPictureInPicture ? null : beginSeekDrag,
-            onHorizontalDragUpdate: inPictureInPicture
-                ? null
-                : (details) => updateSeekDrag(details, constraints.maxWidth),
-            onHorizontalDragEnd:
-                inPictureInPicture ? null : (_) => endSeekDrag(),
-            onHorizontalDragCancel: inPictureInPicture
-                ? null
-                : () {
-                    seekingByDrag = false;
-                    dragPreviewPosition = null;
-                    notifyControlsChanged();
-                    scheduleControlsAutoHide();
-                  },
-            onVerticalDragStart: inPictureInPicture
-                ? null
-                : (details) =>
-                    beginVerticalControlDrag(details, constraints.biggest),
-            onVerticalDragUpdate: inPictureInPicture
-                ? null
-                : (details) =>
-                    updateVerticalControlDrag(details, constraints.maxHeight),
-            onVerticalDragEnd:
-                inPictureInPicture ? null : (_) => endVerticalControlDrag(),
-            onVerticalDragCancel:
-                inPictureInPicture ? null : endVerticalControlDrag,
-            onTap: inPictureInPicture ? null : toggleFullscreen,
-            onDoubleTap:
-                inPictureInPicture || controlsLocked ? null : togglePlayback,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                Center(
-                  child: Video(
-                    controller: controller,
-                    fit: videoFit,
-                    controls: NoVideoControls,
-                  ),
-                ),
-                buildDanmuOverlay(),
-                if (!inPictureInPicture && error == null && loadingVisible)
-                  buildLoadingOverlay(),
-                if (!inPictureInPicture && error != null)
-                  ErrorView(message: '$error', onRetry: init, dark: true),
-                if (!inPictureInPicture) buildVerticalControlOverlay(),
-                if (!inPictureInPicture)
-                  buildControlsOverlay(context, constraints, isLandscape),
-                if (!inPictureInPicture && episodePanelOpen)
-                  buildEpisodePanel(constraints, isLandscape),
-                if (!inPictureInPicture && danmuPanelOpen)
-                  buildDanmuPanel(constraints, isLandscape),
-                if (!inPictureInPicture && danmuSearchPanelOpen)
-                  buildDanmuSearchPanel(constraints, isLandscape),
-              ],
-            ),
-          );
+      body: CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.escape): () =>
+              unawaited(handleEscapePressed()),
         },
+        child: Focus(
+          autofocus: true,
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final isLandscape = constraints.maxWidth >= constraints.maxHeight;
+              return GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onHorizontalDragStart:
+                    inPictureInPicture ? null : beginSeekDrag,
+                onHorizontalDragUpdate: inPictureInPicture
+                    ? null
+                    : (details) =>
+                        updateSeekDrag(details, constraints.maxWidth),
+                onHorizontalDragEnd:
+                    inPictureInPicture ? null : (_) => endSeekDrag(),
+                onHorizontalDragCancel: inPictureInPicture
+                    ? null
+                    : () {
+                        seekingByDrag = false;
+                        dragPreviewPosition = null;
+                        notifyControlsChanged();
+                        scheduleControlsAutoHide();
+                      },
+                onVerticalDragStart: inPictureInPicture
+                    ? null
+                    : (details) =>
+                        beginVerticalControlDrag(details, constraints.biggest),
+                onVerticalDragUpdate: inPictureInPicture
+                    ? null
+                    : (details) => updateVerticalControlDrag(
+                        details, constraints.maxHeight),
+                onVerticalDragEnd:
+                    inPictureInPicture ? null : (_) => endVerticalControlDrag(),
+                onVerticalDragCancel:
+                    inPictureInPicture ? null : endVerticalControlDrag,
+                onTap: inPictureInPicture ? null : toggleFullscreen,
+                onDoubleTap: inPictureInPicture || controlsLocked
+                    ? null
+                    : togglePlayback,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Center(
+                      child: Video(
+                        controller: controller,
+                        fit: videoFit,
+                        controls: NoVideoControls,
+                      ),
+                    ),
+                    buildDanmuOverlay(),
+                    if (!inPictureInPicture && error == null && loadingVisible)
+                      buildLoadingOverlay(),
+                    if (!inPictureInPicture && error != null)
+                      ErrorView(message: '$error', onRetry: init, dark: true),
+                    if (!inPictureInPicture) buildVerticalControlOverlay(),
+                    if (!inPictureInPicture)
+                      buildControlsOverlay(context, constraints, isLandscape),
+                    if (!inPictureInPicture && episodePanelOpen)
+                      buildEpisodePanel(constraints, isLandscape),
+                    if (!inPictureInPicture && danmuPanelOpen)
+                      buildDanmuPanel(constraints, isLandscape),
+                    if (!inPictureInPicture && danmuSearchPanelOpen)
+                      buildDanmuSearchPanel(constraints, isLandscape),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
       ),
     );
   }

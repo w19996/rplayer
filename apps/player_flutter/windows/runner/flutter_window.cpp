@@ -123,13 +123,66 @@ std::vector<uint8_t> VideoThumbnail(const std::string& uri, bool remote) {
   return bytes;
 }
 
-void RegisterAppChannel(flutter::FlutterEngine* engine) {
+bool SetFullscreen(HWND window, bool enabled) {
+  struct FullscreenState {
+    bool enabled = false;
+    LONG_PTR style = 0;
+    WINDOWPLACEMENT placement = {sizeof(WINDOWPLACEMENT)};
+  };
+  static FullscreenState state;
+
+  if (!window) {
+    return false;
+  }
+
+  if (state.enabled == enabled) {
+    return state.enabled;
+  }
+
+  if (!enabled) {
+    SetWindowLongPtr(window, GWL_STYLE, state.style);
+    SetWindowPlacement(window, &state.placement);
+    SetWindowPos(window, nullptr, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+                     SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+    state.enabled = false;
+    return false;
+  }
+
+  state.style = GetWindowLongPtr(window, GWL_STYLE);
+  state.placement.length = sizeof(WINDOWPLACEMENT);
+  GetWindowPlacement(window, &state.placement);
+  MONITORINFO monitor_info = {sizeof(MONITORINFO)};
+  if (!GetMonitorInfo(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST),
+                      &monitor_info)) {
+    return false;
+  }
+
+  const RECT monitor = monitor_info.rcMonitor;
+  SetWindowLongPtr(window, GWL_STYLE,
+                   state.style & ~static_cast<LONG_PTR>(WS_OVERLAPPEDWINDOW));
+  SetWindowPos(window, HWND_TOP, monitor.left, monitor.top,
+               monitor.right - monitor.left, monitor.bottom - monitor.top,
+               SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+  state.enabled = true;
+  return true;
+}
+
+void RegisterAppChannel(flutter::FlutterEngine* engine, HWND window) {
   auto channel = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
       engine->messenger(), "rplayer/app",
       &flutter::StandardMethodCodec::GetInstance());
   channel->SetMethodCallHandler(
-      [](const flutter::MethodCall<flutter::EncodableValue>& call,
-         std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+      [window](const flutter::MethodCall<flutter::EncodableValue>& call,
+          std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+        if (call.method_name() == "setFullscreen") {
+          bool enabled = false;
+          if (const auto value = std::get_if<bool>(call.arguments())) {
+            enabled = *value;
+          }
+          result->Success(flutter::EncodableValue(SetFullscreen(window, enabled)));
+          return;
+        }
         if (call.method_name() != "videoThumbnail") {
           result->NotImplemented();
           return;
@@ -186,7 +239,7 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
-  RegisterAppChannel(flutter_controller_->engine());
+  RegisterAppChannel(flutter_controller_->engine(), GetHandle());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
