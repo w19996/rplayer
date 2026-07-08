@@ -41,6 +41,9 @@ class RustCoreService {
   _RustThreeStringDart? _metadataPruneJson;
   _RustStringDart? _appStateGetJson;
   _RustTwoStringDart? _appStatePutJson;
+  _RustFourStringDart? _playbackProgressPutJson;
+  _RustThreeStringDart? _playbackDurationPutJson;
+  _RustThreeStringDart? _folderOrientationPutJson;
   _RustThreeStringDart? _metadataCachedImageJson;
   _RustTwoStringDart? _metadataGetFlagJson;
   _RustThreeStringDart? _metadataPutFlagJson;
@@ -308,6 +311,61 @@ class RustCoreService {
     return Isolate.run(() => _rustAppStatePutWorker(args));
   }
 
+  void playbackProgressPut(
+      String dbPath, String itemId, int positionMs, int? durationMs) {
+    _ensureAvailable();
+    if (_playbackProgressPutJson == null) {
+      throw StateError('Rust core is missing playback progress fast save');
+    }
+    _callFourString(
+      _playbackProgressPutJson,
+      dbPath,
+      itemId,
+      '$positionMs',
+      durationMs == null ? '' : '$durationMs',
+    );
+  }
+
+  Future<void> playbackProgressPutAsync(
+      String dbPath, String itemId, int positionMs, int? durationMs) {
+    final args = [
+      dbPath,
+      itemId,
+      '$positionMs',
+      durationMs == null ? '' : '$durationMs'
+    ];
+    return Isolate.run(() => _rustPlaybackProgressPutWorker(args));
+  }
+
+  void playbackDurationPut(String dbPath, String itemId, int durationMs) {
+    _ensureAvailable();
+    if (_playbackDurationPutJson == null) {
+      throw StateError('Rust core is missing playback duration fast save');
+    }
+    _callThreeString(_playbackDurationPutJson, dbPath, itemId, '$durationMs');
+  }
+
+  Future<void> playbackDurationPutAsync(
+      String dbPath, String itemId, int durationMs) {
+    final args = [dbPath, itemId, '$durationMs'];
+    return Isolate.run(() => _rustPlaybackDurationPutWorker(args));
+  }
+
+  void folderOrientationPut(
+      String dbPath, String folderKey, String orientation) {
+    _ensureAvailable();
+    if (_folderOrientationPutJson == null) {
+      throw StateError('Rust core is missing folder orientation fast save');
+    }
+    _callThreeString(_folderOrientationPutJson, dbPath, folderKey, orientation);
+  }
+
+  Future<void> folderOrientationPutAsync(
+      String dbPath, String folderKey, String orientation) {
+    final args = [dbPath, folderKey, orientation];
+    return Isolate.run(() => _rustFolderOrientationPutWorker(args));
+  }
+
   Uint8List? metadataCachedImage(String dbPath, String imagePath, String size) {
     _ensureAvailable();
     final text = _callThreeString(
@@ -517,6 +575,12 @@ class RustCoreService {
       _appStatePutJson = _library!
           .lookupFunction<_RustTwoStringFn, _RustTwoStringDart>(
               'player_core_app_state_put_json');
+      _playbackProgressPutJson =
+          _lookupOptionalFourString('player_core_playback_progress_put_json');
+      _playbackDurationPutJson =
+          _lookupOptionalThreeString('player_core_playback_duration_put_json');
+      _folderOrientationPutJson =
+          _lookupOptionalThreeString('player_core_folder_orientation_put_json');
       _metadataCachedImageJson = _library!
           .lookupFunction<_RustThreeStringFn, _RustThreeStringDart>(
               'player_core_metadata_cached_image_json');
@@ -599,6 +663,24 @@ class RustCoreService {
     try {
       return _library!
           .lookupFunction<_RustTwoStringFn, _RustTwoStringDart>(name);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  _RustThreeStringDart? _lookupOptionalThreeString(String name) {
+    try {
+      return _library!
+          .lookupFunction<_RustThreeStringFn, _RustThreeStringDart>(name);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  _RustFourStringDart? _lookupOptionalFourString(String name) {
+    try {
+      return _library!
+          .lookupFunction<_RustFourStringFn, _RustFourStringDart>(name);
     } catch (_) {
       return null;
     }
@@ -743,6 +825,23 @@ String _rustAppStateGetWorker(List<String> args) {
 
 void _rustAppStatePutWorker(List<String> args) {
   RustCoreService._().appStatePut(args[0], args[1]);
+}
+
+void _rustPlaybackProgressPutWorker(List<String> args) {
+  RustCoreService._().playbackProgressPut(
+    args[0],
+    args[1],
+    int.parse(args[2]),
+    args[3].isEmpty ? null : int.parse(args[3]),
+  );
+}
+
+void _rustPlaybackDurationPutWorker(List<String> args) {
+  RustCoreService._().playbackDurationPut(args[0], args[1], int.parse(args[2]));
+}
+
+void _rustFolderOrientationPutWorker(List<String> args) {
+  RustCoreService._().folderOrientationPut(args[0], args[1], args[2]);
 }
 
 Uint8List? _rustMetadataCachedImageWorker(List<String> args) {

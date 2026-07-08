@@ -66,6 +66,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   bool mpvLoadingPropertiesUsable = false;
   bool voConfigured = false;
   bool pausedForCache = false;
+  String? lastLoggedVoConfiguredValue;
+  String? lastLoggedPausedForCacheValue;
   bool softwareDecoderFallback = false;
   bool fullscreen = false;
   bool controlsLocked = false;
@@ -83,10 +85,14 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   bool loadingVisible = false;
   bool danmuLoading = false;
   bool inPictureInPicture = false;
+  bool windowFocusLost = false;
+  bool multiWindowActive = false;
+  bool competingWindowActive = false;
   VideoFitMode fitMode = VideoFitMode.contain;
   Tracks availableTracks = const Tracks();
   Track selectedTrack = const Track();
   double bufferingPercentage = 0;
+  double? lastLoggedBufferingPercent;
   int transientCodecRetryCount = 0;
   int openAttempt = 0;
   int battery = -1;
@@ -273,6 +279,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   bool get canShowDanmuOverlay {
     final config = widget.store.danmuConfig;
     return !inPictureInPicture &&
+        !competingWindowActive &&
         ready &&
         danmuSessionId > 0 &&
         config.available &&
@@ -549,13 +556,37 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     try {
       final native = player.platform as dynamic;
       await native.setProperty(
-          'hwdec', softwareDecoderFallback ? 'no' : 'auto-safe');
+          'profile', Platform.isAndroid ? 'fast' : 'default');
+      await native.setProperty(
+          'hwdec',
+          softwareDecoderFallback
+              ? 'no'
+              : Platform.isAndroid
+                  ? 'mediacodec,mediacodec-copy,no'
+                  : 'auto-safe');
+      await native.setProperty('hwdec-codecs', 'all');
       await native.setProperty(
           'vd-lavc-threads', softwareDecoderFallback ? '2' : '0');
+      await native.setProperty('vd-lavc-film-grain', 'cpu');
+      await native.setProperty('demuxer-max-bytes', '${64 * 1024 * 1024}');
+      await native.setProperty('demuxer-max-back-bytes', '${64 * 1024 * 1024}');
+      await native.setProperty('hr-seek', 'no');
+      await native.setProperty('hr-seek-framedrop', 'yes');
       await native.setProperty('video-sync', 'audio');
-      await native.setProperty('framedrop', 'vo');
+      await applyPlaybackLoadMode(reduced: competingWindowActive);
     } catch (_) {
       // Non-native platforms or older media_kit backends may not expose mpv properties.
+    }
+  }
+
+  Future<void> applyPlaybackLoadMode({required bool reduced}) async {
+    try {
+      final native = player.platform as dynamic;
+      await native.setProperty('video-sync', 'audio');
+      await native.setProperty(
+          'framedrop', reduced || Platform.isAndroid ? 'decoder+vo' : 'vo');
+    } catch (_) {
+      // Best-effort: playback must keep working if mpv properties are unavailable.
     }
   }
 
@@ -569,9 +600,14 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         'vo-configured',
         (String value) async {
           final configured = mpvBoolValue(value);
-          logVideoLoading('mpv vo-configured: $value');
+          if (lastLoggedVoConfiguredValue != value) {
+            lastLoggedVoConfiguredValue = value;
+            logVideoLoading('mpv vo-configured: $value');
+          }
           if (!mounted) return;
-          setStateIfMounted(() => voConfigured = configured);
+          if (voConfigured != configured) {
+            setStateIfMounted(() => voConfigured = configured);
+          }
           if (configured) updateLoadingPercent(82, 'vo configured');
           maybeMarkPlaybackReady();
         },
@@ -581,9 +617,14 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         'paused-for-cache',
         (String value) async {
           final paused = mpvBoolValue(value);
-          logVideoLoading('mpv paused-for-cache: $value');
+          if (lastLoggedPausedForCacheValue != value) {
+            lastLoggedPausedForCacheValue = value;
+            logVideoLoading('mpv paused-for-cache: $value');
+          }
           if (!mounted) return;
-          setStateIfMounted(() => pausedForCache = paused);
+          if (pausedForCache != paused) {
+            setStateIfMounted(() => pausedForCache = paused);
+          }
           if (!paused) updateLoadingPercent(88, 'cache resumed');
           maybeMarkPlaybackReady();
         },
@@ -720,15 +761,48 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       case 'pipTogglePlayback':
         await togglePlaybackFromPip();
         return null;
+      case 'windowFocusChanged':
+        final arguments = call.arguments;
+        final focused = arguments == true ||
+            arguments is Map && arguments['focused'] == true;
+        windowFocusLost = !focused;
+        await applyCompetingWindowMode('window focus');
+        return null;
+      case 'multiWindowModeChanged':
+        final arguments = call.arguments;
+        final enabled = arguments == true ||
+            arguments is Map && arguments['enabled'] == true;
+        multiWindowActive = enabled;
+        await applyCompetingWindowMode('multi-window');
+        return null;
       default:
         throw MissingPluginException(call.method);
     }
+  }
+
+  Future<void> applyCompetingWindowMode(String reason) async {
+    if (!mounted || inPictureInPicture) return;
+    final active = windowFocusLost || multiWindowActive;
+    if (active == competingWindowActive) return;
+    competingWindowActive = active;
+    syncDanmuClock(currentDanmuPosition);
+    if (active) {
+      clearDanmuOverlay();
+    }
+    syncDanmuTickerState();
+    logVideoLoading(
+        '$reason ${active ? 'active' : 'cleared'}: ${active ? 'reduce' : 'restore'} playback load');
+    await applyPlaybackLoadMode(reduced: active);
   }
 
   void handlePictureInPictureModeChanged(bool enabled) {
     controlsHideTimer?.cancel();
     verticalControlOverlayTimer?.cancel();
     if (enabled) {
+      windowFocusLost = false;
+      multiWindowActive = false;
+      competingWindowActive = false;
+      unawaited(applyPlaybackLoadMode(reduced: false));
       setControlsVisible(false);
       clearDanmuOverlay();
     }
@@ -802,7 +876,16 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
 
   void handleBufferingPercentage(double value) {
     if (!value.isFinite) return;
-    final percent = value.clamp(0, 100).toDouble();
+    final percent = value.clamp(0, 100).toDouble().roundToDouble();
+    final previous = lastLoggedBufferingPercent;
+    if (previous == percent) return;
+    if (previous != null &&
+        (percent - previous).abs() < 10 &&
+        percent != 0 &&
+        percent != 100) {
+      return;
+    }
+    lastLoggedBufferingPercent = percent;
     logVideoLoading('cache buffering percent: ${percent.toStringAsFixed(1)}');
   }
 
@@ -2130,6 +2213,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: () {},
+                onDoubleTap: () {},
                 child: Container(
                   width: panelWidth,
                   height: double.infinity,
@@ -2243,6 +2327,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: () {},
+                onDoubleTap: () {},
                 child: Container(
                   width: panelWidth,
                   height: double.infinity,
@@ -2420,6 +2505,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: () {},
+                onDoubleTap: () {},
                 child: Container(
                   width: panelWidth,
                   height: double.infinity,

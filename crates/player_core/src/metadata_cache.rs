@@ -225,6 +225,74 @@ pub fn put_app_state_json(db_path: &str, state_json: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn put_playback_progress_json(
+    db_path: &str,
+    item_id: &str,
+    position_ms: i64,
+    duration_ms: Option<i64>,
+) -> Result<()> {
+    let conn = open(db_path)?;
+    let now = now_ms();
+    let completed = duration_ms
+        .filter(|duration| *duration > 0)
+        .map(|duration| position_ms >= duration.saturating_mul(9) / 10)
+        .unwrap_or(false);
+    conn.execute(
+        "insert into playback_progress(file_id, position_ms, duration_ms, last_played_at, completed, updated_at)
+         select id, ?2, ?3, ?4, ?5, ?4 from media_files where item_id=?1
+         on conflict(file_id) do update set
+           position_ms=excluded.position_ms,
+           duration_ms=coalesce(excluded.duration_ms, playback_progress.duration_ms),
+           last_played_at=excluded.last_played_at,
+           completed=excluded.completed,
+           updated_at=excluded.updated_at",
+        params![item_id, position_ms.max(0), duration_ms, now, completed as i64],
+    )?;
+    Ok(())
+}
+
+pub fn put_playback_duration_json(db_path: &str, item_id: &str, duration_ms: i64) -> Result<()> {
+    if duration_ms <= 0 {
+        return Ok(());
+    }
+    let conn = open(db_path)?;
+    let now = now_ms();
+    conn.execute(
+        "insert into playback_progress(file_id, position_ms, duration_ms, updated_at)
+         select id, 0, ?2, ?3 from media_files where item_id=?1
+         on conflict(file_id) do update set
+           duration_ms=excluded.duration_ms,
+           updated_at=excluded.updated_at",
+        params![item_id, duration_ms, now],
+    )?;
+    Ok(())
+}
+
+pub fn put_folder_orientation_json(
+    db_path: &str,
+    folder_key: &str,
+    orientation: &str,
+) -> Result<()> {
+    let Some((source_id, path)) = folder_preference_key_parts(folder_key) else {
+        return Ok(());
+    };
+    if orientation != "landscape" && orientation != "portrait" {
+        return Ok(());
+    }
+    let conn = open(db_path)?;
+    let now = now_ms();
+    let folder_id = upsert_source_folder(&conn, &source_id, &path, None, false, false, now)?;
+    conn.execute(
+        "insert into folder_preferences(folder_id, preferred_orientation, updated_at)
+         values (?1, ?2, ?3)
+         on conflict(folder_id) do update set
+           preferred_orientation=excluded.preferred_orientation,
+           updated_at=excluded.updated_at",
+        params![folder_id, orientation, now],
+    )?;
+    Ok(())
+}
+
 pub fn get_app_state_json(db_path: &str) -> Result<String> {
     let conn = open(db_path)?;
     export_library_state_json(&conn)
@@ -3624,6 +3692,62 @@ mod tests {
 
         let conn = open(db_path.to_str().unwrap()).unwrap();
         assert!(!table_exists(&conn, "app_state"));
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn playback_state_updates_without_full_state_replace() {
+        let db_path =
+            std::env::temp_dir().join(format!("player_core_playback_fast_{}.sqlite", now_ms()));
+        let state = r#"{
+          "version": 1,
+          "sources": [
+            {"id": "source-1", "name": "Local", "type": "local", "directory": "/media"}
+          ],
+          "items": [
+            {
+              "id": "source-1:/media/Show/01.mp4",
+              "sourceId": "source-1",
+              "sourceName": "Local",
+              "type": "local",
+              "title": "01",
+              "uri": "/media/Show/01.mp4",
+              "folderTitle": "Show",
+              "matchTitle": "Show",
+              "groupPath": "/media/Show",
+              "mediaKind": "TV"
+            }
+          ],
+          "progress": {},
+          "durations": {},
+          "lastPlayedAt": {},
+          "folderOrientations": {}
+        }"#;
+        put_app_state_json(db_path.to_str().unwrap(), state).unwrap();
+
+        put_playback_progress_json(
+            db_path.to_str().unwrap(),
+            "source-1:/media/Show/01.mp4",
+            42000,
+            Some(60000),
+        )
+        .unwrap();
+        put_folder_orientation_json(
+            db_path.to_str().unwrap(),
+            "source-1:local:/media/Show",
+            "landscape",
+        )
+        .unwrap();
+
+        let exported: Value =
+            serde_json::from_str(&get_app_state_json(db_path.to_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(exported["items"].as_array().unwrap().len(), 1);
+        assert_eq!(exported["progress"]["source-1:/media/Show/01.mp4"], 42000);
+        assert_eq!(exported["durations"]["source-1:/media/Show/01.mp4"], 60000);
+        assert_eq!(
+            exported["folderOrientations"]["source-1:local:/media/Show/"],
+            "landscape"
+        );
         let _ = std::fs::remove_file(db_path);
     }
 

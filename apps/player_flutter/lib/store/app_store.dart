@@ -2081,7 +2081,19 @@ class AppStore extends ChangeNotifier {
       'playback progress update: item=$itemId position=${position.inMilliseconds} duration=${duration?.inMilliseconds}',
       category: 'playback',
     );
-    await save();
+    try {
+      final db = await metadataDatabaseFile;
+      await RustCoreService.instance.playbackProgressPutAsync(
+        db.path,
+        itemId,
+        position.inMilliseconds,
+        duration?.inMilliseconds,
+      );
+    } catch (error) {
+      addDiagnosticLog('playback progress fast save failed: $error',
+          category: 'playback');
+      await saveMediaStateDatabase();
+    }
     notifyListeners();
   }
 
@@ -2093,19 +2105,36 @@ class AppStore extends ChangeNotifier {
     addDiagnosticLog(
         'playback duration remembered: item=$itemId duration=$milliseconds',
         category: 'playback');
-    await save();
+    try {
+      final db = await metadataDatabaseFile;
+      await RustCoreService.instance
+          .playbackDurationPutAsync(db.path, itemId, milliseconds);
+    } catch (error) {
+      addDiagnosticLog('playback duration fast save failed: $error',
+          category: 'playback');
+      await saveMediaStateDatabase();
+    }
     notifyListeners();
   }
 
   Future<void> rememberFolderOrientation(MediaItem item, bool landscape) async {
     final key = mediaFolderKey(item);
     final orientation = landscape ? 'landscape' : 'portrait';
+    if (folderOrientations[key] == orientation) return;
     folderOrientations[key] = orientation;
     addDiagnosticLog(
       'folder orientation remembered: key=$key orientation=$orientation',
       category: 'ui',
     );
-    await save();
+    try {
+      final db = await metadataDatabaseFile;
+      await RustCoreService.instance
+          .folderOrientationPutAsync(db.path, key, orientation);
+    } catch (error) {
+      addDiagnosticLog('folder orientation fast save failed: $error',
+          category: 'ui');
+      await saveMediaStateDatabase();
+    }
     notifyListeners();
   }
 }

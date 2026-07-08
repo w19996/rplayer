@@ -27,7 +27,6 @@ class _PlayerAppState extends State<PlayerApp> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive ||
         state == AppLifecycleState.detached) {
       unawaited(store.save().catchError((_) {}));
     }

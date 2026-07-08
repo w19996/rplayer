@@ -20,7 +20,8 @@ pub use media::{
 pub use metadata_cache::{
     cache_images_json, get_all_metadata_json, get_app_state_json, get_cached_image_json,
     get_metadata_flag_json, prune_metadata_json, put_app_state_json, put_cached_image_json,
-    put_metadata_flag_json, put_metadata_json, query_home_json, query_recent_json,
+    put_folder_orientation_json, put_metadata_flag_json, put_metadata_json,
+    put_playback_duration_json, put_playback_progress_json, query_home_json, query_recent_json,
     query_show_detail_json, replace_all_metadata_json,
 };
 pub use scanner::{
@@ -226,6 +227,58 @@ pub extern "C" fn player_core_app_state_put_json(
         let db_path = read_c_string(db_path)?;
         let state_json = read_c_string(state_json)?;
         put_app_state_json(&db_path, &state_json)?;
+        Ok("{}".to_string())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn player_core_playback_progress_put_json(
+    db_path: *const c_char,
+    item_id: *const c_char,
+    position_ms: *const c_char,
+    duration_ms: *const c_char,
+) -> *mut c_char {
+    ffi_result(|| {
+        let db_path = read_c_string(db_path)?;
+        let item_id = read_c_string(item_id)?;
+        let position_ms = read_c_string(position_ms)?.parse::<i64>()?;
+        let duration_text = read_c_string(duration_ms)?;
+        let duration_ms = if duration_text.trim().is_empty() {
+            None
+        } else {
+            Some(duration_text.parse::<i64>()?)
+        };
+        put_playback_progress_json(&db_path, &item_id, position_ms, duration_ms)?;
+        Ok("{}".to_string())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn player_core_playback_duration_put_json(
+    db_path: *const c_char,
+    item_id: *const c_char,
+    duration_ms: *const c_char,
+) -> *mut c_char {
+    ffi_result(|| {
+        let db_path = read_c_string(db_path)?;
+        let item_id = read_c_string(item_id)?;
+        let duration_ms = read_c_string(duration_ms)?.parse::<i64>()?;
+        put_playback_duration_json(&db_path, &item_id, duration_ms)?;
+        Ok("{}".to_string())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn player_core_folder_orientation_put_json(
+    db_path: *const c_char,
+    folder_key: *const c_char,
+    orientation: *const c_char,
+) -> *mut c_char {
+    ffi_result(|| {
+        let db_path = read_c_string(db_path)?;
+        let folder_key = read_c_string(folder_key)?;
+        let orientation = read_c_string(orientation)?;
+        put_folder_orientation_json(&db_path, &folder_key, &orientation)?;
         Ok("{}".to_string())
     })
 }

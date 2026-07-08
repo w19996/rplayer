@@ -142,6 +142,16 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        notifyFlutterWindowFocus(hasFocus)
+    }
+
+    override fun onMultiWindowModeChanged(isInMultiWindowMode: Boolean, newConfig: Configuration) {
+        super.onMultiWindowModeChanged(isInMultiWindowMode, newConfig)
+        notifyFlutterMultiWindowMode(isInMultiWindowMode)
+    }
+
     override fun onUserLeaveHint() {
         if (!tryEnterPlaybackPictureInPicture()) {
             super.onUserLeaveHint()
@@ -322,6 +332,14 @@ class MainActivity : FlutterActivity() {
 
     private fun notifyFlutterPipMode(enabled: Boolean) {
         appChannel?.invokeMethod("pipModeChanged", enabled)
+    }
+
+    private fun notifyFlutterWindowFocus(focused: Boolean) {
+        appChannel?.invokeMethod("windowFocusChanged", focused)
+    }
+
+    private fun notifyFlutterMultiWindowMode(enabled: Boolean) {
+        appChannel?.invokeMethod("multiWindowModeChanged", enabled)
     }
 
     private fun registerPipActionReceiver() {
