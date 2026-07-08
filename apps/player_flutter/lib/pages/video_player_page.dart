@@ -278,9 +278,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
 
   bool get canShowDanmuOverlay {
     final config = widget.store.danmuConfig;
-    return !inPictureInPicture &&
-        !competingWindowActive &&
-        ready &&
+    return ready &&
         danmuSessionId > 0 &&
         config.available &&
         config.visible &&
@@ -779,9 +777,6 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     if (active == competingWindowActive) return;
     competingWindowActive = active;
     syncDanmuClock(currentDanmuPosition);
-    if (active) {
-      clearDanmuOverlay();
-    }
     syncDanmuTickerState();
     logVideoLoading(
         '$reason ${active ? 'active' : 'cleared'}: ${active ? 'reduce' : 'restore'} playback load');
@@ -797,7 +792,6 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       competingWindowActive = false;
       unawaited(applyPlaybackLoadMode(reduced: false));
       setControlsVisible(false);
-      clearDanmuOverlay();
     }
     setStateIfMounted(() {
       inPictureInPicture = enabled;
@@ -3123,7 +3117,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
                     controls: NoVideoControls,
                   ),
                 ),
-                if (!inPictureInPicture) buildDanmuOverlay(),
+                buildDanmuOverlay(),
                 if (!inPictureInPicture && error == null && loadingVisible)
                   buildLoadingOverlay(),
                 if (!inPictureInPicture && error != null)
