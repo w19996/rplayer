@@ -81,6 +81,17 @@ class ProfilePage extends StatelessWidget {
                   ),
                 ),
                 ProfileActionCard(
+                  icon: Icons.tune_outlined,
+                  title: 'MPV 进阶参数',
+                  subtitle: mpvAdvancedPresetSummary(
+                    store.mpvAdvancedPreset,
+                    android: Platform.isAndroid,
+                  ),
+                  onTap: () => Navigator.of(context).push(
+                    appSlideRoute((_) => MpvAdvancedSettingsPage(store: store)),
+                  ),
+                ),
+                ProfileActionCard(
                   icon: Icons.settings_outlined,
                   title: '同步与备份',
                   subtitle: sync == null
@@ -114,6 +125,106 @@ Widget _scrollingHelper(String text) => SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: Text(text, maxLines: 1, softWrap: false),
     );
+
+class MpvAdvancedSettingsPage extends StatelessWidget {
+  const MpvAdvancedSettingsPage({required this.store, super.key});
+
+  final AppStore store;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('MPV 进阶参数')),
+      body: AnimatedBuilder(
+        animation: store,
+        builder: (context, _) {
+          return ListView(
+            padding: const EdgeInsets.all(22),
+            children: [
+              RadioGroup<String>(
+                groupValue: mpvAdvancedPresetValues.contains(
+                  store.mpvAdvancedPreset,
+                )
+                    ? store.mpvAdvancedPreset
+                    : null,
+                onChanged: (value) {
+                  if (value == null) return;
+                  unawaited(store.setMpvAdvancedPreset(value));
+                },
+                child: Column(
+                  children: [
+                    for (final preset in mpvAdvancedPresetValues)
+                      RadioListTile<String>(
+                        contentPadding:
+                            const EdgeInsets.symmetric(horizontal: 4),
+                        secondary: const Icon(Icons.tune_outlined),
+                        title: Text(mpvAdvancedPresetLabel(preset)),
+                        subtitle: Text(
+                          mpvAdvancedPresetSummary(
+                            preset,
+                            android: Platform.isAndroid,
+                          ),
+                        ),
+                        value: preset,
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+              for (final spec in mpvAdvancedOptionSpecs)
+                MpvAdvancedOptionTile(store: store, spec: spec),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class MpvAdvancedOptionTile extends StatelessWidget {
+  const MpvAdvancedOptionTile({
+    required this.store,
+    required this.spec,
+    super.key,
+  });
+
+  final AppStore store;
+  final MpvAdvancedOptionSpec spec;
+
+  @override
+  Widget build(BuildContext context) {
+    final current = store.effectiveMpvAdvancedOptions()[spec.key] ?? '';
+    final values = [
+      ...spec.values,
+      if (current.isNotEmpty && !spec.values.contains(current)) current,
+    ];
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: DropdownButtonFormField<String>(
+        isExpanded: true,
+        initialValue: current.isEmpty ? null : current,
+        decoration: InputDecoration(
+          labelText: spec.label,
+          prefixIcon: const Icon(Icons.tune_outlined),
+        ),
+        items: [
+          for (final value in values)
+            DropdownMenuItem(
+              value: value,
+              child: Text(
+                spec.valueLabels[value] ?? value,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+        ],
+        onChanged: (value) {
+          if (value == null) return;
+          unawaited(store.setMpvAdvancedOption(spec.key, value));
+        },
+      ),
+    );
+  }
+}
 
 class TmdbSettingsPage extends StatelessWidget {
   const TmdbSettingsPage({required this.store, super.key});

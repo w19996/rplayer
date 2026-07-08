@@ -116,6 +116,39 @@ void main() {
     );
   });
 
+  test('persists mpv advanced preset settings', () async {
+    final store = AppStore();
+
+    await store.setMpvAdvancedPreset(mpvAdvancedPresetPower);
+
+    expect(store.mpvAdvancedPreset, mpvAdvancedPresetPower);
+    expect(
+        store.effectiveMpvAdvancedOptions()['demuxer-max-bytes'], '33554432');
+
+    await store.setMpvAdvancedOption('hr-seek', 'yes');
+
+    expect(store.mpvAdvancedPreset, mpvAdvancedPresetCustom);
+    expect(
+      (jsonDecode(store.exportSettings())
+          as Map<String, dynamic>)['mpvAdvancedPreset'],
+      mpvAdvancedPresetCustom,
+    );
+    expect(
+      ((jsonDecode(store.exportSettings())
+              as Map<String, dynamic>)['mpvAdvancedOptions']
+          as Map<String, dynamic>)['hr-seek'],
+      'yes',
+    );
+    expect(
+      mpvAdvancedOptions(
+        preset: mpvAdvancedPresetAuto,
+        android: true,
+        softwareDecoderFallback: false,
+      )['hwdec'],
+      'mediacodec,mediacodec-copy,no',
+    );
+  });
+
   test('uses series folder when video is inside a season folder', () {
     const item = MediaItem(
       id: 'source:C:/media/Low IQ Crime/Season 1/S01E01.mkv',

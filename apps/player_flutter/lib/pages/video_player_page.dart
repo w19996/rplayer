@@ -555,24 +555,14 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   Future<void> configureDecoder() async {
     try {
       final native = player.platform as dynamic;
-      await native.setProperty(
-          'profile', Platform.isAndroid ? 'fast' : 'default');
-      await native.setProperty(
-          'hwdec',
-          softwareDecoderFallback
-              ? 'no'
-              : Platform.isAndroid
-                  ? 'mediacodec,mediacodec-copy,no'
-                  : 'auto-safe');
-      await native.setProperty('hwdec-codecs', 'all');
-      await native.setProperty(
-          'vd-lavc-threads', softwareDecoderFallback ? '2' : '0');
-      await native.setProperty('vd-lavc-film-grain', 'cpu');
-      await native.setProperty('demuxer-max-bytes', '${64 * 1024 * 1024}');
-      await native.setProperty('demuxer-max-back-bytes', '${64 * 1024 * 1024}');
-      await native.setProperty('hr-seek', 'no');
-      await native.setProperty('hr-seek-framedrop', 'yes');
-      await native.setProperty('video-sync', 'audio');
+      for (final entry in mpvAdvancedOptions(
+        preset: widget.store.mpvAdvancedPreset,
+        android: Platform.isAndroid,
+        softwareDecoderFallback: softwareDecoderFallback,
+        customOptions: widget.store.effectiveMpvAdvancedOptions(),
+      ).entries) {
+        await native.setProperty(entry.key, entry.value);
+      }
       await applyPlaybackLoadMode(reduced: competingWindowActive);
     } catch (_) {
       // Non-native platforms or older media_kit backends may not expose mpv properties.
@@ -583,8 +573,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     try {
       final native = player.platform as dynamic;
       await native.setProperty('video-sync', 'audio');
+      final options = widget.store.effectiveMpvAdvancedOptions();
       await native.setProperty(
-          'framedrop', reduced || Platform.isAndroid ? 'decoder+vo' : 'vo');
+        'framedrop',
+        options['framedrop'] ?? 'vo',
+      );
     } catch (_) {
       // Best-effort: playback must keep working if mpv properties are unavailable.
     }

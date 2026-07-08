@@ -19,6 +19,8 @@ class AppStore extends ChangeNotifier {
   final Map<String, Set<String>> _itemPathsBySource = {};
   TmdbConfig tmdbConfig = const TmdbConfig();
   DanmuConfig danmuConfig = const DanmuConfig();
+  String mpvAdvancedPreset = mpvAdvancedPresetAuto;
+  Map<String, String> mpvAdvancedOptionValues = {};
   SyncConfig? syncConfig;
   final List<String> versionDirectoryRegexes = [];
   final List<String> episodeRegexes = [];
@@ -374,6 +376,8 @@ class AppStore extends ChangeNotifier {
       'version': 2,
       'tmdbConfig': tmdbConfig.toJson(),
       'danmuConfig': danmuConfig.toJson(),
+      'mpvAdvancedPreset': mpvAdvancedPreset,
+      'mpvAdvancedOptions': effectiveMpvAdvancedOptions(),
       'syncConfig': syncConfig?.toJson(),
       'versionDirectoryRegexes': versionDirectoryRegexes,
       'episodeRegexes': episodeRegexes,
@@ -415,6 +419,16 @@ class AppStore extends ChangeNotifier {
     danmuConfig = danmu == null
         ? const DanmuConfig()
         : DanmuConfig.fromJson(danmu as Map<String, dynamic>);
+    mpvAdvancedPreset = normalizeMpvAdvancedPreset(json['mpvAdvancedPreset']);
+    mpvAdvancedOptionValues = normalizeMpvAdvancedOptions(
+      json['mpvAdvancedOptions'],
+      preset: mpvAdvancedPreset,
+      android: Platform.isAndroid,
+    );
+    mpvAdvancedPreset = mpvAdvancedPresetForOptions(
+      mpvAdvancedOptionValues,
+      android: Platform.isAndroid,
+    );
     final sync = json['syncConfig'];
     syncConfig =
         sync == null ? null : SyncConfig.fromJson(sync as Map<String, dynamic>);
@@ -1059,6 +1073,43 @@ class AppStore extends ChangeNotifier {
     );
     notifyListeners();
     await saveSettings();
+  }
+
+  Future<void> setMpvAdvancedPreset(String value) async {
+    mpvAdvancedPreset = normalizeMpvAdvancedPreset(value);
+    if (mpvAdvancedPreset == mpvAdvancedPresetCustom) {
+      mpvAdvancedPreset = mpvAdvancedPresetAuto;
+    }
+    mpvAdvancedOptionValues = mpvAdvancedPresetOptions(
+      preset: mpvAdvancedPreset,
+      android: Platform.isAndroid,
+    );
+    addDiagnosticLog('mpv preset updated: $mpvAdvancedPreset',
+        category: 'player');
+    await saveSettings();
+    notifyListeners();
+  }
+
+  Map<String, String> effectiveMpvAdvancedOptions() =>
+      normalizeMpvAdvancedOptions(
+        mpvAdvancedOptionValues,
+        preset: mpvAdvancedPreset,
+        android: Platform.isAndroid,
+      );
+
+  Future<void> setMpvAdvancedOption(String key, String value) async {
+    if (!mpvAdvancedOptionKeys.contains(key)) return;
+    final next = effectiveMpvAdvancedOptions();
+    next[key] = value.trim();
+    mpvAdvancedOptionValues = next;
+    mpvAdvancedPreset = mpvAdvancedPresetForOptions(
+      next,
+      android: Platform.isAndroid,
+    );
+    addDiagnosticLog('mpv option updated: $key=${next[key]}',
+        category: 'player');
+    await saveSettings();
+    notifyListeners();
   }
 
   Future<void> setDiagnosticLoggingEnabled(bool value) async {

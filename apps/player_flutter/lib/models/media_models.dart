@@ -2,6 +2,256 @@ part of 'package:player_flutter/main.dart';
 
 enum SourceType { local, webdav, openlist }
 
+const mpvAdvancedPresetAuto = 'auto';
+const mpvAdvancedPresetPower = 'power';
+const mpvAdvancedPresetQuality = 'quality';
+const mpvAdvancedPresetCompat = 'compat';
+const mpvAdvancedPresetCustom = 'custom';
+const mpvAdvancedPresetValues = [
+  mpvAdvancedPresetAuto,
+  mpvAdvancedPresetPower,
+  mpvAdvancedPresetQuality,
+  mpvAdvancedPresetCompat,
+];
+
+String normalizeMpvAdvancedPreset(Object? value) {
+  final text = value is String ? value.trim() : '';
+  if (text == mpvAdvancedPresetCustom) return text;
+  return mpvAdvancedPresetValues.contains(text) ? text : mpvAdvancedPresetAuto;
+}
+
+String mpvAdvancedPresetLabel(String preset) =>
+    switch (normalizeMpvAdvancedPreset(preset)) {
+      mpvAdvancedPresetPower => '省电优先',
+      mpvAdvancedPresetQuality => '画质优先',
+      mpvAdvancedPresetCompat => '兼容优先',
+      mpvAdvancedPresetCustom => '自定义',
+      _ => '自动',
+    };
+
+String mpvAdvancedPresetSummary(String preset, {required bool android}) {
+  return switch (normalizeMpvAdvancedPreset(preset)) {
+    mpvAdvancedPresetPower => '降低缓存和渲染负载，适合发热或切后台卡顿',
+    mpvAdvancedPresetQuality => '保留更高缓存和精确 seek，适合性能充足设备',
+    mpvAdvancedPresetCompat => '软解回退，适合硬解异常或花屏',
+    mpvAdvancedPresetCustom => '已单独调整参数',
+    _ => android ? 'Android 使用 fast + MediaCodec 预设' : '当前平台使用默认稳定预设',
+  };
+}
+
+const mpvAdvancedOptionKeys = [
+  'profile',
+  'hwdec',
+  'hwdec-codecs',
+  'vd-lavc-threads',
+  'vd-lavc-film-grain',
+  'demuxer-max-bytes',
+  'demuxer-max-back-bytes',
+  'hr-seek',
+  'hr-seek-framedrop',
+  'video-sync',
+  'framedrop',
+];
+
+class MpvAdvancedOptionSpec {
+  const MpvAdvancedOptionSpec({
+    required this.key,
+    required this.label,
+    required this.values,
+    this.valueLabels = const {},
+  });
+
+  final String key;
+  final String label;
+  final List<String> values;
+  final Map<String, String> valueLabels;
+}
+
+const mpvAdvancedOptionSpecs = [
+  MpvAdvancedOptionSpec(
+    key: 'profile',
+    label: 'profile',
+    values: ['fast', 'default'],
+    valueLabels: {'fast': 'fast（低负载）', 'default': 'default（默认画质）'},
+  ),
+  MpvAdvancedOptionSpec(
+    key: 'hwdec',
+    label: 'hwdec',
+    values: ['mediacodec,mediacodec-copy,no', 'auto-safe', 'no'],
+    valueLabels: {
+      'mediacodec,mediacodec-copy,no': 'MediaCodec 优先',
+      'auto-safe': 'auto-safe',
+      'no': 'no（软解）',
+    },
+  ),
+  MpvAdvancedOptionSpec(
+    key: 'hwdec-codecs',
+    label: 'hwdec-codecs',
+    values: ['all'],
+  ),
+  MpvAdvancedOptionSpec(
+    key: 'vd-lavc-threads',
+    label: 'vd-lavc-threads',
+    values: ['0', '2', '4'],
+    valueLabels: {'0': '0（自动）', '2': '2', '4': '4'},
+  ),
+  MpvAdvancedOptionSpec(
+    key: 'vd-lavc-film-grain',
+    label: 'vd-lavc-film-grain',
+    values: ['cpu', 'auto'],
+  ),
+  MpvAdvancedOptionSpec(
+    key: 'demuxer-max-bytes',
+    label: 'demuxer-max-bytes',
+    values: ['33554432', '67108864', '134217728', '268435456'],
+    valueLabels: {
+      '33554432': '32 MB',
+      '67108864': '64 MB',
+      '134217728': '128 MB',
+      '268435456': '256 MB',
+    },
+  ),
+  MpvAdvancedOptionSpec(
+    key: 'demuxer-max-back-bytes',
+    label: 'demuxer-max-back-bytes',
+    values: ['33554432', '67108864', '134217728', '268435456'],
+    valueLabels: {
+      '33554432': '32 MB',
+      '67108864': '64 MB',
+      '134217728': '128 MB',
+      '268435456': '256 MB',
+    },
+  ),
+  MpvAdvancedOptionSpec(
+    key: 'hr-seek',
+    label: 'hr-seek',
+    values: ['no', 'yes'],
+    valueLabels: {'no': 'no', 'yes': 'yes'},
+  ),
+  MpvAdvancedOptionSpec(
+    key: 'hr-seek-framedrop',
+    label: 'hr-seek-framedrop',
+    values: ['yes', 'no'],
+    valueLabels: {'yes': 'yes', 'no': 'no'},
+  ),
+  MpvAdvancedOptionSpec(
+    key: 'video-sync',
+    label: 'video-sync',
+    values: ['audio', 'display-resample'],
+  ),
+  MpvAdvancedOptionSpec(
+    key: 'framedrop',
+    label: 'framedrop',
+    values: ['decoder+vo', 'vo', 'no'],
+    valueLabels: {
+      'decoder+vo': 'decoder+vo',
+      'vo': 'vo',
+      'no': 'no',
+    },
+  ),
+];
+
+Map<String, String> mpvAdvancedPresetOptions({
+  required String preset,
+  required bool android,
+}) {
+  final value = normalizeMpvAdvancedPreset(preset);
+  final compat = value == mpvAdvancedPresetCompat;
+  final quality = value == mpvAdvancedPresetQuality;
+  final power = value == mpvAdvancedPresetPower;
+  final cacheBytes = (power
+          ? 32
+          : quality
+              ? 128
+              : 64) *
+      1024 *
+      1024;
+  return {
+    'profile': quality || (!android && value == mpvAdvancedPresetAuto)
+        ? 'default'
+        : 'fast',
+    'hwdec': compat
+        ? 'no'
+        : android
+            ? 'mediacodec,mediacodec-copy,no'
+            : 'auto-safe',
+    'hwdec-codecs': 'all',
+    'vd-lavc-threads': compat ? '2' : '0',
+    'vd-lavc-film-grain': 'cpu',
+    'demuxer-max-bytes': '$cacheBytes',
+    'demuxer-max-back-bytes': '$cacheBytes',
+    'hr-seek': quality ? 'yes' : 'no',
+    'hr-seek-framedrop': quality ? 'no' : 'yes',
+    'video-sync': 'audio',
+    'framedrop': power || android ? 'decoder+vo' : 'vo',
+  };
+}
+
+Map<String, String> normalizeMpvAdvancedOptions(
+  Object? value, {
+  required String preset,
+  required bool android,
+}) {
+  final result = mpvAdvancedPresetOptions(preset: preset, android: android);
+  if (value is Map) {
+    for (final entry in value.entries) {
+      final key = entry.key;
+      final option = entry.value;
+      if (key is! String || option is! String) continue;
+      if (!mpvAdvancedOptionKeys.contains(key)) continue;
+      final trimmed = option.trim();
+      if (trimmed.isEmpty) continue;
+      result[key] = trimmed;
+    }
+  }
+  return result;
+}
+
+bool _sameMpvAdvancedOptions(
+  Map<String, String> a,
+  Map<String, String> b,
+) {
+  for (final key in mpvAdvancedOptionKeys) {
+    if (a[key] != b[key]) return false;
+  }
+  return true;
+}
+
+String mpvAdvancedPresetForOptions(
+  Map<String, String> options, {
+  required bool android,
+}) {
+  for (final preset in mpvAdvancedPresetValues) {
+    if (_sameMpvAdvancedOptions(
+      options,
+      mpvAdvancedPresetOptions(preset: preset, android: android),
+    )) {
+      return preset;
+    }
+  }
+  return mpvAdvancedPresetCustom;
+}
+
+Map<String, String> mpvAdvancedOptions({
+  required String preset,
+  required bool android,
+  required bool softwareDecoderFallback,
+  Map<String, String>? customOptions,
+}) {
+  final options = customOptions == null
+      ? mpvAdvancedPresetOptions(preset: preset, android: android)
+      : normalizeMpvAdvancedOptions(
+          customOptions,
+          preset: preset,
+          android: android,
+        );
+  if (softwareDecoderFallback) {
+    options['hwdec'] = 'no';
+    options['vd-lavc-threads'] = '2';
+  }
+  return options;
+}
+
 SourceType sourceTypeFromValue(String value) => switch (value) {
       'webdav' => SourceType.webdav,
       'openlist' => SourceType.openlist,
