@@ -37,6 +37,7 @@ class _PlayerAppState extends State<PlayerApp> with WidgetsBindingObserver {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: appName,
+      scrollBehavior: const _AppScrollBehavior(),
       locale: const Locale('zh', 'CN'),
       localizationsDelegates: const [
         GlobalMaterialLocalizations.delegate,
@@ -70,4 +71,14 @@ class _PlayerAppState extends State<PlayerApp> with WidgetsBindingObserver {
       ),
     );
   }
+}
+
+class _AppScrollBehavior extends MaterialScrollBehavior {
+  const _AppScrollBehavior();
+
+  @override
+  Set<PointerDeviceKind> get dragDevices => {
+        ...super.dragDevices,
+        PointerDeviceKind.mouse,
+      };
 }
