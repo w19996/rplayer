@@ -57,12 +57,14 @@ class MpvAdvancedOptionSpec {
   const MpvAdvancedOptionSpec({
     required this.key,
     required this.label,
+    required this.description,
     required this.values,
     this.valueLabels = const {},
   });
 
   final String key;
   final String label;
+  final String description;
   final List<String> values;
   final Map<String, String> valueLabels;
 }
@@ -71,12 +73,14 @@ const mpvAdvancedOptionSpecs = [
   MpvAdvancedOptionSpec(
     key: 'profile',
     label: 'profile',
+    description: 'mpv 内置配置档；fast 降低解码和渲染负载，default 保留默认画质策略。',
     values: ['fast', 'default'],
     valueLabels: {'fast': 'fast（低负载）', 'default': 'default（默认画质）'},
   ),
   MpvAdvancedOptionSpec(
     key: 'hwdec',
     label: 'hwdec',
+    description: '硬件解码策略；Android 优先 MediaCodec，no 表示强制软解。',
     values: ['mediacodec,mediacodec-copy,no', 'auto-safe', 'no'],
     valueLabels: {
       'mediacodec,mediacodec-copy,no': 'MediaCodec 优先',
@@ -87,22 +91,26 @@ const mpvAdvancedOptionSpecs = [
   MpvAdvancedOptionSpec(
     key: 'hwdec-codecs',
     label: 'hwdec-codecs',
+    description: '允许硬解的编码范围；all 表示所有支持的编码都尝试硬解。',
     values: ['all'],
   ),
   MpvAdvancedOptionSpec(
     key: 'vd-lavc-threads',
     label: 'vd-lavc-threads',
+    description: '软解线程数；0 由解码器自动决定，较小数值可减少后台抢占。',
     values: ['0', '2', '4'],
     valueLabels: {'0': '0（自动）', '2': '2', '4': '4'},
   ),
   MpvAdvancedOptionSpec(
     key: 'vd-lavc-film-grain',
     label: 'vd-lavc-film-grain',
+    description: 'AV1 等视频的胶片颗粒重建方式；影响画面细节和解码负载。',
     values: ['cpu', 'auto'],
   ),
   MpvAdvancedOptionSpec(
     key: 'demuxer-max-bytes',
     label: 'demuxer-max-bytes',
+    description: '向前读取缓存上限；越大越抗网络波动，也会占更多内存。',
     values: ['33554432', '67108864', '134217728', '268435456'],
     valueLabels: {
       '33554432': '32 MB',
@@ -114,6 +122,7 @@ const mpvAdvancedOptionSpecs = [
   MpvAdvancedOptionSpec(
     key: 'demuxer-max-back-bytes',
     label: 'demuxer-max-back-bytes',
+    description: '回退缓存上限；越大越方便短距离回看，也会占更多内存。',
     values: ['33554432', '67108864', '134217728', '268435456'],
     valueLabels: {
       '33554432': '32 MB',
@@ -125,23 +134,27 @@ const mpvAdvancedOptionSpecs = [
   MpvAdvancedOptionSpec(
     key: 'hr-seek',
     label: 'hr-seek',
+    description: '精确 seek；开启后拖动定位更准，但跳转时可能更吃性能。',
     values: ['no', 'yes'],
     valueLabels: {'no': 'no', 'yes': 'yes'},
   ),
   MpvAdvancedOptionSpec(
     key: 'hr-seek-framedrop',
     label: 'hr-seek-framedrop',
+    description: '精确 seek 后是否允许丢帧追进度；开启更流畅，关闭更重画质。',
     values: ['yes', 'no'],
     valueLabels: {'yes': 'yes', 'no': 'no'},
   ),
   MpvAdvancedOptionSpec(
     key: 'video-sync',
     label: 'video-sync',
+    description: '音视频同步方式；audio 以音频为准，display-resample 更偏显示刷新。',
     values: ['audio', 'display-resample'],
   ),
   MpvAdvancedOptionSpec(
     key: 'framedrop',
     label: 'framedrop',
+    description: '卡顿时的丢帧策略；decoder+vo 最积极，no 不主动丢帧。',
     values: ['decoder+vo', 'vo', 'no'],
     valueLabels: {
       'decoder+vo': 'decoder+vo',

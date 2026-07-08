@@ -205,6 +205,8 @@ class MpvAdvancedOptionTile extends StatelessWidget {
         initialValue: current.isEmpty ? null : current,
         decoration: InputDecoration(
           labelText: spec.label,
+          helperText: spec.description,
+          helperMaxLines: 2,
           prefixIcon: const Icon(Icons.tune_outlined),
         ),
         items: [

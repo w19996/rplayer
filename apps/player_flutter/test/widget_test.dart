@@ -149,6 +149,12 @@ void main() {
     );
   });
 
+  test('documents every mpv advanced option', () {
+    for (final spec in mpvAdvancedOptionSpecs) {
+      expect(spec.description.trim(), isNotEmpty, reason: spec.key);
+    }
+  });
+
   test('uses series folder when video is inside a season folder', () {
     const item = MediaItem(
       id: 'source:C:/media/Low IQ Crime/Season 1/S01E01.mkv',
