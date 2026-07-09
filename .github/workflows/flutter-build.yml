@@ -28,10 +28,6 @@ on:
         description: "Release/app version, for example 1.2.3"
         required: true
         type: string
-      build_number:
-        description: "Internal build number; defaults to the GitHub run number"
-        required: false
-        type: string
 
 permissions:
   contents: read
@@ -56,7 +52,6 @@ jobs:
         id: version
         env:
           DISPATCH_VERSION: ${{ github.event.inputs.version }}
-          DISPATCH_BUILD_NUMBER: ${{ github.event.inputs.build_number }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             app_version="$DISPATCH_VERSION"
@@ -79,10 +74,7 @@ jobs:
             exit 1
           fi
 
-          build_number="$DISPATCH_BUILD_NUMBER"
-          if [ -z "$build_number" ]; then
-            build_number="$GITHUB_RUN_NUMBER"
-          fi
+          build_number="$GITHUB_RUN_NUMBER"
           if ! [[ "$build_number" =~ ^[0-9]+$ ]]; then
             echo "Build number '$build_number' must be numeric." >&2
             exit 1
