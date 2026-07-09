@@ -244,11 +244,7 @@ Route<T> overlapSlideRoute<T>(WidgetBuilder builder) {
 
 void openPlayer(BuildContext context, AppStore store, MediaItem item) {
   Navigator.of(context).push(
-    PageRouteBuilder<void>(
-      transitionDuration: Duration.zero,
-      reverseTransitionDuration: Duration.zero,
-      pageBuilder: (_, __, ___) => VideoPlayerPage(store: store, item: item),
-    ),
+    appSlideRoute((_) => VideoPlayerPage(store: store, item: item)),
   );
 }
 

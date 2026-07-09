@@ -25,6 +25,16 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   static const double _danmuBaseTravelMs = 9500;
   static const double _verticalControlSensitivity = 1.35;
   static const double _verticalControlEdgeDeadZoneRatio = 0.14;
+  static const List<double> _playbackRates = [
+    0.25,
+    0.5,
+    0.75,
+    1.0,
+    1.25,
+    1.5,
+    1.75,
+    2.0,
+  ];
 
   Player? _player;
   VideoController? _controller;
@@ -50,6 +60,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   Duration dragStartPosition = Duration.zero;
   VerticalControlKind? verticalControlKind;
   double playbackVolume = 100;
+  double playbackRate = 1.0;
   String? verticalControlLabel;
   double verticalControlLevel = 0;
   int? videoWidth;
@@ -122,6 +133,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       );
 
   VideoController get controller => _controller ??= VideoController(player);
+
+  bool get isMobilePlatform => Platform.isAndroid || Platform.isIOS;
+
+  bool get isDesktopPlatform =>
+      Platform.isWindows || Platform.isMacOS || Platform.isLinux;
 
   @override
   void initState() {
@@ -450,6 +466,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       ..add(player.stream.completed.listen(handlePlaybackCompleted))
       ..add(player.stream.volume.listen((value) {
         playbackVolume = value.clamp(0, 100).toDouble();
+      }))
+      ..add(player.stream.rate.listen((value) {
+        playbackRate = value;
+        notifyControlsChanged();
       }))
       ..add(player.stream.width.listen((value) {
         videoWidth = value;
@@ -1285,39 +1305,19 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     scheduleControlsAutoHide();
   }
 
-  Future<void> showFitModes() async {
-    controlsHideTimer?.cancel();
-    Widget option(VideoFitMode mode, String label) {
-      final selected = fitMode == mode;
-      return ListTile(
-        title: Text(label, style: const TextStyle(color: Colors.white)),
-        trailing:
-            selected ? const Icon(Icons.check, color: Colors.white) : null,
-        onTap: () => Navigator.pop(context, mode),
-      );
-    }
-
-    final selected = await showModalBottomSheet<VideoFitMode>(
-      context: context,
-      backgroundColor: const Color(0xEE1F1F25),
-      builder: (context) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          children: [
-            const ListTile(
-                title: Text('画面尺寸',
-                    style: TextStyle(
-                        color: Colors.white, fontWeight: FontWeight.w700))),
-            option(VideoFitMode.contain, '内容居中'),
-            option(VideoFitMode.cover, '居中裁切'),
-            option(VideoFitMode.none, '原始尺寸'),
-            option(VideoFitMode.fill, '铺满屏幕'),
-          ],
-        ),
-      ),
+  Future<void> showFitModes(BuildContext anchorContext) async {
+    final selected = await showControlMenu<VideoFitMode>(
+      anchorContext: anchorContext,
+      selectedValue: fitMode,
+      options: const [
+        (value: VideoFitMode.contain, label: '内容居中'),
+        (value: VideoFitMode.cover, label: '居中裁切'),
+        (value: VideoFitMode.none, label: '原始尺寸'),
+        (value: VideoFitMode.fill, label: '铺满屏幕'),
+      ],
     );
     if (selected != null) setFitMode(selected);
-    if (selected == null) scheduleControlsAutoHide();
+    scheduleControlsAutoHide();
   }
 
   void startStatusTimer() {
@@ -1369,6 +1369,30 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         VideoFitMode.none => '原始',
         VideoFitMode.fill => '铺满',
       };
+
+  String playbackRateLabel(double rate) {
+    final text = rate.toStringAsFixed(2).replaceFirst(RegExp(r'0$'), '');
+    return '${text}x';
+  }
+
+  Future<void> setPlaybackRate(double rate) async {
+    setStateIfMounted(() => playbackRate = rate);
+    await player.setRate(rate);
+    scheduleControlsAutoHide();
+  }
+
+  Future<void> showPlaybackRates(BuildContext anchorContext) async {
+    final selected = await showControlMenu<double>(
+      anchorContext: anchorContext,
+      selectedValue: playbackRate,
+      options: [
+        for (final rate in _playbackRates)
+          (value: rate, label: playbackRateLabel(rate)),
+      ],
+    );
+    if (selected != null) await setPlaybackRate(selected);
+    scheduleControlsAutoHide();
+  }
 
   Future<void> seekRelative(int seconds) async {
     if (controlsLocked) return;
@@ -1750,6 +1774,59 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     );
   }
 
+  Future<T?> showControlMenu<T>({
+    required BuildContext anchorContext,
+    required List<({String label, T value})> options,
+    required T selectedValue,
+  }) {
+    controlsHideTimer?.cancel();
+    final overlay =
+        Overlay.of(anchorContext).context.findRenderObject() as RenderBox;
+    final box = anchorContext.findRenderObject() as RenderBox;
+    final topLeft = box.localToGlobal(Offset.zero, ancestor: overlay);
+    final bottomRight = box.localToGlobal(
+        Offset(box.size.width, box.size.height),
+        ancestor: overlay);
+    final menuWidth = math.max(220.0, math.min(336.0, overlay.size.width - 32));
+    final entries = <PopupMenuEntry<T>>[];
+    for (var index = 0; index < options.length; index++) {
+      final option = options[index];
+      if (index > 0) entries.add(const PopupMenuDivider(height: 1));
+      entries.add(
+        PopupMenuItem<T>(
+          value: option.value,
+          height: 54,
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  option.label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white, fontSize: 16),
+                ),
+              ),
+              if (option.value == selectedValue)
+                const Icon(Icons.check, color: Colors.white, size: 22),
+            ],
+          ),
+        ),
+      );
+    }
+    return showMenu<T>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromPoints(topLeft, bottomRight),
+        Offset.zero & overlay.size,
+      ),
+      constraints: BoxConstraints.tightFor(width: menuWidth),
+      color: const Color(0xEE4A4A4A),
+      elevation: 0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      items: entries,
+    );
+  }
+
   String trackLabel(dynamic track, String fallback) {
     final title = track.title as String?;
     final language = track.language as String?;
@@ -1766,63 +1843,37 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     return parts.join(' · ');
   }
 
-  Future<void> showAudioTracks() async {
-    controlsHideTimer?.cancel();
+  Future<void> showAudioTracks(BuildContext anchorContext) async {
     final tracks = availableTracks.audio;
-    final selected = await showModalBottomSheet<AudioTrack>(
-      context: context,
-      backgroundColor: const Color(0xEE1F1F25),
-      builder: (context) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          children: [
-            const ListTile(
-                title: Text('音轨',
-                    style: TextStyle(
-                        color: Colors.white, fontWeight: FontWeight.w700))),
-            for (final track in tracks)
-              ListTile(
-                title: Text(trackLabel(track, '音轨'),
-                    style: const TextStyle(color: Colors.white)),
-                trailing: track == selectedTrack.audio
-                    ? const Icon(Icons.check, color: Colors.white)
-                    : null,
-                onTap: () => Navigator.pop(context, track),
-              ),
-          ],
-        ),
-      ),
+    if (tracks.isEmpty) {
+      scheduleControlsAutoHide();
+      return;
+    }
+    final selected = await showControlMenu<AudioTrack>(
+      anchorContext: anchorContext,
+      selectedValue: selectedTrack.audio,
+      options: [
+        for (final track in tracks)
+          (value: track, label: trackLabel(track, '音轨')),
+      ],
     );
     if (selected != null) await player.setAudioTrack(selected);
     scheduleControlsAutoHide();
   }
 
-  Future<void> showSubtitleTracks() async {
-    controlsHideTimer?.cancel();
+  Future<void> showSubtitleTracks(BuildContext anchorContext) async {
     final tracks = availableTracks.subtitle;
-    final selected = await showModalBottomSheet<SubtitleTrack>(
-      context: context,
-      backgroundColor: const Color(0xEE1F1F25),
-      builder: (context) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          children: [
-            const ListTile(
-                title: Text('字幕',
-                    style: TextStyle(
-                        color: Colors.white, fontWeight: FontWeight.w700))),
-            for (final track in tracks)
-              ListTile(
-                title: Text(trackLabel(track, '字幕'),
-                    style: const TextStyle(color: Colors.white)),
-                trailing: track == selectedTrack.subtitle
-                    ? const Icon(Icons.check, color: Colors.white)
-                    : null,
-                onTap: () => Navigator.pop(context, track),
-              ),
-          ],
-        ),
-      ),
+    if (tracks.isEmpty) {
+      scheduleControlsAutoHide();
+      return;
+    }
+    final selected = await showControlMenu<SubtitleTrack>(
+      anchorContext: anchorContext,
+      selectedValue: selectedTrack.subtitle,
+      options: [
+        for (final track in tracks)
+          (value: track, label: trackLabel(track, '字幕')),
+      ],
     );
     if (selected != null) await player.setSubtitleTrack(selected);
     scheduleControlsAutoHide();
@@ -2858,6 +2909,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     final rightTimeWidth = compact ? 58.0 : (denseLandscape ? 64.0 : 92.0);
     final playButtonSize = compact ? 52.0 : (denseLandscape ? 50.0 : 56.0);
     final displayedPosition = dragPreviewPosition ?? position;
+    final iconSize = compact || denseLandscape ? 24.0 : 27.0;
+    final smallIconSize = compact || denseLandscape ? 22.0 : 24.0;
+    final episodeIconSize = compact || denseLandscape ? 25.0 : 28.0;
     final playButton = DecoratedBox(
       decoration: const BoxDecoration(
         color: Color(0x22000000),
@@ -2878,27 +2932,36 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         ),
       ),
     );
-    final audioButton = controlIconButton(
-        icon: Icons.graphic_eq,
-        onPressed: showAudioTracks,
-        size: compact || denseLandscape ? 24 : 27);
-    final subtitleButton = controlIconButton(
-        icon: Icons.closed_caption_outlined,
-        onPressed: showSubtitleTracks,
-        size: compact || denseLandscape ? 24 : 27);
-    final episodeButton = controlIconButton(
-      icon: Icons.format_list_bulleted_rounded,
-      onPressed: openEpisodePanel,
-      size: compact || denseLandscape ? 25 : 28,
+    final audioButton = Builder(
+      builder: (buttonContext) => controlIconButton(
+          icon: Icons.graphic_eq,
+          onPressed: () => unawaited(showAudioTracks(buttonContext)),
+          size: iconSize),
+    );
+    final subtitleButton = Builder(
+      builder: (buttonContext) => controlIconButton(
+          icon: Icons.closed_caption_outlined,
+          onPressed: () => unawaited(showSubtitleTracks(buttonContext)),
+          size: iconSize),
+    );
+    final episodeButton = Transform.translate(
+      offset: Offset((38 - episodeIconSize) / 2, 0),
+      child: controlIconButton(
+        icon: Icons.format_list_bulleted_rounded,
+        onPressed: openEpisodePanel,
+        size: episodeIconSize,
+      ),
     );
     final rotateButton = controlIconButton(
         icon: Icons.screen_rotation_alt_outlined,
         onPressed: () => rotateScreen(context),
-        size: compact || denseLandscape ? 22 : 24);
-    final fitButton = controlIconButton(
-        icon: Icons.fit_screen_outlined,
-        onPressed: showFitModes,
-        size: compact || denseLandscape ? 22 : 24);
+        size: smallIconSize);
+    final fitButton = Builder(
+      builder: (buttonContext) => controlIconButton(
+          icon: Icons.fit_screen_outlined,
+          onPressed: () => unawaited(showFitModes(buttonContext)),
+          size: smallIconSize),
+    );
     final fullscreenButton = controlIconButton(
         icon:
             playbackWindowFullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
@@ -2907,7 +2970,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     final danmuButton = controlIconButton(
         icon: Icons.chat_bubble_outline,
         onPressed: openDanmuPanel,
-        size: compact || denseLandscape ? 22 : 24);
+        size: smallIconSize);
     final sideSlotWidth = compact ? 48.0 : (denseLandscape ? 50.0 : 56.0);
     Widget sideSlot(Widget child, {Alignment alignment = Alignment.center}) =>
         SizedBox(
@@ -2928,13 +2991,24 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       mainAxisSize: MainAxisSize.min,
       children: [
         sideSlot(
-            statusText('1.0x', size: compact ? 13 : (denseLandscape ? 13 : 14)),
-            alignment: Alignment.centerLeft),
+          Builder(
+            builder: (buttonContext) => GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => unawaited(showPlaybackRates(buttonContext)),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: statusText(playbackRateLabel(playbackRate),
+                    size: compact ? 13 : (denseLandscape ? 13 : 14)),
+              ),
+            ),
+          ),
+          alignment: Alignment.centerLeft,
+        ),
         sideSlot(statusText(fitShortLabel,
             size: compact ? 13 : (denseLandscape ? 13 : 14))),
-        sideSlot(rotateButton),
+        if (!isDesktopPlatform) sideSlot(rotateButton),
         sideSlot(fitButton),
-        sideSlot(fullscreenButton),
+        if (!isMobilePlatform) sideSlot(fullscreenButton),
       ],
     );
     final rightControls = Row(
