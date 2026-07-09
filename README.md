@@ -1,156 +1,100 @@
 # rplayer
 
-rplayer 是一个基于 Flutter、Rust 和 mpv/media_kit 的本地与 WebDAV 视频播放器。当前重点是移动端体验：媒体库、最近播放、TMDB 海报墙与详情页、弹幕、WebDAV 资源、播放进度、诊断日志和配置同步。
+rplayer 是一个面向本地影音库和远程媒体源的视频播放器。它使用 Flutter 构建界面，使用 Rust 管理媒体库、元数据和部分解析逻辑，播放核心基于 media_kit / libmpv。
 
-## 当前功能
+当前主要支持 Android 和 Windows x64。
 
-- 媒体库首页：按 TMDB 类型聚合电影、电视剧、综艺、纪录片、新闻、迷你剧等分类。
-- 最近播放：记录播放位置、总时长和最近播放时间，首页显示进度与续播入口。
-- 详情页：展示 TMDB 标题、海报、背景图、评分、发布日期、类型、简介、演员和剧集列表。
-- 播放器：使用 `media_kit` / libmpv 播放本地或 WebDAV 视频，支持播放/暂停、进度拖动、横竖屏、画面比例、音轨和字幕轨切换。
-- 加载状态：基于 mpv 的真实缓冲、视频尺寸和播放位置判断首帧可见状态，避免假进度。
-- 可恢复网络错误处理：播放已经恢复时，短暂 TCP 读错误只记录日志，不再覆盖正在播放的画面。
-- 弹幕：支持 danmu_api 搜索、匹配、加载、手动重选和播放时渲染。
-- TMDB：支持 `/search/multi`，按电影和电视剧分别写入规范化元数据。
-- 图片缓存：TMDB 海报、背景图、剧集图和演员头像缓存到本地 SQLite。
-- WebDAV：添加远程资源、浏览目录、选择文件夹、播放远程视频。
-- 配置与同步：支持导入导出配置、媒体库数据库同步、TMDB 设置、弹幕设置和诊断日志设置。
-- 诊断日志：记录扫描、数据库、TMDB、图片缓存、同步、播放和弹幕相关事件，便于排查设备端问题。
+## 功能特性
 
-## 项目结构
+### 视频播放
 
-```text
-.
-├── apps/
-│   └── player_flutter/          # Flutter 应用
-├── crates/
-│   └── player_core/             # Rust FFI 核心库
-├── docs/                        # 架构、API 和 TMDB 媒体库设计文档
-├── third_party/
-│   └── media_kit_libs_android_video/
-└── Cargo.toml                   # Rust workspace
-```
+- 播放本地视频、WebDAV 视频和 OpenList 远程视频。
+- 支持播放/暂停、进度拖动、续播、横竖屏、画面比例、音轨切换和字幕轨切换。
+- 使用 libmpv 作为底层播放引擎，支持常见视频格式和硬件解码能力。
+- 记录播放进度、总时长、最近播放时间，回到媒体库后可以继续观看。
+- 针对移动端做了低负载播放参数，尽量降低播放时发热和后台/分屏场景卡顿。
 
-## 技术栈
+### 媒体库
 
-- Flutter / Dart：应用界面、播放器页面、设置页、媒体库交互。
-- Rust：本地扫描、WebDAV 解析、TMDB/SQLite 元数据、弹幕可见窗口计算和 FFI API。
-- SQLite：媒体库、播放进度、TMDB 元数据、图片缓存和配置状态。
-- media_kit / libmpv：实际音视频播放。
-- TMDB API：电影、剧集、海报、背景图、演员和简介。
-- danmu_api：弹幕搜索、匹配和弹幕 XML/JSON 加载。
+- 添加本地目录、WebDAV 目录、OpenList 目录作为媒体源。
+- 自动扫描视频文件并建立媒体库。
+- 首页展示最近播放、电影、电视剧、综艺、纪录片、新闻、迷你剧等分类。
+- 支持按剧集/文件夹聚合，避免同一剧集或同一目录在首页重复出现。
+- 支持多版本文件，例如 4K、1080p、HDR、DV 等版本目录，并在详情页切换播放版本。
 
-## 开发环境
+### TMDB 元数据
 
-需要准备：
+- 使用 TMDB 匹配电影和电视剧。
+- 展示标题、海报、背景图、评分、发布日期、类型、简介、演员和剧集信息。
+- 缓存海报、背景图、剧集图和演员头像。
+- 支持手动重新识别，修正自动匹配错误。
+- 同一部剧或电影的多个文件版本共用一份 TMDB 元数据，减少重复请求。
 
-- Flutter SDK
-- Rust toolchain
-- Android SDK / NDK
-- `cargo-ndk`，用于生成 Android `libplayer_core.so`
+### 弹幕
 
-本仓库会忽略本地工具链、构建目录、APK/AAB、Rust target、Android native `.so`、`.understand-anything` 和 graphify 等分析产物。这些文件不要提交到 Git。
+- 支持通过 danmu_api 搜索和加载弹幕。
+- 支持自动匹配、手动重选、播放时同步渲染。
+- 支持在分屏、悬浮窗、画中画等场景下保持弹幕显示。
 
-## 常用命令
+### 远程资源与同步
 
-在仓库根目录运行 Rust 检查：
+- WebDAV 目录浏览、文件选择和远程播放。
+- OpenList API 目录浏览、登录和远程播放。
+- 支持同步配置文件和媒体库数据库。
+- 支持导入导出配置，便于换设备迁移。
 
-```powershell
-cargo fmt -p player_core
-cargo test -p player_core
-```
+### 诊断与设置
 
-在 Flutter 应用目录运行检查和测试：
+- 应用内可配置 TMDB、弹幕 API、WebDAV 同步、MPV 高级参数和诊断日志。
+- 诊断日志覆盖扫描、数据库、TMDB、图片缓存、同步、播放和弹幕流程，方便定位设备端问题。
 
-```powershell
-cd apps/player_flutter
-flutter analyze
-flutter test
-```
+## 开源项目与依赖
 
-生成 Android Rust native libs：
+rplayer 主要使用了这些开源项目：
 
-```powershell
-$env:ANDROID_NDK_HOME = "D:\Code\rplayer\.toolchains\android-sdk\ndk\27.3.13750724"
-cargo ndk --link-libcxx-shared -t arm64-v8a -o apps/player_flutter/android/app/src/main/jniLibs build -p player_core --release
-```
+### 应用与界面
 
-构建 release APK：
+- [Flutter](https://flutter.dev/) / Dart：跨平台应用界面。
+- `flutter_localizations`：中文本地化和系统控件本地化。
+- `file_picker`：本地文件和目录选择。
+- `permission_handler`：Android 权限申请。
+- `cupertino_icons`：基础图标。
 
-```powershell
-cd apps/player_flutter
-flutter build apk --release --target-platform android-arm64
-```
+### 播放
 
-APK 输出路径：
+- [media_kit](https://github.com/media-kit/media-kit)：Flutter 播放器封装。
+- `media_kit_video`：Flutter 视频渲染组件。
+- `media_kit_libs_android_video`：Android 播放 native 库。
+- `media_kit_libs_windows_video`：Windows 播放 native 库。
+- [mpv / libmpv](https://mpv.io/)：底层音视频播放引擎。
 
-```text
-apps/player_flutter/build/app/outputs/flutter-apk/app-release.apk
-```
+### Rust 核心
 
-## Android 固定签名
+- [Rust](https://www.rust-lang.org/)：媒体库、解析、缓存和 FFI 核心。
+- `rusqlite` / SQLite：媒体库、播放进度、TMDB 缓存和设置存储。
+- `reqwest`：HTTP 请求。
+- `tokio`：异步运行时。
+- `serde` / `serde_json`：JSON 序列化。
+- `roxmltree`：WebDAV XML 解析。
+- `url`、`percent-encoding`、`base64`：URL、路径和认证相关处理。
+- `anyhow`、`thiserror`：错误处理。
+- `cc`：构建 C/C++ 辅助代码。
 
-Android 判断“同一个应用”不仅看 `applicationId`，还看 APK 签名证书。不同机器生成的 debug keystore 不一样，所以本机包、GitHub Actions 包、不同 CI 运行产物之间可能会提示“签名不同”。要让手机可以直接覆盖安装，必须长期使用同一把 keystore。
+### 服务与数据
 
-本项目支持 `apps/player_flutter/android/key.properties`：
+- [TMDB](https://www.themoviedb.org/)：电影、剧集、海报、背景图和演员信息。
+- danmu_api：弹幕搜索和弹幕数据来源。
+- WebDAV：远程媒体库访问与同步。
+- OpenList：远程文件列表和播放源接入。
 
-```properties
-storePassword=...
-keyPassword=...
-keyAlias=upload
-storeFile=upload-keystore.jks
-```
+## 捐助
 
-`key.properties` 和 `*.jks` 已被 `.gitignore` 忽略，不能提交到仓库。
+如果这个项目对你有帮助，可以通过下面的二维码支持开发。
 
-GitHub Actions 固定签名需要配置这些 repository secrets：
+<p align="center">
+  <img src="docs/donate.png" alt="捐助码" width="280">
+</p>
 
-```text
-ANDROID_KEYSTORE_BASE64
-ANDROID_KEY_ALIAS
-ANDROID_KEY_PASSWORD
-ANDROID_STORE_PASSWORD
-```
+## 许可证
 
-其中 `ANDROID_KEYSTORE_BASE64` 是 keystore 文件的 base64 内容。Windows PowerShell 可这样生成：
-
-```powershell
-[Convert]::ToBase64String([IO.File]::ReadAllBytes("apps/player_flutter/android/upload-keystore.jks"))
-```
-
-配置完后，Actions 产出的 debug APK 和 release APK 都会使用同一把签名。未配置 secrets 时，CI 会回退到默认 debug 签名，只适合临时测试；这种包不能保证覆盖安装已有应用。
-
-## 配置
-
-示例配置见 `.env.example`。常用服务：
-
-```text
-TMDB_ACCESS_TOKEN=...
-DANMU_API_BASE_URL=http://127.0.0.1:9321
-DANMU_API_TOKEN=87654321
-```
-
-应用内也可以在“我的”页面配置：
-
-- TMDB 访问令牌、语言、地区和 API 节点
-- 弹幕 API 地址和 token
-- WebDAV 同步地址、配置文件路径和数据库路径
-- 诊断日志开关与导出
-
-## 数据与产物约定
-
-- `apps/player_flutter/android/app/src/main/jniLibs/` 是本地编译产物，不提交。
-- `apps/player_flutter/build/`、`target/`、`.dart_tool/`、`.gradle/` 都是构建缓存，不提交。
-- `.understand-anything/`、`graphify-out/` 是代码分析产物，不提交。
-- `*.sqlite`、`*.db` 是本地运行数据，不提交。
-- `Cargo.lock` 当前按现有仓库规则不提交；如后续改成发布固定版本的应用，可再决定是否纳入版本管理。
-
-## 文档
-
-- `docs/architecture.md`：总体架构草案。
-- `docs/api-contracts.md`：Flutter 与 Rust、TMDB、danmu_api 的接口说明。
-- `docs/tmdb-media-architecture.md`：TMDB 媒体库、SQLite schema 和同步策略。
-
-## 当前边界
-
-项目当前主要验证 Android/Flutter 路径。桌面平台保留了 Rust 和 media_kit 的基础结构，但完整打包、平台库分发和桌面端 UI 还需要后续补齐。
+本仓库使用 [GPL-3.0](LICENSE) 许可证。
