@@ -83,7 +83,7 @@ rplayer 主要使用了这些开源项目：
 ### 服务与数据
 
 - [TMDB](https://www.themoviedb.org/)：电影、剧集、海报、背景图和演员信息。
-- danmu_api：弹幕搜索和弹幕数据来源。
+- [danmu_api](https://github.com/huangxd-/danmu_api)：弹幕搜索和弹幕数据来源。
 - WebDAV：远程媒体库访问与同步。
 - OpenList：远程文件列表和播放源接入。
 
