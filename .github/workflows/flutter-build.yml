@@ -2,6 +2,10 @@ name: Flutter Build
 
 on:
   push:
+    branches:
+      - "**"
+    tags:
+      - "[0-9]*"
     paths:
       - "apps/player_flutter/**"
       - "crates/player_core/**"
@@ -281,3 +285,47 @@ jobs:
         run: |
           echo "Flutter stable does not expose a Windows x86 build target in 'flutter build windows'."
           echo "Windows x64 is built by the windows-x64 job."
+
+  release:
+    name: Publish GitHub release
+    runs-on: ubuntu-latest
+    needs: [android, windows-x64]
+    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
+    permissions:
+      contents: write
+      actions: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read app version
+        id: version
+        run: |
+          version="$(awk -F': *' '/^version:/ { print $2; exit }' apps/player_flutter/pubspec.yaml)"
+          app_version="${version%%+*}"
+          if [ -z "$app_version" ]; then
+            echo "Could not read app version from apps/player_flutter/pubspec.yaml." >&2
+            exit 1
+          fi
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "$app_version" ]; then
+            echo "Tag '${GITHUB_REF_NAME}' must match app version '${app_version}'." >&2
+            exit 1
+          fi
+          echo "app_version=$app_version" >> "$GITHUB_OUTPUT"
+
+      - name: Download app artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rplayer-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.version.outputs.app_version }}" release-assets/* \
+            --title "${{ steps.version.outputs.app_version }}" \
+            --target "$GITHUB_SHA" \
+            --generate-notes

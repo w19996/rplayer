@@ -57,6 +57,14 @@ add_subdirectory("runner")
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
+set(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../..")
+set(PLAYER_CORE_DLL "${REPO_ROOT}/target/release/player_core.dll")
+add_custom_target(player_core_windows ALL
+  COMMAND cargo build -p player_core --release
+  WORKING_DIRECTORY "${REPO_ROOT}"
+  COMMENT "Building player_core.dll"
+)
+add_dependencies(${BINARY_NAME} player_core_windows)
 
 # === Installation ===
 # Support files are copied into place next to the executable, so that it can
@@ -79,6 +87,9 @@ install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}
   COMPONENT Runtime)
 
 install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+  COMPONENT Runtime)
+
+install(FILES "${PLAYER_CORE_DLL}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
   COMPONENT Runtime)
 
 if(PLUGIN_BUNDLED_LIBRARIES)
