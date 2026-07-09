@@ -229,8 +229,11 @@ jobs:
           aapt="$(find "$ANDROID_HOME/build-tools" -name aapt -type f | sort -V | tail -n 1)"
           for apk in build/ci/*.apk; do
             badging="$("$aapt" dump badging "$apk")"
-            version_name="${badging#*versionName='}"
-            version_name="${version_name%%'*}"
+            version_name="$(printf '%s\n' "$badging" | grep -o "versionName='[^']*'" | head -n 1 | cut -d"'" -f2)"
+            if [ -z "$version_name" ]; then
+              echo "Could not read versionName from $apk." >&2
+              exit 1
+            fi
             if [ "$version_name" != "$APP_VERSION" ]; then
               echo "$apk versionName '$version_name' does not match app version '$APP_VERSION'." >&2
               exit 1
@@ -311,8 +314,7 @@ jobs:
       - name: Build Windows x64
         env:
           APP_VERSION: ${{ needs.version.outputs.app_version }}
-          BUILD_NUMBER: ${{ needs.version.outputs.build_number }}
-        run: flutter build windows --release --build-name "$env:APP_VERSION" --build-number "$env:BUILD_NUMBER" --no-pub
+        run: flutter build windows --release --build-name "$env:APP_VERSION" --no-pub
 
       - name: Check Windows exe version
         shell: pwsh
