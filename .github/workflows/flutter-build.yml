@@ -6,6 +6,7 @@ on:
       - "**"
     tags:
       - "[0-9]*"
+      - "v[0-9]*"
     paths:
       - "apps/player_flutter/**"
       - "crates/player_core/**"
@@ -22,6 +23,15 @@ on:
       - "Cargo.lock"
       - ".github/workflows/flutter-build.yml"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release/app version, for example 1.2.3"
+        required: true
+        type: string
+      build_number:
+        description: "Internal build number; defaults to the GitHub run number"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -31,9 +41,61 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  version:
+    name: App version
+    runs-on: ubuntu-latest
+    outputs:
+      app_version: ${{ steps.version.outputs.app_version }}
+      build_number: ${{ steps.version.outputs.build_number }}
+      release_tag: ${{ steps.version.outputs.release_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve app version
+        id: version
+        env:
+          DISPATCH_VERSION: ${{ github.event.inputs.version }}
+          DISPATCH_BUILD_NUMBER: ${{ github.event.inputs.build_number }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            app_version="$DISPATCH_VERSION"
+            release_tag="$app_version"
+          elif [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            app_version="${GITHUB_REF_NAME#v}"
+            release_tag="$GITHUB_REF_NAME"
+          else
+            version="$(awk -F': *' '/^version:/ { print $2; exit }' apps/player_flutter/pubspec.yaml)"
+            app_version="${version%%+*}"
+            release_tag="$app_version"
+          fi
+
+          if [ -z "$app_version" ]; then
+            echo "App version is empty." >&2
+            exit 1
+          fi
+          if ! [[ "$app_version" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
+            echo "App version '$app_version' must use x.y.z format." >&2
+            exit 1
+          fi
+
+          build_number="$DISPATCH_BUILD_NUMBER"
+          if [ -z "$build_number" ]; then
+            build_number="$GITHUB_RUN_NUMBER"
+          fi
+          if ! [[ "$build_number" =~ ^[0-9]+$ ]]; then
+            echo "Build number '$build_number' must be numeric." >&2
+            exit 1
+          fi
+
+          echo "app_version=$app_version" >> "$GITHUB_OUTPUT"
+          echo "build_number=$build_number" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+
   android:
     name: Android armv7, armv8, universal
     runs-on: ubuntu-latest
+    needs: version
 
     defaults:
       run:
@@ -144,20 +206,44 @@ jobs:
             > android/key.properties
 
       - name: Build Android armv7 APK
+        env:
+          APP_VERSION: ${{ needs.version.outputs.app_version }}
+          BUILD_NUMBER: ${{ needs.version.outputs.build_number }}
         run: |
-          flutter build apk --release --target-platform android-arm --android-project-arg=targetAbi=armeabi-v7a --no-pub
+          flutter build apk --release --target-platform android-arm --build-name "$APP_VERSION" --build-number "$BUILD_NUMBER" --android-project-arg=targetAbi=armeabi-v7a --no-pub
           mkdir -p build/ci
           cp build/app/outputs/flutter-apk/app-release.apk build/ci/rplayer-android-armeabi-v7a.apk
 
       - name: Build Android armv8 APK
+        env:
+          APP_VERSION: ${{ needs.version.outputs.app_version }}
+          BUILD_NUMBER: ${{ needs.version.outputs.build_number }}
         run: |
-          flutter build apk --release --target-platform android-arm64 --android-project-arg=targetAbi=arm64-v8a --no-pub
+          flutter build apk --release --target-platform android-arm64 --build-name "$APP_VERSION" --build-number "$BUILD_NUMBER" --android-project-arg=targetAbi=arm64-v8a --no-pub
           cp build/app/outputs/flutter-apk/app-release.apk build/ci/rplayer-android-arm64-v8a.apk
 
       - name: Build Android universal APK
+        env:
+          APP_VERSION: ${{ needs.version.outputs.app_version }}
+          BUILD_NUMBER: ${{ needs.version.outputs.build_number }}
         run: |
-          flutter build apk --release --target-platform android-arm,android-arm64 --android-project-arg=targetAbi=armeabi-v7a,arm64-v8a --no-pub
+          flutter build apk --release --target-platform android-arm,android-arm64 --build-name "$APP_VERSION" --build-number "$BUILD_NUMBER" --android-project-arg=targetAbi=armeabi-v7a,arm64-v8a --no-pub
           cp build/app/outputs/flutter-apk/app-release.apk build/ci/rplayer-android-universal.apk
+
+      - name: Check Android APK versions
+        env:
+          APP_VERSION: ${{ needs.version.outputs.app_version }}
+        run: |
+          aapt="$(find "$ANDROID_HOME/build-tools" -name aapt -type f | sort -V | tail -n 1)"
+          for apk in build/ci/*.apk; do
+            badging="$("$aapt" dump badging "$apk")"
+            version_name="${badging#*versionName='}"
+            version_name="${version_name%%'*}"
+            if [ "$version_name" != "$APP_VERSION" ]; then
+              echo "$apk versionName '$version_name' does not match app version '$APP_VERSION'." >&2
+              exit 1
+            fi
+          done
 
       - name: Upload Android armv7 APK
         uses: actions/upload-artifact@v4
@@ -192,6 +278,7 @@ jobs:
   windows-x64:
     name: Windows x64
     runs-on: windows-latest
+    needs: version
 
     defaults:
       run:
@@ -230,7 +317,20 @@ jobs:
         run: cargo build -p player_core --release
 
       - name: Build Windows x64
-        run: flutter build windows --release --no-pub
+        env:
+          APP_VERSION: ${{ needs.version.outputs.app_version }}
+          BUILD_NUMBER: ${{ needs.version.outputs.build_number }}
+        run: flutter build windows --release --build-name "$env:APP_VERSION" --build-number "$env:BUILD_NUMBER" --no-pub
+
+      - name: Check Windows exe version
+        shell: pwsh
+        env:
+          APP_VERSION: ${{ needs.version.outputs.app_version }}
+        run: |
+          $actual = (Get-Item build\windows\x64\runner\Release\player_flutter.exe).VersionInfo.ProductVersion
+          if ($actual -ne $env:APP_VERSION) {
+            throw "Windows exe version '$actual' does not match app version '$env:APP_VERSION'."
+          }
 
       - name: Set up Inno Setup
         shell: pwsh
@@ -255,13 +355,14 @@ jobs:
 
       - name: Build Windows x64 installer
         shell: pwsh
+        env:
+          APP_VERSION: ${{ needs.version.outputs.app_version }}
         run: |
-          $version = (Select-String -Path pubspec.yaml -Pattern '^version:\s*(.+)$').Matches[0].Groups[1].Value.Split('+')[0]
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (!(Test-Path $iscc)) { $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe" }
           $release = (Resolve-Path build\windows\x64\runner\Release).Path
           $output = (Resolve-Path build\ci).Path
-          & $iscc windows\installer\rplayer.iss "/DAppVersion=$version" "/DReleaseDir=$release" "/DOutputDir=$output"
+          & $iscc windows\installer\rplayer.iss "/DAppVersion=$env:APP_VERSION" "/DReleaseDir=$release" "/DOutputDir=$output"
 
       - name: Upload Windows x64 portable zip
         uses: actions/upload-artifact@v4
@@ -289,31 +390,13 @@ jobs:
   release:
     name: Publish GitHub release
     runs-on: ubuntu-latest
-    needs: [android, windows-x64]
+    needs: [version, android, windows-x64]
     if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
     permissions:
       contents: write
       actions: read
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Read app version
-        id: version
-        run: |
-          version="$(awk -F': *' '/^version:/ { print $2; exit }' apps/player_flutter/pubspec.yaml)"
-          app_version="${version%%+*}"
-          if [ -z "$app_version" ]; then
-            echo "Could not read app version from apps/player_flutter/pubspec.yaml." >&2
-            exit 1
-          fi
-          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "$app_version" ]; then
-            echo "Tag '${GITHUB_REF_NAME}' must match app version '${app_version}'." >&2
-            exit 1
-          fi
-          echo "app_version=$app_version" >> "$GITHUB_OUTPUT"
-
       - name: Download app artifacts
         uses: actions/download-artifact@v4
         with:
@@ -324,8 +407,9 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          gh release create "${{ steps.version.outputs.app_version }}" release-assets/* \
-            --title "${{ steps.version.outputs.app_version }}" \
+          gh release create "${{ needs.version.outputs.release_tag }}" release-assets/* \
+            --title "${{ needs.version.outputs.app_version }}" \
             --target "$GITHUB_SHA" \
             --generate-notes
