@@ -85,7 +85,7 @@ class ProfilePage extends StatelessWidget {
                   title: 'MPV 进阶参数',
                   subtitle: mpvAdvancedPresetSummary(
                     store.mpvAdvancedPreset,
-                    android: Platform.isAndroid,
+                    deviceClass: currentDeviceClass,
                   ),
                   onTap: () => Navigator.of(context).push(
                     appSlideRoute((_) => MpvAdvancedSettingsPage(store: store)),
@@ -162,7 +162,7 @@ class MpvAdvancedSettingsPage extends StatelessWidget {
                         subtitle: Text(
                           mpvAdvancedPresetSummary(
                             preset,
-                            android: Platform.isAndroid,
+                            deviceClass: currentDeviceClass,
                           ),
                         ),
                         value: preset,

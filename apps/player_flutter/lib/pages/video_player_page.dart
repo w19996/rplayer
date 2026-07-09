@@ -134,11 +134,6 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
 
   VideoController get controller => _controller ??= VideoController(player);
 
-  bool get isMobilePlatform => Platform.isAndroid || Platform.isIOS;
-
-  bool get isDesktopPlatform =>
-      Platform.isWindows || Platform.isMacOS || Platform.isLinux;
-
   @override
   void initState() {
     super.initState();
@@ -576,7 +571,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       final native = player.platform as dynamic;
       for (final entry in mpvAdvancedOptions(
         preset: widget.store.mpvAdvancedPreset,
-        android: Platform.isAndroid,
+        deviceClass: currentDeviceClass,
         softwareDecoderFallback: softwareDecoderFallback,
         customOptions: widget.store.effectiveMpvAdvancedOptions(),
       ).entries) {
@@ -2905,8 +2900,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     final safeBottom = MediaQuery.paddingOf(context).bottom;
     final compact = !isLandscape;
     final denseLandscape = isLandscape && constraints.maxWidth < 740;
-    final leftTimeWidth = compact ? 52.0 : (denseLandscape ? 58.0 : 78.0);
-    final rightTimeWidth = compact ? 58.0 : (denseLandscape ? 64.0 : 92.0);
+    final leftTimeWidth = compact ? 46.0 : (denseLandscape ? 50.0 : 56.0);
+    final rightTimeWidth = compact ? 50.0 : (denseLandscape ? 56.0 : 64.0);
     final playButtonSize = compact ? 52.0 : (denseLandscape ? 50.0 : 56.0);
     final displayedPosition = dragPreviewPosition ?? position;
     final iconSize = compact || denseLandscape ? 24.0 : 27.0;

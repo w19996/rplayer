@@ -22,6 +22,7 @@ val androidAbis = listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
 android {
     namespace = "com.example.player_flutter"
     compileSdk = flutter.compileSdkVersion
+    ndkVersion = "27.3.13750724"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

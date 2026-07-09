@@ -216,7 +216,7 @@ void main() {
     expect(
       mpvAdvancedOptions(
         preset: mpvAdvancedPresetAuto,
-        android: true,
+        deviceClass: AppDeviceClass.mobile,
         softwareDecoderFallback: false,
       )['hwdec'],
       'mediacodec,mediacodec-copy,no',

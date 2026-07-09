@@ -423,11 +423,11 @@ class AppStore extends ChangeNotifier {
     mpvAdvancedOptionValues = normalizeMpvAdvancedOptions(
       json['mpvAdvancedOptions'],
       preset: mpvAdvancedPreset,
-      android: Platform.isAndroid,
+      deviceClass: currentDeviceClass,
     );
     mpvAdvancedPreset = mpvAdvancedPresetForOptions(
       mpvAdvancedOptionValues,
-      android: Platform.isAndroid,
+      deviceClass: currentDeviceClass,
     );
     final sync = json['syncConfig'];
     syncConfig =
@@ -1082,7 +1082,7 @@ class AppStore extends ChangeNotifier {
     }
     mpvAdvancedOptionValues = mpvAdvancedPresetOptions(
       preset: mpvAdvancedPreset,
-      android: Platform.isAndroid,
+      deviceClass: currentDeviceClass,
     );
     addDiagnosticLog('mpv preset updated: $mpvAdvancedPreset',
         category: 'player');
@@ -1094,7 +1094,7 @@ class AppStore extends ChangeNotifier {
       normalizeMpvAdvancedOptions(
         mpvAdvancedOptionValues,
         preset: mpvAdvancedPreset,
-        android: Platform.isAndroid,
+        deviceClass: currentDeviceClass,
       );
 
   Future<void> setMpvAdvancedOption(String key, String value) async {
@@ -1104,7 +1104,7 @@ class AppStore extends ChangeNotifier {
     mpvAdvancedOptionValues = next;
     mpvAdvancedPreset = mpvAdvancedPresetForOptions(
       next,
-      android: Platform.isAndroid,
+      deviceClass: currentDeviceClass,
     );
     addDiagnosticLog('mpv option updated: $key=${next[key]}',
         category: 'player');

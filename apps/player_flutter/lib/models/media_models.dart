@@ -2,6 +2,16 @@ part of 'package:player_flutter/main.dart';
 
 enum SourceType { local, webdav, openlist }
 
+enum AppDeviceClass { mobile, desktop }
+
+AppDeviceClass get currentDeviceClass => Platform.isAndroid || Platform.isIOS
+    ? AppDeviceClass.mobile
+    : AppDeviceClass.desktop;
+
+bool get isMobilePlatform => currentDeviceClass == AppDeviceClass.mobile;
+
+bool get isDesktopPlatform => currentDeviceClass == AppDeviceClass.desktop;
+
 const mpvAdvancedPresetAuto = 'auto';
 const mpvAdvancedPresetPower = 'power';
 const mpvAdvancedPresetQuality = 'quality';
@@ -29,13 +39,18 @@ String mpvAdvancedPresetLabel(String preset) =>
       _ => '自动',
     };
 
-String mpvAdvancedPresetSummary(String preset, {required bool android}) {
+String mpvAdvancedPresetSummary(
+  String preset, {
+  required AppDeviceClass deviceClass,
+}) {
   return switch (normalizeMpvAdvancedPreset(preset)) {
     mpvAdvancedPresetPower => '降低缓存和渲染负载，适合发热或切后台卡顿',
     mpvAdvancedPresetQuality => '保留更高缓存和精确 seek，适合性能充足设备',
     mpvAdvancedPresetCompat => '软解回退，适合硬解异常或花屏',
     mpvAdvancedPresetCustom => '已单独调整参数',
-    _ => android ? 'Android 使用 fast + MediaCodec 预设' : '当前平台使用默认稳定预设',
+    _ => deviceClass == AppDeviceClass.mobile
+        ? '手机端使用 fast + 移动端硬解优先预设'
+        : '桌面端使用默认稳定预设',
   };
 }
 
@@ -80,10 +95,10 @@ const mpvAdvancedOptionSpecs = [
   MpvAdvancedOptionSpec(
     key: 'hwdec',
     label: 'hwdec',
-    description: '硬件解码策略；Android 优先 MediaCodec，no 表示强制软解。',
+    description: '硬件解码策略；手机端优先移动硬解，桌面端使用 auto-safe，no 表示强制软解。',
     values: ['mediacodec,mediacodec-copy,no', 'auto-safe', 'no'],
     valueLabels: {
-      'mediacodec,mediacodec-copy,no': 'MediaCodec 优先',
+      'mediacodec,mediacodec-copy,no': '移动端硬解优先',
       'auto-safe': 'auto-safe',
       'no': 'no（软解）',
     },
@@ -166,9 +181,10 @@ const mpvAdvancedOptionSpecs = [
 
 Map<String, String> mpvAdvancedPresetOptions({
   required String preset,
-  required bool android,
+  required AppDeviceClass deviceClass,
 }) {
   final value = normalizeMpvAdvancedPreset(preset);
+  final mobile = deviceClass == AppDeviceClass.mobile;
   final compat = value == mpvAdvancedPresetCompat;
   final quality = value == mpvAdvancedPresetQuality;
   final power = value == mpvAdvancedPresetPower;
@@ -180,12 +196,12 @@ Map<String, String> mpvAdvancedPresetOptions({
       1024 *
       1024;
   return {
-    'profile': quality || (!android && value == mpvAdvancedPresetAuto)
+    'profile': quality || (!mobile && value == mpvAdvancedPresetAuto)
         ? 'default'
         : 'fast',
     'hwdec': compat
         ? 'no'
-        : android
+        : mobile
             ? 'mediacodec,mediacodec-copy,no'
             : 'auto-safe',
     'hwdec-codecs': 'all',
@@ -196,16 +212,17 @@ Map<String, String> mpvAdvancedPresetOptions({
     'hr-seek': quality ? 'yes' : 'no',
     'hr-seek-framedrop': quality ? 'no' : 'yes',
     'video-sync': 'audio',
-    'framedrop': power || android ? 'decoder+vo' : 'vo',
+    'framedrop': power || mobile ? 'decoder+vo' : 'vo',
   };
 }
 
 Map<String, String> normalizeMpvAdvancedOptions(
   Object? value, {
   required String preset,
-  required bool android,
+  required AppDeviceClass deviceClass,
 }) {
-  final result = mpvAdvancedPresetOptions(preset: preset, android: android);
+  final result =
+      mpvAdvancedPresetOptions(preset: preset, deviceClass: deviceClass);
   if (value is Map) {
     for (final entry in value.entries) {
       final key = entry.key;
@@ -232,12 +249,12 @@ bool _sameMpvAdvancedOptions(
 
 String mpvAdvancedPresetForOptions(
   Map<String, String> options, {
-  required bool android,
+  required AppDeviceClass deviceClass,
 }) {
   for (final preset in mpvAdvancedPresetValues) {
     if (_sameMpvAdvancedOptions(
       options,
-      mpvAdvancedPresetOptions(preset: preset, android: android),
+      mpvAdvancedPresetOptions(preset: preset, deviceClass: deviceClass),
     )) {
       return preset;
     }
@@ -247,16 +264,16 @@ String mpvAdvancedPresetForOptions(
 
 Map<String, String> mpvAdvancedOptions({
   required String preset,
-  required bool android,
+  required AppDeviceClass deviceClass,
   required bool softwareDecoderFallback,
   Map<String, String>? customOptions,
 }) {
   final options = customOptions == null
-      ? mpvAdvancedPresetOptions(preset: preset, android: android)
+      ? mpvAdvancedPresetOptions(preset: preset, deviceClass: deviceClass)
       : normalizeMpvAdvancedOptions(
           customOptions,
           preset: preset,
-          android: android,
+          deviceClass: deviceClass,
         );
   if (softwareDecoderFallback) {
     options['hwdec'] = 'no';
