@@ -112,9 +112,61 @@ class ProfilePage extends StatelessWidget {
                         (_) => DiagnosticLogSettingsPage(store: store)),
                   ),
                 ),
+                ProfileActionCard(
+                  icon: Icons.info_outline,
+                  title: '关于',
+                  subtitle: '项目地址与捐助',
+                  onTap: () => Navigator.of(context).push(
+                    appSlideRoute((_) => const AboutPage()),
+                  ),
+                ),
               ],
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class AboutPage extends StatelessWidget {
+  const AboutPage({super.key});
+
+  static const projectUrl = 'https://github.com/w19996/rplayer';
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('关于')),
+      body: ListView(
+        padding: const EdgeInsets.all(22),
+        children: [
+          const Text(
+            'rplayer',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 24, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 24),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.link),
+              title: const Text('项目地址'),
+              subtitle: const SelectableText(projectUrl),
+              trailing: const Icon(Icons.copy_outlined),
+              onTap: () {
+                Clipboard.setData(const ClipboardData(text: projectUrl));
+                showSnack(context, '项目地址已复制');
+              },
+            ),
+          ),
+          const SizedBox(height: 24),
+          const Text(
+            '捐助支持',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 12),
+          Image.asset('assets/donate.png'),
         ],
       ),
     );

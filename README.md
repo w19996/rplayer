@@ -1,4 +1,7 @@
 # rplayer
+<div align="center">
+ <img src=https://img.shields.io/github/downloads/w19996/rplayer/total />
+</div>
 
 rplayer 是一个面向本地影音库和远程媒体源的视频播放器。它使用 Flutter 构建界面，使用 Rust 管理媒体库、元数据和部分解析逻辑，播放核心基于 media_kit / libmpv。
 
