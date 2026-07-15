@@ -11,6 +11,7 @@ on:
       - "apps/player_flutter/**"
       - "crates/player_core/**"
       - "third_party/media_kit_libs_android_video/**"
+      - "third_party/media_kit_libs_windows_video/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/flutter-build.yml"
@@ -19,6 +20,7 @@ on:
       - "apps/player_flutter/**"
       - "crates/player_core/**"
       - "third_party/media_kit_libs_android_video/**"
+      - "third_party/media_kit_libs_windows_video/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/flutter-build.yml"
@@ -118,8 +120,9 @@ jobs:
         id: setup-ndk
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r27c
+          ndk-version: r27d
           add-to-path: true
+          link-to-sdk: true
 
       - name: Cache Cargo
         uses: actions/cache@v4
