@@ -92,6 +92,18 @@ class ProfilePage extends StatelessWidget {
                   ),
                 ),
                 ProfileActionCard(
+                  icon: Icons.play_circle_outline,
+                  title: '播放后端与设备',
+                  subtitle: playerBackendPreferenceLabel(
+                    store.playerBackendPreference,
+                  ),
+                  onTap: () => Navigator.of(context).push(
+                    appSlideRoute(
+                      (_) => PlayerBackendSettingsPage(store: store),
+                    ),
+                  ),
+                ),
+                ProfileActionCard(
                   icon: Icons.settings_outlined,
                   title: '同步与备份',
                   subtitle: sync == null
@@ -124,6 +136,131 @@ class ProfilePage extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class PlayerBackendSettingsPage extends StatefulWidget {
+  const PlayerBackendSettingsPage({required this.store, super.key});
+
+  final AppStore store;
+
+  @override
+  State<PlayerBackendSettingsPage> createState() =>
+      _PlayerBackendSettingsPageState();
+}
+
+class _PlayerBackendSettingsPageState extends State<PlayerBackendSettingsPage> {
+  late final Future<DeviceCapabilities> device =
+      const DeviceCapabilityDetector().detect();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('播放后端与设备')),
+      body: AnimatedBuilder(
+        animation: widget.store,
+        builder: (context, _) => ListView(
+          padding: const EdgeInsets.all(22),
+          children: [
+            const Text(
+              '后端偏好',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 8),
+            RadioGroup<PlayerBackendPreference>(
+              groupValue: widget.store.playerBackendPreference,
+              onChanged: (value) {
+                if (value != null) {
+                  unawaited(widget.store.setPlayerBackendPreference(value));
+                }
+              },
+              child: Column(
+                children: [
+                  for (final preference in PlayerBackendPreference.values)
+                    RadioListTile<PlayerBackendPreference>(
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                      value: preference,
+                      title: Text(playerBackendPreferenceLabel(preference)),
+                      subtitle:
+                          Text(playerBackendPreferenceDescription(preference)),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 18),
+            const Text(
+              '设备能力',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
+            ),
+            FutureBuilder<DeviceCapabilities>(
+              future: device,
+              builder: (context, snapshot) {
+                final value = snapshot.data;
+                if (value == null) {
+                  return const ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: Text('正在检测系统解码能力…'),
+                  );
+                }
+                return Card(
+                  child: Column(
+                    children: [
+                      ListTile(
+                        title: const Text('系统原生 Dolby Vision'),
+                        subtitle: Text(value.supportsNativeDolbyVision
+                            ? '可用，Profile ${value.supportedDolbyVisionProfiles.toList()}'
+                            : '未确认可用'),
+                        trailing: Icon(value.supportsNativeDolbyVision
+                            ? Icons.check_circle_outline
+                            : Icons.remove_circle_outline),
+                      ),
+                      ListTile(
+                        title: const Text('原生播放后端'),
+                        subtitle: Text(value.nativeBackendExperimental
+                            ? '可用（Windows 实验性）'
+                            : value.nativeBackendAvailable
+                                ? '可用'
+                                : '不可用'),
+                      ),
+                      for (final decoder in value.hardwareDecoders)
+                        ListTile(
+                          dense: true,
+                          title: Text(decoder.name),
+                          subtitle: Text(
+                            '${decoder.mimeType} / ${decoder.hardwareAccelerated ? '硬件' : '软件'} / DV ${decoder.dolbyVisionProfiles.toList()}',
+                          ),
+                        ),
+                    ],
+                  ),
+                );
+              },
+            ),
+            const SizedBox(height: 18),
+            const Text(
+              '最近一次播放诊断',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 8),
+            if (widget.store.playbackDiagnostics.isEmpty)
+              const Text('暂无播放记录')
+            else
+              Card(
+                child: Column(
+                  children: [
+                    for (final entry
+                        in widget.store.playbackDiagnostics.entries)
+                      ListTile(
+                        dense: true,
+                        title: Text(entry.key),
+                        subtitle: SelectableText(entry.value),
+                      ),
+                  ],
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }

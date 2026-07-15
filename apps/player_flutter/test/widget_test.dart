@@ -30,6 +30,13 @@ void main() {
     }
   });
 
+  test('libmpv remains the compatible default backend', () {
+    expect(libmpvCapabilities.supportsNativeDolbyVision, isFalse);
+    expect(libmpvCapabilities.supportsAssSubtitles, isTrue);
+    expect(libmpvCapabilities.supportsCustomHttpHeaders, isTrue);
+    expect(libmpvCapabilities.supportsWebDav, isTrue);
+  });
+
   test('media library groups videos by folder', () {
     const sourceId = 'source';
     const items = [
@@ -221,12 +228,67 @@ void main() {
       )['hwdec'],
       'mediacodec,mediacodec-copy,no',
     );
+    expect(
+      mpvAdvancedOptions(
+        preset: mpvAdvancedPresetCompat,
+        deviceClass: AppDeviceClass.mobile,
+        softwareDecoderFallback: false,
+        forceHardwareDecoder: true,
+      )['hwdec'],
+      'mediacodec,mediacodec-copy,no',
+    );
   });
 
   test('documents every mpv advanced option', () {
     for (final spec in mpvAdvancedOptionSpecs) {
       expect(spec.description.trim(), isNotEmpty, reason: spec.key);
     }
+  });
+
+  test('persists player backend preference', () async {
+    final store = AppStore();
+
+    await store.setPlayerBackendPreference(
+      PlayerBackendPreference.nativeForDolbyVisionOnly,
+    );
+    final exported = jsonDecode(store.exportSettings()) as Map<String, dynamic>;
+    final restored = AppStore()..importSettingsJson(exported);
+
+    expect(
+      restored.playerBackendPreference,
+      PlayerBackendPreference.nativeForDolbyVisionOnly,
+    );
+  });
+
+  test('mpv video metadata distinguishes normal and Dolby Vision tracks',
+      () async {
+    Future<String> normal(String property) async =>
+        {
+          'track-list/count': '2',
+          'track-list/0/type': 'video',
+          'track-list/0/dolby-vision-profile': '',
+          'track-list/1/type': 'audio',
+        }[property] ??
+        '';
+    Future<String> dolby(String property) async =>
+        {
+          'track-list/count': '2',
+          'track-list/0/type': 'audio',
+          'track-list/1/type': 'video',
+          'track-list/1/dolby-vision-profile': '5',
+        }[property] ??
+        '';
+
+    expect(
+      (await readMpvMediaInfo(normal)).dolbyVisionProfile,
+      isNull,
+    );
+    expect(
+      await readMpvMediaInfo(dolby),
+      isA<MediaInfo>()
+          .having((value) => value.isDolbyVision, 'isDolbyVision', true)
+          .having((value) => value.dolbyVisionProfile, 'profile', 5),
+    );
   });
 
   test('uses series folder when video is inside a season folder', () {

@@ -86,3 +86,14 @@ android {
 flutter {
     source = "../.."
 }
+
+// The bundled 2026 libmpv was built with a newer libc++ and requires symbols
+// that are absent from cargo-ndk's NDK 27 copy. The libmpv archive supplies a
+// backwards-compatible libc++ for both libmpv and libplayer_core.
+tasks.matching { it.name == "preBuild" }.configureEach {
+    doFirst {
+        targetAbis.forEach { abi ->
+            file("src/main/jniLibs/$abi/libc++_shared.so").delete()
+        }
+    }
+}

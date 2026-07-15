@@ -11,6 +11,8 @@ import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
+import android.media.MediaCodecInfo
+import android.media.MediaCodecList
 import android.graphics.drawable.Icon
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
@@ -20,6 +22,7 @@ import android.os.Build
 import android.provider.Settings
 import android.util.Rational
 import android.view.OrientationEventListener
+import android.view.Display
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -53,6 +56,7 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 "appFilesDir" -> result.success(filesDir.absolutePath)
                 "playerStatus" -> result.success(playerStatus())
+                "nativePlaybackCapabilities" -> result.success(nativePlaybackCapabilities())
                 "videoThumbnail" -> {
                     val uri = call.argument<String>("uri") ?: ""
                     val remote = call.argument<Boolean>("remote") == true
@@ -202,6 +206,75 @@ class MainActivity : FlutterActivity() {
             "network" to network,
             "rxBytes" to TrafficStats.getTotalRxBytes()
         )
+    }
+
+    private fun nativePlaybackCapabilities(): Map<String, Any> {
+        val hdrTypes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.hdrCapabilities.supportedHdrTypes.toSet()
+        } else {
+            emptySet()
+        }
+        val displaySupportsDolbyVision = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N &&
+            hdrTypes.contains(Display.HdrCapabilities.HDR_TYPE_DOLBY_VISION)
+        val displaySupportsHdr10 = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N &&
+            hdrTypes.contains(Display.HdrCapabilities.HDR_TYPE_HDR10)
+        val decoders = mutableListOf<Map<String, Any>>()
+        val supportedProfiles = mutableSetOf<Int>()
+        try {
+            for (codec in MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos) {
+                if (codec.isEncoder) continue
+                for (mimeType in codec.supportedTypes) {
+                    if (!mimeType.startsWith("video/")) continue
+                    val hardware = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        codec.isHardwareAccelerated
+                    } else {
+                        val name = codec.name.lowercase()
+                        !name.startsWith("omx.google.") && !name.startsWith("c2.android.")
+                    }
+                    val profiles = if (mimeType.equals("video/dolby-vision", true)) {
+                        codec.getCapabilitiesForType(mimeType).profileLevels
+                            .flatMap { dolbyVisionProfiles(it.profile) }
+                            .toSet()
+                    } else {
+                        emptySet()
+                    }
+                    if (hardware && profiles.isNotEmpty()) supportedProfiles.addAll(profiles)
+                    if (hardware) {
+                        decoders.add(
+                            mapOf(
+                                "name" to codec.name,
+                                "mimeType" to mimeType,
+                                "hardwareAccelerated" to true,
+                                "dolbyVisionProfiles" to profiles.toList().sorted()
+                            )
+                        )
+                    }
+                }
+            }
+        } catch (_: Throwable) {
+        }
+        return mapOf(
+            "supportsNativeDolbyVision" to
+                (displaySupportsDolbyVision && supportedProfiles.isNotEmpty()),
+            "supportedDolbyVisionProfiles" to supportedProfiles.toList().sorted(),
+            "supportsHdr10" to displaySupportsHdr10,
+            "hardwareDecoders" to decoders
+        )
+    }
+
+    private fun dolbyVisionProfiles(codecProfile: Int): Set<Int> {
+        return when (codecProfile) {
+            MediaCodecInfo.CodecProfileLevel.DolbyVisionProfileDvheDer -> setOf(1)
+            MediaCodecInfo.CodecProfileLevel.DolbyVisionProfileDvheDen -> setOf(2)
+            MediaCodecInfo.CodecProfileLevel.DolbyVisionProfileDvheDtr -> setOf(3)
+            MediaCodecInfo.CodecProfileLevel.DolbyVisionProfileDvheDth -> setOf(4)
+            MediaCodecInfo.CodecProfileLevel.DolbyVisionProfileDvheStn -> setOf(5)
+            MediaCodecInfo.CodecProfileLevel.DolbyVisionProfileDvheDtb -> setOf(6)
+            MediaCodecInfo.CodecProfileLevel.DolbyVisionProfileDvheSt -> setOf(7, 8)
+            MediaCodecInfo.CodecProfileLevel.DolbyVisionProfileDvavSe -> setOf(9)
+            else -> emptySet()
+        }
     }
 
     private fun adjustPlaybackControl(kind: String, delta: Float): Map<String, Any> {

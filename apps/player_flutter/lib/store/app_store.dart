@@ -21,6 +21,9 @@ class AppStore extends ChangeNotifier {
   DanmuConfig danmuConfig = const DanmuConfig();
   String mpvAdvancedPreset = mpvAdvancedPresetAuto;
   Map<String, String> mpvAdvancedOptionValues = {};
+  PlayerBackendPreference playerBackendPreference =
+      PlayerBackendPreference.automatic;
+  Map<String, String> playbackDiagnostics = const {};
   SyncConfig? syncConfig;
   final List<String> versionDirectoryRegexes = [];
   final List<String> episodeRegexes = [];
@@ -378,6 +381,7 @@ class AppStore extends ChangeNotifier {
       'danmuConfig': danmuConfig.toJson(),
       'mpvAdvancedPreset': mpvAdvancedPreset,
       'mpvAdvancedOptions': effectiveMpvAdvancedOptions(),
+      'playerBackendPreference': playerBackendPreference.name,
       'syncConfig': syncConfig?.toJson(),
       'versionDirectoryRegexes': versionDirectoryRegexes,
       'episodeRegexes': episodeRegexes,
@@ -429,6 +433,8 @@ class AppStore extends ChangeNotifier {
       mpvAdvancedOptionValues,
       deviceClass: currentDeviceClass,
     );
+    playerBackendPreference =
+        playerBackendPreferenceFromValue(json['playerBackendPreference']);
     final sync = json['syncConfig'];
     syncConfig =
         sync == null ? null : SyncConfig.fromJson(sync as Map<String, dynamic>);
@@ -1087,6 +1093,23 @@ class AppStore extends ChangeNotifier {
     addDiagnosticLog('mpv preset updated: $mpvAdvancedPreset',
         category: 'player');
     await saveSettings();
+    notifyListeners();
+  }
+
+  Future<void> setPlayerBackendPreference(
+    PlayerBackendPreference value,
+  ) async {
+    playerBackendPreference = value;
+    addDiagnosticLog(
+      'player backend preference updated: ${value.name}',
+      category: 'player',
+    );
+    await saveSettings();
+    notifyListeners();
+  }
+
+  void updatePlaybackDiagnostics(Map<String, String> value) {
+    playbackDiagnostics = Map.unmodifiable(value);
     notifyListeners();
   }
 

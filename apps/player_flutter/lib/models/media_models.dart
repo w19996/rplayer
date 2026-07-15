@@ -266,6 +266,7 @@ Map<String, String> mpvAdvancedOptions({
   required String preset,
   required AppDeviceClass deviceClass,
   required bool softwareDecoderFallback,
+  bool forceHardwareDecoder = false,
   Map<String, String>? customOptions,
 }) {
   final options = customOptions == null
@@ -278,6 +279,10 @@ Map<String, String> mpvAdvancedOptions({
   if (softwareDecoderFallback) {
     options['hwdec'] = 'no';
     options['vd-lavc-threads'] = '2';
+  } else if (forceHardwareDecoder) {
+    options['hwdec'] = deviceClass == AppDeviceClass.mobile
+        ? 'mediacodec,mediacodec-copy,no'
+        : 'auto-safe';
   }
   return options;
 }

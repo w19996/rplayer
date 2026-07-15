@@ -6,6 +6,7 @@ list(APPEND FLUTTER_PLUGIN_LIST
   media_kit_libs_windows_video
   media_kit_video
   permission_handler_windows
+  video_player_win
 )
 
 list(APPEND FLUTTER_FFI_PLUGIN_LIST

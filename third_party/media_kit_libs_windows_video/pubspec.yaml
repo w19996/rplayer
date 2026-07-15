@@ -1,0 +1,18 @@
+name: media_kit_libs_windows_video
+description: Windows libmpv bundle with libplacebo support for rplayer.
+version: 1.0.12
+homepage: https://github.com/media-kit/media-kit.git
+
+environment:
+  sdk: ">=2.17.0 <4.0.0"
+  flutter: ">=3.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      windows:
+        pluginClass: MediaKitLibsWindowsVideoPluginCApi
