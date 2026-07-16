@@ -56,10 +56,10 @@ task downloadDependencies(type: Exec) {
         }
         outputDir.mkdirs()
 
-        // Use vendored *.jar dependencies when present; download only as a fallback.
+        // Use the vendored official mpv-android bundles.
         def filesToDownload = [
-            ["url": "https://github.com/media-kit/libmpv-android-video-build/releases/download/v1.1.7/default-arm64-v8a.jar", "md5": "83df25b61193af8fa815e373143ac9af", "source": file("$projectDir/libmpv/v1.1.7/default-arm64-v8a.jar"), "destination": file("$buildDir/v1.1.7/default-arm64-v8a.jar")],
-            ["url": "https://github.com/media-kit/libmpv-android-video-build/releases/download/v1.1.7/default-armeabi-v7a.jar", "md5": "22e21526fefc0a2b8f17adbec9f57590", "source": file("$projectDir/libmpv/v1.1.7/default-armeabi-v7a.jar"), "destination": file("$buildDir/v1.1.7/default-armeabi-v7a.jar")]
+            ["md5": "e77fdea9f2ccbfcb2dd292e556665154", "source": file("$projectDir/libmpv/v0.41.0-556-official/default-arm64-v8a.jar"), "destination": file("$buildDir/v0.41.0-556-official/default-arm64-v8a.jar")],
+            ["md5": "f9087eb7efe28cb7227dcd1b932b9064", "source": file("$projectDir/libmpv/v0.41.0-556-official/default-armeabi-v7a.jar"), "destination": file("$buildDir/v0.41.0-556-official/default-armeabi-v7a.jar")]
         ]
 
         filesToDownload.each { fileInfo ->
@@ -81,14 +81,6 @@ task downloadDependencies(type: Exec) {
                     into destFile.parentFile
                 }
                 println "Using local file: ${fileInfo.source}"
-            }
-
-            if (!destFile.exists()) {
-                destFile.parentFile.mkdirs()
-                println "Downloading file from: ${fileInfo.url}"
-                destFile.withOutputStream { os ->
-                    os << new URL(fileInfo.url).openStream()
-                }
             }
 
             def calculatedMD5 = MessageDigest.getInstance("MD5").digest(Files.readAllBytes(destFile.toPath())).encodeHex().toString()

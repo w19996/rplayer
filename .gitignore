@@ -73,6 +73,7 @@ apps/player_flutter/android/app/src/main/jniLibs/
 .a/
 
 # Code analysis / agent generated artifacts
+.tmp-*/
 .understand-anything/
 graphify-out/
 .graphify/

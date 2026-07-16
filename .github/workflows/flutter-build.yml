@@ -11,6 +11,7 @@ on:
       - "apps/player_flutter/**"
       - "crates/player_core/**"
       - "third_party/media_kit_libs_android_video/**"
+      - "third_party/libmpv_windows/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/flutter-build.yml"
@@ -19,6 +20,7 @@ on:
       - "apps/player_flutter/**"
       - "crates/player_core/**"
       - "third_party/media_kit_libs_android_video/**"
+      - "third_party/libmpv_windows/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/flutter-build.yml"
@@ -118,8 +120,9 @@ jobs:
         id: setup-ndk
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r27c
+          ndk-version: r27d
           add-to-path: true
+          link-to-sdk: true
 
       - name: Cache Cargo
         uses: actions/cache@v4
@@ -157,6 +160,7 @@ jobs:
           test -f apps/player_flutter/android/app/src/main/jniLibs/armeabi-v7a/libc++_shared.so
           test -f apps/player_flutter/android/app/src/main/jniLibs/arm64-v8a/libplayer_core.so
           test -f apps/player_flutter/android/app/src/main/jniLibs/arm64-v8a/libc++_shared.so
+          rm apps/player_flutter/android/app/src/main/jniLibs/{armeabi-v7a,arm64-v8a}/libc++_shared.so
 
       - name: Strip Android native libraries
         working-directory: .

@@ -229,6 +229,13 @@ void main() {
     }
   });
 
+  test('detects Dolby Vision from libmpv profile or level', () {
+    expect(isLibmpvDolbyVisionTrack('8', '6'), isTrue);
+    expect(isLibmpvDolbyVisionTrack('', '6'), isTrue);
+    expect(isLibmpvDolbyVisionTrack('0', '0'), isFalse);
+    expect(isLibmpvDolbyVisionTrack(null, null), isFalse);
+  });
+
   test('uses series folder when video is inside a season folder', () {
     const item = MediaItem(
       id: 'source:C:/media/Low IQ Crime/Season 1/S01E01.mkv',

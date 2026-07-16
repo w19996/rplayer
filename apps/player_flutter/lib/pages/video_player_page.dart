@@ -4,6 +4,10 @@ enum VideoFitMode { contain, cover, none, fill }
 
 enum VerticalControlKind { volume, brightness }
 
+bool isLibmpvDolbyVisionTrack(String? profile, String? level) =>
+    (num.tryParse(profile?.trim() ?? '') ?? 0) > 0 ||
+    (num.tryParse(level?.trim() ?? '') ?? 0) > 0;
+
 class VideoPlayerPage extends StatefulWidget {
   const VideoPlayerPage({required this.store, required this.item, super.key});
 
@@ -38,6 +42,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
 
   Player? _player;
   VideoController? _controller;
+  bool backendSelected = !Platform.isAndroid;
+  bool usingMedia3 = false;
+  bool media3Ended = false;
+  String media3Subtitle = '';
+  final Map<String, bool> dolbyVisionCache = {};
   late MediaItem currentItem = widget.item;
   final subscriptions = <StreamSubscription<dynamic>>[];
   Timer? statusTimer;
@@ -133,6 +142,33 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       );
 
   VideoController get controller => _controller ??= VideoController(player);
+
+  Future<void> media3Command(String action, [Object? value]) async {
+    await appChannel.invokeMethod<void>('media3Command', {
+      'action': action,
+      if (value != null) 'value': value,
+    });
+  }
+
+  Future<void> seekPlayback(Duration target) => usingMedia3
+      ? media3Command('seek', target.inMilliseconds)
+      : player.seek(target);
+
+  Future<void> playPlayback() =>
+      usingMedia3 ? media3Command('play') : player.play();
+
+  Future<void> pausePlayback() =>
+      usingMedia3 ? media3Command('pause') : player.pause();
+
+  Future<void> stopPlayback() =>
+      usingMedia3 ? media3Command('stop') : player.stop();
+
+  Future<void> setPlaybackVolume(double value) => usingMedia3
+      ? media3Command('volume', value / 100)
+      : player.setVolume(value);
+
+  Future<void> setPlaybackSpeed(double value) =>
+      usingMedia3 ? media3Command('rate', value) : player.setRate(value);
 
   @override
   void initState() {
@@ -497,8 +533,6 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     final initialBufferingPercentage =
         resetCodecRetry ? 0.0 : bufferingPercentage.clamp(0, 100).toDouble();
     try {
-      attachStreams();
-      await attachMpvLoadingProperties();
       setState(() {
         error = null;
         ready = false;
@@ -516,6 +550,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         bufferingPercentage = initialBufferingPercentage;
         videoWidth = null;
         videoHeight = null;
+        backendSelected = !Platform.isAndroid;
       });
       await applyRememberedOrientation();
       final source = widget.store.sources
@@ -528,10 +563,39 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
           ? await remoteClientForSource(source).playback(currentItem)
           : RemotePlayback(Uri.file(currentItem.uri).toString(), const {});
       final uri = playback.uri;
+      final previousUsingMedia3 = usingMedia3;
+      var detectedDolbyVision = dolbyVisionCache[currentItem.id];
+      final needsDolbyVisionDetection = detectedDolbyVision == null;
+      if (previousUsingMedia3) {
+        await appChannel.invokeMethod<void>('media3Release');
+      }
+      if (!mounted || attempt != openAttempt) return;
+      setState(() {
+        usingMedia3 = Platform.isAndroid && detectedDolbyVision == true;
+        backendSelected = !Platform.isAndroid || !needsDolbyVisionDetection;
+        mpvLoadingPropertiesUsable = false;
+        media3Ended = false;
+        media3Subtitle = '';
+      });
       updateLoadingPercent(
           math.max(initialBufferingPercentage, 12), 'open start');
       logVideoLoading(
-          'open start attempt=$attempt item=${currentItem.id} uri=$uri saved=${saved}ms');
+          'open start attempt=$attempt backend=${usingMedia3 ? 'media3' : 'libmpv'} item=${currentItem.id} uri=$uri saved=${saved}ms');
+      if (usingMedia3) {
+        await appChannel.invokeMethod<void>('media3Open', {
+          'uri': uri,
+          'headers': playback.headers,
+          'startMs': saved,
+        });
+        await media3Command('fit', fitMode.name);
+        if (attempt == openAttempt) {
+          setStateIfMounted(() => mediaOpenCompleted = true);
+          updateLoadingPercent(42, 'media3 prepared');
+        }
+        return;
+      }
+      attachStreams();
+      await attachMpvLoadingProperties();
       await configureDecoder();
       if (openedOnce) {
         await player.stop();
@@ -543,10 +607,42 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
           httpHeaders: playback.headers.isEmpty ? null : playback.headers,
           start: saved > 0 ? Duration(milliseconds: saved) : null,
         ),
+        play: !needsDolbyVisionDetection,
       );
       logVideoLoading(
           'open returned attempt=$attempt stateBuffering=${player.state.buffering} statePlaying=${player.state.playing} width=${player.state.width} height=${player.state.height} position=${player.state.position.inMilliseconds}ms duration=${player.state.duration.inMilliseconds}ms');
       openedOnce = true;
+      if (needsDolbyVisionDetection) {
+        detectedDolbyVision = await inspectLibmpvDolbyVision(attempt);
+        if (detectedDolbyVision != null) {
+          dolbyVisionCache[currentItem.id] = detectedDolbyVision;
+        }
+        if (!mounted || attempt != openAttempt) return;
+        if (Platform.isAndroid && detectedDolbyVision == true) {
+          await player.stop();
+          setState(() {
+            usingMedia3 = true;
+            backendSelected = true;
+          });
+          logVideoLoading(
+              'backend switch attempt=$attempt backend=media3 reason=libmpv-dolby-vision');
+          await appChannel.invokeMethod<void>('media3Open', {
+            'uri': uri,
+            'headers': playback.headers,
+            'startMs': saved,
+          });
+          await media3Command('fit', fitMode.name);
+          if (attempt == openAttempt) {
+            setStateIfMounted(() => mediaOpenCompleted = true);
+            updateLoadingPercent(42, 'media3 prepared');
+          }
+          return;
+        }
+        setState(() => backendSelected = true);
+        await player.play();
+        logVideoLoading(
+            'backend selected attempt=$attempt backend=libmpv detected=$detectedDolbyVision');
+      }
       if (attempt == openAttempt) {
         setStateIfMounted(() {
           buffering = player.state.buffering;
@@ -566,7 +662,69 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     }
   }
 
+  Future<bool?> inspectLibmpvDolbyVision(int attempt) async {
+    try {
+      final native = player.platform as dynamic;
+      var stableVideoReads = 0;
+      for (var read = 0; read < 150; read++) {
+        if (attempt != openAttempt) return null;
+        final count = int.tryParse(
+                (await native.getProperty('track-list/count'))?.toString() ??
+                    '') ??
+            0;
+        var videoReady = false;
+        final tracks = <Map<String, String>>[];
+        for (var index = 0; index < count; index++) {
+          final type = (await native.getProperty('track-list/$index/type'))
+                  ?.toString()
+                  .trim() ??
+              '';
+          if (type != 'video') continue;
+          final codec = (await native.getProperty('track-list/$index/codec'))
+                  ?.toString()
+                  .trim() ??
+              '';
+          final profile = (await native
+                      .getProperty('track-list/$index/dolby-vision-profile'))
+                  ?.toString()
+                  .trim() ??
+              '';
+          final level =
+              (await native.getProperty('track-list/$index/dolby-vision-level'))
+                      ?.toString()
+                      .trim() ??
+                  '';
+          tracks.add({
+            'index': '$index',
+            'codec': codec,
+            'profile': profile,
+            'level': level,
+          });
+          if (isLibmpvDolbyVisionTrack(profile, level)) {
+            logVideoLoading(
+                'libmpv metadata inspector: detected=true tracks=${jsonEncode(tracks)}');
+            return true;
+          }
+          videoReady |= codec.isNotEmpty;
+        }
+        stableVideoReads = videoReady ? stableVideoReads + 1 : 0;
+        if (stableVideoReads >= 5) {
+          logVideoLoading(
+              'libmpv metadata inspector: detected=false tracks=${jsonEncode(tracks)}');
+          return false;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+      logVideoLoading('libmpv metadata inspector timed out');
+      return null;
+    } catch (error) {
+      logVideoLoading('libmpv metadata inspector failed: $error');
+      return null;
+    }
+  }
+
   Future<void> configureDecoder() async {
+    if (usingMedia3) return;
     try {
       final native = player.platform as dynamic;
       for (final entry in mpvAdvancedOptions(
@@ -584,6 +742,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   }
 
   Future<void> applyPlaybackLoadMode({required bool reduced}) async {
+    if (usingMedia3) return;
     try {
       final native = player.platform as dynamic;
       await native.setProperty('video-sync', 'audio');
@@ -598,6 +757,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   }
 
   Future<void> attachMpvLoadingProperties() async {
+    if (usingMedia3) return;
     if (mpvLoadingPropertiesAttached) return;
     mpvLoadingPropertiesAttached = true;
     try {
@@ -708,6 +868,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     appChannel.setMethodCallHandler(null);
     unawaited(setNativePlaybackPipEnabled(false));
     unawaited(setNativePlaybackOrientationMode('off'));
+    if (Platform.isAndroid) {
+      unawaited(appChannel.invokeMethod<void>('media3Release'));
+    }
     for (final subscription in subscriptions) {
       subscription.cancel();
     }
@@ -760,6 +923,17 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
 
   Future<dynamic> handleAppChannelCall(MethodCall call) async {
     switch (call.method) {
+      case 'media3StateChanged':
+        if (usingMedia3 && call.arguments is Map) {
+          handleMedia3State(Map<String, dynamic>.from(call.arguments as Map));
+        }
+        return null;
+      case 'media3Diagnostic':
+        widget.store.addDiagnosticLog(
+          'media3 ${call.arguments}',
+          category: 'player',
+        );
+        return null;
       case 'pipModeChanged':
         final arguments = call.arguments;
         final enabled = arguments == true ||
@@ -786,6 +960,119 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       default:
         throw MissingPluginException(call.method);
     }
+  }
+
+  void handleMedia3State(Map<String, dynamic> state) {
+    if (!mounted || !usingMedia3) return;
+    final nextPosition =
+        Duration(milliseconds: (state['positionMs'] as num?)?.toInt() ?? 0);
+    final nextDuration =
+        Duration(milliseconds: (state['durationMs'] as num?)?.toInt() ?? 0);
+    final nextPlaying = state['playing'] == true;
+    final nextBuffering = state['buffering'] == true;
+    final firstFrame = state['firstFrame'] == true;
+    final nextWidth = (state['width'] as num?)?.toInt() ?? 0;
+    final nextHeight = (state['height'] as num?)?.toInt() ?? 0;
+    final nextSubtitle = state['subtitle'] as String? ?? '';
+    final dimensionsChanged = nextWidth > 0 &&
+        nextHeight > 0 &&
+        (videoWidth != nextWidth || videoHeight != nextHeight);
+    final subtitleChanged = media3Subtitle != nextSubtitle;
+    final durationChanged =
+        nextDuration > Duration.zero && duration != nextDuration;
+
+    position = nextPosition;
+    if (durationChanged) {
+      duration = nextDuration;
+      widget.store.rememberDuration(currentItem.id, nextDuration);
+    }
+    if (playing != nextPlaying) {
+      playing = nextPlaying;
+      unawaited(setNativePlaybackPipPlaybackState(nextPlaying));
+      syncDanmuClock(currentDanmuPosition);
+      syncDanmuTickerState();
+    }
+    if (dimensionsChanged) {
+      videoWidth = nextWidth;
+      videoHeight = nextHeight;
+      unawaited(applyVideoOrientation());
+      updateLoadingPercent(74, 'media3 video size');
+    }
+    if (firstFrame) {
+      playbackPositionConfirmed = true;
+      voConfigured = true;
+      updateLoadingPercent(94, 'media3 first frame');
+    }
+    if (buffering != nextBuffering) {
+      handleBufferingChanged(nextBuffering);
+    }
+    handleBufferingPercentage(
+        (state['bufferingPercent'] as num?)?.toDouble() ?? 0);
+    updateMedia3Tracks(state['tracks']);
+    if (subtitleChanged) media3Subtitle = nextSubtitle;
+
+    final nextError = state['error'] as String?;
+    if (nextError != null && nextError.isNotEmpty && error != nextError) {
+      logVideoLoading('media3 player error: $nextError');
+      setStateIfMounted(() => error = nextError);
+    }
+    final ended = state['ended'] == true;
+    if (ended && !media3Ended) unawaited(handlePlaybackCompleted(true));
+    media3Ended = ended;
+    maybeMarkPlaybackReady();
+    if (ready) {
+      syncDanmuClockFromPlayer(nextPosition);
+      notifyControlsChanged(throttle: true);
+    }
+    if (dimensionsChanged || subtitleChanged) setStateIfMounted(() {});
+  }
+
+  void updateMedia3Tracks(Object? value) {
+    if (value is! Map) return;
+    final data = Map<String, dynamic>.from(value);
+    List<Map<String, dynamic>> maps(String key) =>
+        (data[key] as List? ?? const [])
+            .whereType<Map>()
+            .map((item) => Map<String, dynamic>.from(item))
+            .toList();
+    final audio = [
+      for (final item in maps('audio'))
+        AudioTrack(
+          item['id'] as String,
+          item['title'] as String?,
+          item['language'] as String?,
+          codec: item['codec'] as String?,
+        ),
+    ];
+    final subtitles = [
+      for (final item in maps('subtitle'))
+        SubtitleTrack(
+          item['id'] as String,
+          item['title'] as String?,
+          item['language'] as String?,
+          codec: item['codec'] as String?,
+        ),
+    ];
+    final nextTracks = Tracks(audio: audio, subtitle: subtitles);
+    final audioId = data['selectedAudio'] as String? ?? 'auto';
+    final subtitleId = data['selectedSubtitle'] as String? ?? 'no';
+    AudioTrack selectedAudio() => audio.firstWhere(
+          (track) => track.id == audioId,
+          orElse: () => const AudioTrack('auto', null, null),
+        );
+    SubtitleTrack selectedSubtitle() => subtitles.firstWhere(
+          (track) => track.id == subtitleId,
+          orElse: () => const SubtitleTrack('no', null, null),
+        );
+    final nextSelected = Track(
+      audio: selectedAudio(),
+      subtitle: selectedSubtitle(),
+    );
+    if (nextTracks == availableTracks && nextSelected == selectedTrack) return;
+    setStateIfMounted(() {
+      availableTracks = nextTracks;
+      selectedTrack = nextSelected;
+    });
   }
 
   Future<void> applyCompetingWindowMode(String reason) async {
@@ -921,13 +1208,15 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         !(isRecoverableNetworkReadError(currentError) && playbackLooksAlive)) {
       return;
     }
-    final state = player.state;
+    final state = usingMedia3 ? null : player.state;
     setState(() {
       error = null;
       ready = true;
-      playing = state.playing;
-      position = state.position;
-      if (state.duration > Duration.zero) duration = state.duration;
+      if (state != null) {
+        playing = state.playing;
+        position = state.position;
+        if (state.duration > Duration.zero) duration = state.duration;
+      }
       bufferingPercentage = 100;
     });
     logVideoLoading(
@@ -957,11 +1246,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   }
 
   bool get playbackLooksAlive {
-    final state = player.state;
-    final hasPosition =
-        position > Duration.zero || state.position > Duration.zero;
+    final state = usingMedia3 ? null : player.state;
+    final hasPosition = position > Duration.zero ||
+        (state != null && state.position > Duration.zero);
     return hasRenderableVideo &&
-        (ready || playing || state.playing || hasPosition);
+        (ready || playing || (state?.playing ?? false) || hasPosition);
   }
 
   Future<void> retryTransientCodec(int attempt) async {
@@ -971,7 +1260,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         'transient codec retry: sourceAttempt=$attempt retry=$transientCodecRetryCount softwareFallback=$softwareDecoderFallback');
     await Future<void>.delayed(const Duration(milliseconds: 450));
     if (!mounted || attempt != openAttempt) return;
-    await player.stop();
+    await stopPlayback();
     await init(automaticRetry: true, resetCodecRetry: false);
   }
 
@@ -1069,7 +1358,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     if (target != null && duration > Duration.zero) {
       syncDanmuClock(target);
       clearDanmuOverlay();
-      await player.seek(target);
+      await seekPlayback(target);
     }
     syncDanmuTickerState();
     scheduleControlsAutoHide();
@@ -1107,7 +1396,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     notifyControlsChanged();
     syncDanmuClock(target);
     clearDanmuOverlay();
-    await player.seek(target);
+    await seekPlayback(target);
     syncDanmuTickerState();
     scheduleControlsAutoHide();
   }
@@ -1159,7 +1448,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
           .clamp(0, 100)
           .toDouble();
       playbackVolume = next;
-      await player.setVolume(next);
+      await setPlaybackVolume(next);
       if (!mounted) return;
       showVerticalControlOverlay(kind, next / 100);
       return;
@@ -1197,16 +1486,16 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     markControlsInteraction();
     syncDanmuClock(currentDanmuPosition);
     unawaited(setNativePlaybackPipPlaybackState(!playing));
-    playing ? player.pause() : player.play();
+    unawaited(playing ? pausePlayback() : playPlayback());
   }
 
   Future<void> togglePlaybackFromPip() async {
     syncDanmuClock(currentDanmuPosition);
     final nextPlaying = !playing;
     if (playing) {
-      await player.pause();
+      await pausePlayback();
     } else {
-      await player.play();
+      await playPlayback();
     }
     unawaited(setNativePlaybackPipPlaybackState(nextPlaying));
   }
@@ -1297,6 +1586,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
 
   void setFitMode(VideoFitMode value) {
     setStateIfMounted(() => fitMode = value);
+    if (usingMedia3) unawaited(media3Command('fit', value.name));
     scheduleControlsAutoHide();
   }
 
@@ -1372,7 +1662,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
 
   Future<void> setPlaybackRate(double rate) async {
     setStateIfMounted(() => playbackRate = rate);
-    await player.setRate(rate);
+    await setPlaybackSpeed(rate);
     scheduleControlsAutoHide();
   }
 
@@ -1398,7 +1688,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     final target = Duration(milliseconds: nextMs.toInt());
     syncDanmuClock(target);
     clearDanmuOverlay();
-    await player.seek(target);
+    await seekPlayback(target);
   }
 
   Future<void> rotateScreen(BuildContext context) async {
@@ -1509,7 +1799,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     controlsHideTimer?.cancel();
     final defaultKeyword = danmuSearchDefaultKeyword;
     resumeAfterDanmuSearch = playing;
-    if (playing) player.pause();
+    if (playing) unawaited(pausePlayback());
     setStateIfMounted(() {
       danmuSearchController.text = defaultKeyword;
       danmuSearchEpisodeController.text =
@@ -1537,7 +1827,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         selectingDanmuEpisodeId = null;
         resumeAfterDanmuSearch = false;
       });
-      if (shouldResume) player.play();
+      if (shouldResume) unawaited(playPlayback());
       scheduleControlsAutoHide();
     });
   }
@@ -1852,7 +2142,13 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
           (value: track, label: trackLabel(track, '音轨')),
       ],
     );
-    if (selected != null) await player.setAudioTrack(selected);
+    if (selected != null) {
+      if (usingMedia3) {
+        await media3Command('audioTrack', selected.id);
+      } else {
+        await player.setAudioTrack(selected);
+      }
+    }
     scheduleControlsAutoHide();
   }
 
@@ -1870,7 +2166,13 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
           (value: track, label: trackLabel(track, '字幕')),
       ],
     );
-    if (selected != null) await player.setSubtitleTrack(selected);
+    if (selected != null) {
+      if (usingMedia3) {
+        await media3Command('subtitleTrack', selected.id);
+      } else {
+        await player.setSubtitleTrack(selected);
+      }
+    }
     scheduleControlsAutoHide();
   }
 
@@ -3163,6 +3465,49 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     );
   }
 
+  Widget buildVideoOutput() {
+    if (!backendSelected) return const SizedBox.expand();
+    if (usingMedia3) {
+      return const AndroidView(
+        viewType: 'rplayer/media3_texture',
+        hitTestBehavior: PlatformViewHitTestBehavior.transparent,
+      );
+    }
+    return Center(
+      child: Video(
+        controller: controller,
+        fit: videoFit,
+        controls: NoVideoControls,
+      ),
+    );
+  }
+
+  Widget buildMedia3SubtitleOverlay() {
+    if (!usingMedia3 || media3Subtitle.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return Align(
+      alignment: const Alignment(0, 0.72),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 32),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: const Color(0x99000000),
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Text(
+              media3Subtitle,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white, fontSize: 18),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -3214,13 +3559,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    Center(
-                      child: Video(
-                        controller: controller,
-                        fit: videoFit,
-                        controls: NoVideoControls,
-                      ),
-                    ),
+                    buildVideoOutput(),
+                    buildMedia3SubtitleOverlay(),
                     buildDanmuOverlay(),
                     if (!inPictureInPicture && error == null && loadingVisible)
                       buildLoadingOverlay(),

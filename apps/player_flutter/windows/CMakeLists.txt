@@ -59,12 +59,25 @@ include(flutter/generated_plugins.cmake)
 
 set(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../..")
 set(PLAYER_CORE_DLL "${REPO_ROOT}/target/release/player_core.dll")
+set(LIBMPV_WINDOWS_ARCHIVE "${REPO_ROOT}/third_party/libmpv_windows/mpv-dev-x86_64-20260715-git-94335ab87a.7z")
+set(LIBMPV_WINDOWS_DIR "${CMAKE_BINARY_DIR}/libmpv_windows_94335ab87a")
+set(LIBMPV_WINDOWS_DLL "${LIBMPV_WINDOWS_DIR}/libmpv-2.dll")
+file(MAKE_DIRECTORY "${LIBMPV_WINDOWS_DIR}")
+add_custom_command(
+  OUTPUT "${LIBMPV_WINDOWS_DLL}"
+  COMMAND "${CMAKE_COMMAND}" -E tar xzf "${LIBMPV_WINDOWS_ARCHIVE}"
+  WORKING_DIRECTORY "${LIBMPV_WINDOWS_DIR}"
+  DEPENDS "${LIBMPV_WINDOWS_ARCHIVE}"
+  COMMENT "Extracting libmpv v0.41.0-878-g94335ab87"
+)
+add_custom_target(libmpv_windows ALL DEPENDS "${LIBMPV_WINDOWS_DLL}")
 add_custom_target(player_core_windows ALL
   COMMAND cargo build -p player_core --release
   WORKING_DIRECTORY "${REPO_ROOT}"
   COMMENT "Building player_core.dll"
 )
 add_dependencies(${BINARY_NAME} player_core_windows)
+add_dependencies(${BINARY_NAME} libmpv_windows)
 
 # === Installation ===
 # Support files are copied into place next to the executable, so that it can
@@ -97,6 +110,10 @@ if(PLUGIN_BUNDLED_LIBRARIES)
     DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
     COMPONENT Runtime)
 endif()
+
+# Override media_kit's 2023 libmpv after its bundled libraries are installed.
+install(FILES "${LIBMPV_WINDOWS_DLL}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+  COMPONENT Runtime)
 
 # Copy the native assets provided by the build.dart from all packages.
 set(NATIVE_ASSETS_DIR "${PROJECT_BUILD_DIR}native_assets/windows/")

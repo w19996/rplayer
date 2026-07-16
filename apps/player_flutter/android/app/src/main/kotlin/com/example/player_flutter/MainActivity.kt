@@ -37,6 +37,7 @@ class MainActivity : FlutterActivity() {
     private var pipPlaybackPlaying: Boolean = false
     private var pipActionReceiverRegistered: Boolean = false
     private var appChannel: MethodChannel? = null
+    private var media3Bridge: Media3VideoBridge? = null
     private val pipActionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == ACTION_PIP_TOGGLE_PLAYBACK) {
@@ -49,6 +50,13 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         registerPipActionReceiver()
         appChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "rplayer/app")
+        media3Bridge = Media3VideoBridge(this) { method, arguments ->
+            appChannel?.invokeMethod(method, arguments)
+        }
+        flutterEngine.platformViewsController.registry.registerViewFactory(
+            "rplayer/media3_texture",
+            Media3SurfaceViewFactory(media3Bridge!!)
+        )
         appChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
                 "appFilesDir" -> result.success(filesDir.absolutePath)
@@ -78,6 +86,24 @@ class MainActivity : FlutterActivity() {
                 "setPlaybackPipPlaybackState" -> {
                     pipPlaybackPlaying = call.argument<Boolean>("playing") == true
                     updatePictureInPictureParamsIfNeeded()
+                    result.success(null)
+                }
+                "media3Open" -> {
+                    val uri = call.argument<String>("uri") ?: ""
+                    val headers = call.argument<Map<String, String>>("headers") ?: emptyMap()
+                    val startMs = call.argument<Number>("startMs")?.toLong() ?: 0L
+                    media3Bridge?.open(uri, headers, startMs)
+                    result.success(null)
+                }
+                "media3Command" -> {
+                    media3Bridge?.command(
+                        call.argument<String>("action") ?: "",
+                        call.argument<Any>("value")
+                    )
+                    result.success(null)
+                }
+                "media3Release" -> {
+                    media3Bridge?.release()
                     result.success(null)
                 }
                 else -> result.notImplemented()
@@ -127,6 +153,7 @@ class MainActivity : FlutterActivity() {
     override fun onDestroy() {
         stopPlaybackOrientationSensor()
         unregisterPipActionReceiver()
+        media3Bridge?.release()
         super.onDestroy()
     }
 
