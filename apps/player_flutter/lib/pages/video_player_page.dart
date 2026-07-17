@@ -612,6 +612,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         await appChannel.invokeMethod<void>('media3Open', {
           'uri': uri,
           'headers': playback.headers,
+          'mimeType': playback.mimeType,
           'startMs': saved,
         });
         await media3Command('fit', fitMode.name);
@@ -656,6 +657,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
           await appChannel.invokeMethod<void>('media3Open', {
             'uri': uri,
             'headers': playback.headers,
+            'mimeType': playback.mimeType,
             'startMs': saved,
           });
           await media3Command('fit', fitMode.name);

@@ -93,6 +93,7 @@ void main() {
       if (request.uri.queryParameters.containsKey('play')) {
         request.response.write(jsonEncode({
           'url': 'https://cdn.example/video.m3u8',
+          'format': 'application/dash+xml',
           'header': {'Referer': 'https://example.com/'},
         }));
       } else if (request.uri.queryParameters['ids'] == 'movie-1') {
@@ -135,7 +136,34 @@ void main() {
           key: 'remote', name: 'Remote', type: 4, apiUrl: '$base/remote'));
       final playback = await remoteClient.playback('线路', 'play-id');
       expect(playback.uri, 'https://cdn.example/video.m3u8');
+      expect(playback.mimeType, 'application/dash+xml');
       expect(playback.headers['Referer'], 'https://example.com/');
+    } finally {
+      await server.close(force: true);
+      await subscription.cancel();
+    }
+  });
+
+  test('marks TVBox getM3u8 playback as HLS without rewriting URL', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final subscription = server.listen((request) async {
+      request.response.headers.contentType = ContentType.json;
+      request.response.write(jsonEncode({
+        'url': 'https://api.example/getM3u8?vid=1',
+        'header': {'Referer': 'https://example.com/'},
+      }));
+      await request.response.close();
+    });
+
+    try {
+      final client = TvboxClient(TvboxSite(
+          key: 'remote',
+          name: 'Remote',
+          type: 4,
+          apiUrl: 'http://${server.address.address}:${server.port}/remote'));
+      final playback = await client.playback('线路', 'play-id');
+      expect(playback.uri, 'https://api.example/getM3u8?vid=1');
+      expect(playback.mimeType, 'application/x-mpegURL');
     } finally {
       await server.close(force: true);
       await subscription.cancel();

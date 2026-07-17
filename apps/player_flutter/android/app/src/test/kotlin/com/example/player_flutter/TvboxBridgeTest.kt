@@ -1,10 +1,19 @@
 package com.example.player_flutter
 
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TvboxBridgeTest {
+    @Test
+    fun detectsM3u8UrlsWithoutM3u8Suffix() {
+        assertTrue(tvboxIsM3u8Url("https://api.example/getm3u8?vid=1"))
+        assertTrue(tvboxIsM3u8Url("https://cdn.example/video.m3u8?token=1"))
+        assertFalse(tvboxIsM3u8Url("https://cdn.example/video.mp4"))
+    }
+
     @Test
     fun stripsImageWrapperBeforeMpegTsPayload() {
         val bytes = ByteArray(68 + 188 * 3)

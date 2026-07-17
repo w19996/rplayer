@@ -716,10 +716,18 @@ class TvboxClient {
     if (resolved == null || '$resolved'.isEmpty) {
       throw const FormatException('播放接口未返回地址');
     }
-    return RemotePlayback('$resolved', {
-      ...site.headers,
-      ..._tvboxHeaders(value['header']),
-    });
+    final format = '${value['format'] ?? ''}'.trim();
+    final inferredMimeType = format.isEmpty && _tvboxLooksHls('$resolved')
+        ? 'application/x-mpegURL'
+        : null;
+    return RemotePlayback(
+      '$resolved',
+      {
+        ...site.headers,
+        ..._tvboxHeaders(value['header']),
+      },
+      mimeType: format.isEmpty ? inferredMimeType : format,
+    );
   }
 
   List<TvboxCategory> _parseCategories(String body) {
@@ -777,6 +785,12 @@ class TvboxClient {
         .where((item) => item.id.isNotEmpty && item.name.isNotEmpty)
         .toList();
   }
+}
+
+bool _tvboxLooksHls(String url) {
+  final lower = url.toLowerCase();
+  return lower.contains('getm3u8') ||
+      Uri.tryParse(url)?.path.toLowerCase().endsWith('.m3u8') == true;
 }
 
 class TvboxPage extends StatefulWidget {

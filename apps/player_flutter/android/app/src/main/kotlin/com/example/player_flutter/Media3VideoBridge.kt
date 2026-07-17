@@ -20,7 +20,7 @@ import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.common.text.CueGroup
 import androidx.media3.datasource.DefaultDataSource
-import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
@@ -28,6 +28,9 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import io.flutter.plugin.common.StandardMessageCodec
 import io.flutter.plugin.platform.PlatformView
 import io.flutter.plugin.platform.PlatformViewFactory
+import okhttp3.Dns
+import okhttp3.OkHttpClient
+import java.net.InetAddress
 
 internal class Media3VideoBridge(
     private val context: Context,
@@ -40,6 +43,13 @@ internal class Media3VideoBridge(
     private var subtitleText = ""
     private var fit = "contain"
     private var videoSize = VideoSize.UNKNOWN
+    private val httpClient = OkHttpClient.Builder()
+        .dns(object : Dns {
+            override fun lookup(hostname: String): List<InetAddress> =
+                media3McdnIp(hostname)?.let { listOf(InetAddress.getByName(it)) }
+                    ?: Dns.SYSTEM.lookup(hostname)
+        })
+        .build()
 
     private val ticker = object : Runnable {
         override fun run() {
@@ -88,7 +98,7 @@ internal class Media3VideoBridge(
         ) = diagnostic("format=${format.sampleMimeType} codecs=${format.codecs} color=${format.colorInfo}")
     }
 
-    fun open(uri: String, headers: Map<String, String>, startMs: Long) {
+    fun open(uri: String, headers: Map<String, String>, mimeType: String?, startMs: Long) {
         releasePlayer()
         firstFrameRendered = false
         subtitleText = ""
@@ -101,7 +111,7 @@ internal class Media3VideoBridge(
         next.addAnalyticsListener(analyticsListener)
         diagnostic(deviceCapabilities())
         textureView?.let(next::setVideoTextureView)
-        next.setMediaItem(mediaItem(uri), startMs.coerceAtLeast(0))
+        next.setMediaItem(mediaItem(uri, mimeType), startMs.coerceAtLeast(0))
         next.prepare()
         next.playWhenReady = true
         handler.removeCallbacks(ticker)
@@ -181,16 +191,17 @@ internal class Media3VideoBridge(
     }
 
     private fun mediaSourceFactory(headers: Map<String, String>): DefaultMediaSourceFactory {
-        val http = DefaultHttpDataSource.Factory()
-            .setAllowCrossProtocolRedirects(true)
+        val http = OkHttpDataSource.Factory(httpClient)
             .setDefaultRequestProperties(headers)
         return DefaultMediaSourceFactory(DefaultDataSource.Factory(context, http))
     }
 
-    private fun mediaItem(uri: String): MediaItem {
+    private fun mediaItem(uri: String, mimeType: String?): MediaItem {
         val builder = MediaItem.Builder().setUri(uri)
         val lower = uri.lowercase()
-        if (lower.contains("getm3u8") || lower.contains(".m3u8")) {
+        if (!mimeType.isNullOrBlank()) {
+            builder.setMimeType(mimeType)
+        } else if (lower.contains("getm3u8") || lower.contains(".m3u8")) {
             builder.setMimeType(MimeTypes.APPLICATION_M3U8)
         }
         return builder.build()
@@ -301,6 +312,15 @@ internal class Media3VideoBridge(
         view.scaleX = scaleX
         view.scaleY = scaleY
     }
+}
+
+internal fun media3McdnIp(hostname: String): String? {
+    val match =
+        Regex("""^xy(\d{1,3})x(\d{1,3})x(\d{1,3})x(\d{1,3})xy\..*\.bilivideo\.cn$""")
+            .matchEntire(hostname.lowercase()) ?: return null
+    val parts = match.groupValues.drop(1).map { it.toInt() }
+    if (parts.any { it !in 0..255 }) return null
+    return parts.joinToString(".")
 }
 
 internal class Media3TextureViewFactory(

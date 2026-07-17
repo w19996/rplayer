@@ -93,8 +93,9 @@ class MainActivity : FlutterActivity() {
                 "media3Open" -> {
                     val uri = call.argument<String>("uri") ?: ""
                     val headers = call.argument<Map<String, String>>("headers") ?: emptyMap()
+                    val mimeType = call.argument<String>("mimeType")
                     val startMs = call.argument<Number>("startMs")?.toLong() ?: 0L
-                    media3Bridge?.open(uri, headers, startMs)
+                    media3Bridge?.open(uri, headers, mimeType, startMs)
                     result.success(null)
                 }
                 "media3Command" -> {

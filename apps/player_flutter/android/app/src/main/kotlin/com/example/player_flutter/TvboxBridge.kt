@@ -19,6 +19,8 @@ import dalvik.system.DexClassLoader
 import fi.iki.elonen.NanoHTTPD
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
@@ -295,7 +297,7 @@ private class TvboxJarEngine(private val context: Context) {
 
     fun localPlaybackUrl(url: String, headers: Map<String, String>): String {
         val resolved = localUrl(url)
-        if (!isM3u8Url(resolved) || resolved.startsWith("http://127.0.0.1:${TvboxProxyServer.PORT}/")) {
+        if (!tvboxIsM3u8Url(resolved) || resolved.startsWith("http://127.0.0.1:${TvboxProxyServer.PORT}/")) {
             return resolved
         }
         val key = sha256(resolved + headers.toSortedMap().entries.joinToString { "${it.key}:${it.value}" })
@@ -310,10 +312,6 @@ private class TvboxJarEngine(private val context: Context) {
         "http://127.0.0.1:${TvboxProxyServer.PORT}/segment.ts?key=$key&url=${encode(url)}&format=.ts"
 
     fun playbackHeaders(key: String): Map<String, String> = playbackHeaders[key].orEmpty()
-
-    private fun isM3u8Url(url: String) = runCatching {
-        URL(url).path.lowercase().endsWith(".m3u8")
-    }.getOrDefault(false)
 
     private fun encode(value: String) = URLEncoder.encode(value, Charsets.UTF_8.name())
 
@@ -336,6 +334,8 @@ private class TvboxProxyServer(private val engine: TvboxJarEngine) : NanoHTTPD(P
     companion object { const val PORT = 9978 }
 
     private data class Download(val status: Int, val mime: String, val bytes: ByteArray)
+    private val http = OkHttpClient()
+
     override fun serve(session: IHTTPSession): Response {
         if (session.uri == "/playlist.m3u8") return serveM3u8(session)
         if (session.uri == "/segment.ts") return serveSegment(session)
@@ -419,21 +419,15 @@ private class TvboxProxyServer(private val engine: TvboxJarEngine) : NanoHTTPD(P
     }
 
     private fun download(url: String, headers: Map<String, String>): Download {
-        val connection = URL(url).openConnection() as HttpURLConnection
-        connection.connectTimeout = 20_000
-        connection.readTimeout = 30_000
-        connection.instanceFollowRedirects = true
-        headers.forEach(connection::setRequestProperty)
-        return try {
-            val status = connection.responseCode
-            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+        val request = Request.Builder().url(url).also { builder ->
+            headers.forEach(builder::header)
+        }.build()
+        return http.newCall(request).execute().use { response ->
             Download(
-                status,
-                connection.contentType ?: "application/octet-stream",
-                stream?.readBytes() ?: ByteArray(0),
+                response.code,
+                response.header("Content-Type") ?: "application/octet-stream",
+                response.body?.bytes() ?: ByteArray(0),
             )
-        } finally {
-            connection.disconnect()
         }
     }
 
@@ -444,6 +438,12 @@ private class TvboxProxyServer(private val engine: TvboxJarEngine) : NanoHTTPD(P
         download.bytes.size.toLong(),
     )
 }
+
+internal fun tvboxIsM3u8Url(url: String) = runCatching {
+    val parsed = URL(url)
+    val lower = parsed.toString().lowercase()
+    lower.contains("getm3u8") || parsed.path.lowercase().endsWith(".m3u8")
+}.getOrDefault(false)
 
 internal fun tvboxMpegTsPayload(bytes: ByteArray): ByteArray {
     val limit = minOf(4096, bytes.size - 376)

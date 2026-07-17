@@ -9,6 +9,8 @@ plugins {
 
 dependencies {
     implementation("androidx.media3:media3-exoplayer:1.10.1")
+    implementation("androidx.media3:media3-datasource-okhttp:1.10.1")
+    implementation("androidx.media3:media3-exoplayer-dash:1.10.1")
     implementation("androidx.media3:media3-exoplayer-hls:1.10.1")
     implementation("com.squareup.okhttp3:okhttp:3.12.11")
     implementation("com.google.code.gson:gson:2.10.1")
