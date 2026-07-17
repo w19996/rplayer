@@ -89,6 +89,7 @@ rplayer 主要使用了这些开源项目：
 - [danmu_api](https://github.com/huangxd-/danmu_api)：弹幕搜索和弹幕数据来源。
 - WebDAV：远程媒体库访问与同步。
 - OpenList：远程文件列表和播放源接入。
+- [TVBoxOS](https://github.com/q215613905/TVBoxOS)：Android TVBox Spider/JAR（type 3）兼容运行时，AGPL-3.0；仅负责解析来源，播放仍走 rplayer 现有流程。详见 [第三方许可证说明](THIRD_PARTY_NOTICES.md)。
 
 ## 捐助
 

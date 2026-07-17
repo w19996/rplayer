@@ -159,6 +159,21 @@ class AboutPage extends StatelessWidget {
               },
             ),
           ),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.balance_outlined),
+              title: const Text('开源许可证'),
+              subtitle:
+                  const Text('rplayer：GPL-3.0 · TVBoxOS Spider 兼容层：AGPL-3.0'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => showLicensePage(
+                context: context,
+                applicationName: appName,
+                applicationLegalese:
+                    'TVBoxOS 派生组件来源与对应源码见项目 THIRD_PARTY_NOTICES.md',
+              ),
+            ),
+          ),
           const SizedBox(height: 24),
           const Text(
             '捐助支持',

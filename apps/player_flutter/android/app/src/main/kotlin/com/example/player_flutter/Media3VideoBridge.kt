@@ -7,7 +7,7 @@ import android.media.MediaCodecList
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.view.SurfaceView
+import android.view.TextureView
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
@@ -35,7 +35,7 @@ internal class Media3VideoBridge(
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private var player: ExoPlayer? = null
-    private var surfaceView: SurfaceView? = null
+    private var textureView: TextureView? = null
     private var firstFrameRendered = false
     private var subtitleText = ""
     private var fit = "contain"
@@ -100,8 +100,8 @@ internal class Media3VideoBridge(
         next.addListener(listener)
         next.addAnalyticsListener(analyticsListener)
         diagnostic(deviceCapabilities())
-        surfaceView?.let(next::setVideoSurfaceView)
-        next.setMediaItem(MediaItem.fromUri(uri), startMs.coerceAtLeast(0))
+        textureView?.let(next::setVideoTextureView)
+        next.setMediaItem(mediaItem(uri), startMs.coerceAtLeast(0))
         next.prepare()
         next.playWhenReady = true
         handler.removeCallbacks(ticker)
@@ -128,31 +128,31 @@ internal class Media3VideoBridge(
 
     fun release() {
         releasePlayer()
-        surfaceView = null
+        textureView = null
     }
 
-    fun attach(view: SurfaceView) {
-        surfaceView = view
+    fun attach(view: TextureView) {
+        textureView = view
         view.keepScreenOn = player?.let {
             it.playWhenReady && it.playbackState != Player.STATE_IDLE && it.playbackState != Player.STATE_ENDED
         } == true
         view.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> applySurfaceTransform() }
-        player?.setVideoSurfaceView(view)
+        player?.setVideoTextureView(view)
         applySurfaceTransform()
     }
 
-    fun detach(view: SurfaceView) {
-        if (surfaceView !== view) return
+    fun detach(view: TextureView) {
+        if (textureView !== view) return
         view.keepScreenOn = false
-        player?.clearVideoSurfaceView(view)
-        surfaceView = null
+        player?.clearVideoTextureView(view)
+        textureView = null
     }
 
     private fun releasePlayer() {
         handler.removeCallbacks(ticker)
-        surfaceView?.keepScreenOn = false
+        textureView?.keepScreenOn = false
         player?.run {
-            surfaceView?.let(::clearVideoSurfaceView)
+            textureView?.let(::clearVideoTextureView)
             removeListener(listener)
             release()
         }
@@ -171,7 +171,7 @@ internal class Media3VideoBridge(
             .joinToString { it.name }
             .ifEmpty { "none" }
         val hdrTypes = if (Build.VERSION.SDK_INT >= 24) {
-            surfaceView?.display?.hdrCapabilities?.supportedHdrTypes
+            textureView?.display?.hdrCapabilities?.supportedHdrTypes
                 ?.joinToString()
                 ?: "unknown"
         } else {
@@ -185,6 +185,15 @@ internal class Media3VideoBridge(
             .setAllowCrossProtocolRedirects(true)
             .setDefaultRequestProperties(headers)
         return DefaultMediaSourceFactory(DefaultDataSource.Factory(context, http))
+    }
+
+    private fun mediaItem(uri: String): MediaItem {
+        val builder = MediaItem.Builder().setUri(uri)
+        val lower = uri.lowercase()
+        if (lower.contains("getm3u8") || lower.contains(".m3u8")) {
+            builder.setMimeType(MimeTypes.APPLICATION_M3U8)
+        }
+        return builder.build()
     }
 
     private fun selectTrack(type: Int, id: String) {
@@ -209,7 +218,7 @@ internal class Media3VideoBridge(
         tracks: Tracks? = null,
     ) {
         val active = player ?: return
-        surfaceView?.keepScreenOn =
+        textureView?.keepScreenOn =
             active.playWhenReady && active.playbackState != Player.STATE_IDLE && active.playbackState != Player.STATE_ENDED
         val duration = active.duration.takeUnless { it == C.TIME_UNSET } ?: 0
         val state = mutableMapOf<String, Any?>(
@@ -269,7 +278,7 @@ internal class Media3VideoBridge(
     }
 
     private fun applySurfaceTransform() {
-        val view = surfaceView ?: return
+        val view = textureView ?: return
         val viewWidth = view.width.toFloat()
         val viewHeight = view.height.toFloat()
         val videoWidth = videoSize.width.toFloat()
@@ -294,12 +303,12 @@ internal class Media3VideoBridge(
     }
 }
 
-internal class Media3SurfaceViewFactory(
+internal class Media3TextureViewFactory(
     private val bridge: Media3VideoBridge,
 ) : PlatformViewFactory(StandardMessageCodec.INSTANCE) {
     override fun create(context: Context, viewId: Int, args: Any?): PlatformView {
         return object : PlatformView {
-            private val view = SurfaceView(context).also(bridge::attach)
+            private val view = TextureView(context).also(bridge::attach)
             override fun getView() = view
             override fun dispose() = bridge.detach(view)
         }

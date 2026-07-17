@@ -9,6 +9,7 @@ import 'dart:ui';
 
 import 'package:ffi/ffi.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -18,12 +19,14 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:path/path.dart' as p;
 import 'package:permission_handler/permission_handler.dart';
+import 'package:xml/xml.dart';
 
 part 'app/player_app.dart';
 part 'store/app_store.dart';
 part 'app/player_shell.dart';
 part 'pages/media_library_page.dart';
 part 'pages/source_library_page.dart';
+part 'pages/tvbox_page.dart';
 part 'pages/add_source_page.dart';
 part 'pages/local_browser_page.dart';
 part 'pages/profile_page.dart';
@@ -65,6 +68,14 @@ const appChannel = MethodChannel('rplayer/app');
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  if (Platform.isAndroid) {
+    LicenseRegistry.addLicense(() async* {
+      yield LicenseEntryWithLineBreaks(
+        const ['TVBoxOS Spider compatibility runtime'],
+        await rootBundle.loadString('assets/licenses/tvboxos_agpl_3.txt'),
+      );
+    });
+  }
   MediaKit.ensureInitialized();
   runApp(const PlayerApp());
 }

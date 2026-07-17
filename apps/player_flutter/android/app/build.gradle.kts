@@ -9,6 +9,11 @@ plugins {
 
 dependencies {
     implementation("androidx.media3:media3-exoplayer:1.10.1")
+    implementation("androidx.media3:media3-exoplayer-hls:1.10.1")
+    implementation("com.squareup.okhttp3:okhttp:3.12.11")
+    implementation("com.google.code.gson:gson:2.10.1")
+    implementation("org.nanohttpd:nanohttpd:2.3.1")
+    testImplementation("junit:junit:4.13.2")
 }
 
 val keystoreProperties = Properties()
@@ -75,6 +80,10 @@ android {
             } else {
                 signingConfigs.getByName("debug")
             }
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
     }
 

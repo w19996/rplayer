@@ -19,6 +19,24 @@ class RemotePlayback {
   final Map<String, String> headers;
 }
 
+Future<RemotePlayback> playbackForItem(AppStore store, MediaItem item) async {
+  MediaSourceConfig? source;
+  for (final candidate in store.sources) {
+    if (candidate.id == item.sourceId) {
+      source = candidate;
+      break;
+    }
+  }
+  if (source != null && isRemoteSourceType(item.type)) {
+    return remoteClientForSource(source).playback(item);
+  }
+  final uri = Uri.tryParse(item.uri);
+  if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https')) {
+    return RemotePlayback(item.uri, const {});
+  }
+  return RemotePlayback(Uri.file(item.uri).toString(), const {});
+}
+
 class WebdavClient implements RemoteFileClient {
   const WebdavClient(this.source);
 

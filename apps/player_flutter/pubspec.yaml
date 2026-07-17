@@ -33,3 +33,4 @@ flutter:
   uses-material-design: true
   assets:
     - assets/donate.png
+    - assets/licenses/tvboxos_agpl_3.txt

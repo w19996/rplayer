@@ -67,7 +67,9 @@ class _PlayerAppState extends State<PlayerApp> with WidgetsBindingObserver {
       ),
       home: AnimatedBuilder(
         animation: store,
-        builder: (_, __) => PlayerShell(store: store),
+        builder: (_, __) => store.loaded
+            ? PlayerShell(store: store)
+            : const Scaffold(body: Center(child: CircularProgressIndicator())),
       ),
     );
   }

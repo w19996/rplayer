@@ -8,16 +8,28 @@ bool isLibmpvDolbyVisionTrack(String? profile, String? level) =>
     (num.tryParse(profile?.trim() ?? '') ?? 0) > 0 ||
     (num.tryParse(level?.trim() ?? '') ?? 0) > 0;
 
+bool shouldUseMedia3OnAndroid(bool isTvboxPlayback, bool isDolbyVision) =>
+    isTvboxPlayback || isDolbyVision;
+
 int networkBytesPerSecond(int byteDelta, int elapsedMilliseconds) =>
     byteDelta <= 0 || elapsedMilliseconds <= 0
         ? 0
         : byteDelta * 1000 ~/ elapsedMilliseconds;
 
 class VideoPlayerPage extends StatefulWidget {
-  const VideoPlayerPage({required this.store, required this.item, super.key});
+  const VideoPlayerPage(
+      {required this.store,
+      required this.item,
+      this.playback,
+      this.episodes,
+      this.playbackResolver,
+      super.key});
 
   final AppStore store;
   final MediaItem item;
+  final RemotePlayback? playback;
+  final List<MediaItem>? episodes;
+  final Future<RemotePlayback> Function(MediaItem)? playbackResolver;
 
   @override
   State<VideoPlayerPage> createState() => _VideoPlayerPageState();
@@ -524,6 +536,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
           .listen((value) => setStateIfMounted(() => availableTracks = value)))
       ..add(player.stream.track
           .listen((value) => setStateIfMounted(() => selectedTrack = value)))
+      ..add(player.stream.log.listen((value) {
+        final message =
+            'mpv ${value.prefix} ${value.level}: ${value.text.trim()}';
+        logVideoLoading(message);
+      }))
       ..add(player.stream.error.listen(handlePlayerError));
   }
 
@@ -559,25 +576,29 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         backendSelected = !Platform.isAndroid;
       });
       await applyRememberedOrientation();
-      final source = widget.store.sources
-          .firstWhere((value) => value.id == currentItem.sourceId);
       if (saved > 0) {
         final savedPosition = Duration(milliseconds: saved);
         syncDanmuClock(savedPosition);
       }
-      final playback = isRemoteSourceType(currentItem.type)
-          ? await remoteClientForSource(source).playback(currentItem)
-          : RemotePlayback(Uri.file(currentItem.uri).toString(), const {});
+      final playback = !openedOnce && currentItem.id == widget.item.id
+          ? widget.playback ?? await resolvePlayback(currentItem)
+          : await resolvePlayback(currentItem);
       final uri = playback.uri;
       final previousUsingMedia3 = usingMedia3;
+      final isTvboxPlayback = currentItem.sourceId == 'tvbox';
       var detectedDolbyVision = dolbyVisionCache[currentItem.id];
-      final needsDolbyVisionDetection = detectedDolbyVision == null;
+      final needsDolbyVisionDetection =
+          !isTvboxPlayback && detectedDolbyVision == null;
       if (previousUsingMedia3) {
         await appChannel.invokeMethod<void>('media3Release');
       }
       if (!mounted || attempt != openAttempt) return;
       setState(() {
-        usingMedia3 = Platform.isAndroid && detectedDolbyVision == true;
+        usingMedia3 = Platform.isAndroid &&
+            shouldUseMedia3OnAndroid(
+              isTvboxPlayback,
+              detectedDolbyVision == true,
+            );
         backendSelected = !Platform.isAndroid || !needsDolbyVisionDetection;
         mpvLoadingPropertiesUsable = false;
         media3Ended = false;
@@ -751,8 +772,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     if (usingMedia3) return;
     try {
       final native = player.platform as dynamic;
-      await native.setProperty('video-sync', 'audio');
       final options = widget.store.effectiveMpvAdvancedOptions();
+      await native.setProperty(
+        'video-sync',
+        options['video-sync'] ?? 'audio',
+      );
       await native.setProperty(
         'framedrop',
         options['framedrop'] ?? 'vo',
@@ -2190,6 +2214,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   }
 
   List<MediaItem> get episodeItems {
+    if (widget.episodes != null) return widget.episodes!;
     final folderKey = mediaFolderKey(currentItem);
     final items = widget.store.items
         .where((item) =>
@@ -2208,6 +2233,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     });
     return items;
   }
+
+  Future<RemotePlayback> resolvePlayback(MediaItem item) =>
+      widget.playbackResolver?.call(item) ??
+      playbackForItem(widget.store, item);
 
   LibraryFileEntry? dbFileForItem(MediaItem item) {
     final detail = libraryDetail;

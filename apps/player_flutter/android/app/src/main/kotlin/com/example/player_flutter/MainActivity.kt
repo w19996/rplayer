@@ -38,6 +38,7 @@ class MainActivity : FlutterActivity() {
     private var pipActionReceiverRegistered: Boolean = false
     private var appChannel: MethodChannel? = null
     private var media3Bridge: Media3VideoBridge? = null
+    private var tvboxBridge: TvboxBridge? = null
     private val pipActionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == ACTION_PIP_TOGGLE_PLAYBACK) {
@@ -53,9 +54,10 @@ class MainActivity : FlutterActivity() {
         media3Bridge = Media3VideoBridge(this) { method, arguments ->
             appChannel?.invokeMethod(method, arguments)
         }
+        tvboxBridge = TvboxBridge(this)
         flutterEngine.platformViewsController.registry.registerViewFactory(
             "rplayer/media3_texture",
-            Media3SurfaceViewFactory(media3Bridge!!)
+            Media3TextureViewFactory(media3Bridge!!)
         )
         appChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
@@ -106,6 +108,8 @@ class MainActivity : FlutterActivity() {
                     media3Bridge?.release()
                     result.success(null)
                 }
+                "tvboxCall" -> tvboxBridge?.handle(call, result)
+                    ?: result.error("TVBOX_RUNTIME", "TVBox 运行时未初始化", null)
                 else -> result.notImplemented()
             }
         }
@@ -154,6 +158,7 @@ class MainActivity : FlutterActivity() {
         stopPlaybackOrientationSensor()
         unregisterPipActionReceiver()
         media3Bridge?.release()
+        tvboxBridge?.close()
         super.onDestroy()
     }
 

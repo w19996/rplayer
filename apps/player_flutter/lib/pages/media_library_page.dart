@@ -50,7 +50,8 @@ class MediaLibraryPage extends StatelessWidget {
                 )
               else if (store.items.isEmpty &&
                   home.isEmpty &&
-                  pendingGroups.isEmpty)
+                  pendingGroups.isEmpty &&
+                  data?.recent.isEmpty != false)
                 SliverFillRemaining(
                   child: EmptyState(
                     icon: Icons.video_library_outlined,
@@ -63,7 +64,9 @@ class MediaLibraryPage extends StatelessWidget {
                     ),
                   ),
                 )
-              else if (home.isEmpty && pendingGroups.isEmpty)
+              else if (home.isEmpty &&
+                  pendingGroups.isEmpty &&
+                  data?.recent.isEmpty != false)
                 const SliverFillRemaining(
                   child: EmptyState(
                     icon: Icons.image_search_outlined,
@@ -90,15 +93,33 @@ class MediaLibraryPage extends StatelessWidget {
                         separatorBuilder: (_, __) => const SizedBox(width: 14),
                         itemBuilder: (context, index) {
                           final recent = data.recent[index];
-                          final item = store.itemById(recent.itemId);
+                          final tvbox =
+                              store.tvboxRecentByItemId(recent.itemId);
+                          final item =
+                              tvbox?.item ?? store.itemById(recent.itemId);
                           return SizedBox(
                             width: 252,
                             child: _RecentDbTile(
                               store: store,
                               recent: recent,
+                              item: item,
+                              tvboxPicture: tvbox?.video.picture,
                               onTap: item == null
                                   ? null
-                                  : () => openPlayer(context, store, item),
+                                  : () async {
+                                      try {
+                                        if (tvbox != null) {
+                                          await openTvboxRecent(
+                                              context, store, tvbox);
+                                        } else if (context.mounted) {
+                                          openPlayer(context, store, item);
+                                        }
+                                      } catch (error) {
+                                        if (context.mounted) {
+                                          showSnack(context, '播放失败：$error');
+                                        }
+                                      }
+                                    },
                             ),
                           );
                         },
@@ -465,10 +486,12 @@ Future<_LibraryPageData> _loadLibraryPageData(AppStore store) async {
     store,
     values[0] as List<LibraryHomeEntry>,
   );
-  final recent = filterRecentByMediaGroup(
-    store,
-    values[1] as List<LibraryRecentEntry>,
-  );
+  final allRecent = <LibraryRecentEntry>[
+    ...(values[1] as List<LibraryRecentEntry>),
+    ...store.tvboxRecent.map((entry) => entry.libraryRecent),
+  ]..sort((left, right) =>
+      (right.lastPlayedAt ?? 0).compareTo(left.lastPlayedAt ?? 0));
+  final recent = filterRecentByMediaGroup(store, allRecent);
   unawaited(store.preloadCachedTmdbImages([
     for (final entry in home)
       if (entry.posterPath != null) MapEntry(entry.posterPath!, 'w500'),
@@ -493,7 +516,8 @@ List<LibraryRecentEntry> filterRecentByMediaGroup(
   final seenGroups = <String>{};
   final filtered = <LibraryRecentEntry>[];
   for (final entry in recent) {
-    final item = store.itemById(entry.itemId);
+    final item = store.tvboxRecentByItemId(entry.itemId)?.item ??
+        store.itemById(entry.itemId);
     if (item == null || !seenGroups.add(mediaFolderKey(item))) continue;
     filtered.add(entry);
   }
@@ -771,12 +795,16 @@ class _RecentDbTile extends StatelessWidget {
   const _RecentDbTile({
     required this.store,
     required this.recent,
+    required this.item,
     required this.onTap,
+    this.tvboxPicture,
   });
 
   final AppStore store;
   final LibraryRecentEntry recent;
+  final MediaItem? item;
   final VoidCallback? onTap;
+  final String? tvboxPicture;
 
   double get progressValue {
     if (recent.positionMs <= 0) return 0;
@@ -787,7 +815,7 @@ class _RecentDbTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final item = store.itemById(recent.itemId);
+    final mediaItem = item;
     final imagePath =
         recent.stillPath ?? recent.backdropPath ?? recent.posterPath;
     final hasTime = recent.positionMs > 0 || (recent.durationMs ?? 0) > 0;
@@ -815,18 +843,32 @@ class _RecentDbTile extends StatelessWidget {
                       size: imagePath == recent.posterPath ? 'w500' : 'w780',
                       fit: BoxFit.cover,
                       fallback: MediaPosterFallback(
-                        remote: item == null
+                        remote: mediaItem == null
                             ? false
-                            : isRemoteSourceType(item.type),
+                            : isRemoteSourceType(mediaItem.type),
                       ),
                     )
-                  else if (item != null)
+                  else if (tvboxPicture?.isNotEmpty == true)
+                    FutureBuilder<Uint8List?>(
+                      future: _loadTvboxImage(tvboxImageRequest(tvboxPicture!)),
+                      builder: (_, snapshot) {
+                        final bytes = snapshot.data;
+                        return bytes == null || bytes.isEmpty
+                            ? const MediaPosterFallback(remote: true)
+                            : Image.memory(bytes,
+                                fit: BoxFit.cover,
+                                gaplessPlayback: true,
+                                errorBuilder: (_, __, ___) =>
+                                    const MediaPosterFallback(remote: true));
+                      },
+                    )
+                  else if (mediaItem != null)
                     VideoCoverImage(
                       store: store,
-                      item: item,
+                      item: mediaItem,
                       fit: BoxFit.cover,
                       fallback: MediaPosterFallback(
-                        remote: isRemoteSourceType(item.type),
+                        remote: isRemoteSourceType(mediaItem.type),
                       ),
                     )
                   else

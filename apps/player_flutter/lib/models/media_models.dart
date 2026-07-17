@@ -212,7 +212,11 @@ Map<String, String> mpvAdvancedPresetOptions({
     'hr-seek': quality ? 'yes' : 'no',
     'hr-seek-framedrop': quality ? 'no' : 'yes',
     'video-sync': 'audio',
-    'framedrop': power || mobile ? 'decoder+vo' : 'vo',
+    'framedrop': quality
+        ? 'no'
+        : power || mobile
+            ? 'decoder+vo'
+            : 'vo',
   };
 }
 
@@ -278,6 +282,7 @@ Map<String, String> mpvAdvancedOptions({
   if (softwareDecoderFallback) {
     options['hwdec'] = 'no';
     options['vd-lavc-threads'] = '2';
+    options['framedrop'] = 'vo';
   }
   return options;
 }

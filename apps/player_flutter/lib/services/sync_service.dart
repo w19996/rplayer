@@ -242,9 +242,18 @@ Route<T> overlapSlideRoute<T>(WidgetBuilder builder) {
   );
 }
 
-void openPlayer(BuildContext context, AppStore store, MediaItem item) {
+void openPlayer(BuildContext context, AppStore store, MediaItem item,
+    {RemotePlayback? playback,
+    List<MediaItem>? episodes,
+    Future<RemotePlayback> Function(MediaItem)? playbackResolver}) {
   Navigator.of(context).push(
-    appSlideRoute((_) => VideoPlayerPage(store: store, item: item)),
+    appSlideRoute((_) => VideoPlayerPage(
+          store: store,
+          item: item,
+          playback: playback,
+          episodes: episodes,
+          playbackResolver: playbackResolver,
+        )),
   );
 }
 

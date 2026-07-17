@@ -221,6 +221,21 @@ void main() {
       )['hwdec'],
       'mediacodec,mediacodec-copy,no',
     );
+    expect(
+      mpvAdvancedPresetOptions(
+        preset: mpvAdvancedPresetQuality,
+        deviceClass: AppDeviceClass.mobile,
+      )['framedrop'],
+      'no',
+    );
+    expect(
+      mpvAdvancedOptions(
+        preset: mpvAdvancedPresetAuto,
+        deviceClass: AppDeviceClass.mobile,
+        softwareDecoderFallback: true,
+      )['framedrop'],
+      'vo',
+    );
   });
 
   test('documents every mpv advanced option', () {
@@ -234,6 +249,12 @@ void main() {
     expect(isLibmpvDolbyVisionTrack('', '6'), isTrue);
     expect(isLibmpvDolbyVisionTrack('0', '0'), isFalse);
     expect(isLibmpvDolbyVisionTrack(null, null), isFalse);
+  });
+
+  test('uses Media3 on Android for TVBox or Dolby Vision only', () {
+    expect(shouldUseMedia3OnAndroid(true, false), isTrue);
+    expect(shouldUseMedia3OnAndroid(false, true), isTrue);
+    expect(shouldUseMedia3OnAndroid(false, false), isFalse);
   });
 
   test('calculates network speed using the actual sample interval', () {
@@ -1583,6 +1604,7 @@ void main() {
 
     expect(find.text('媒体库'), findsOneWidget);
     expect(find.text('资源库'), findsOneWidget);
+    expect(find.text('TVBox'), findsNothing);
     expect(find.text('我的'), findsOneWidget);
 
     await tester.tap(find.text('资源库'));

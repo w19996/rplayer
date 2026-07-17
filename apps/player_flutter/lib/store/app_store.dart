@@ -19,6 +19,9 @@ class AppStore extends ChangeNotifier {
   final Map<String, Set<String>> _itemPathsBySource = {};
   TmdbConfig tmdbConfig = const TmdbConfig();
   DanmuConfig danmuConfig = const DanmuConfig();
+  String tvboxApiUrl = '';
+  String tvboxTrustedApiUrl = '';
+  final List<TvboxRecentEntry> tvboxRecent = [];
   String mpvAdvancedPreset = mpvAdvancedPresetAuto;
   Map<String, String> mpvAdvancedOptionValues = {};
   SyncConfig? syncConfig;
@@ -97,6 +100,7 @@ class AppStore extends ChangeNotifier {
           category: 'config');
     }
     await loadMediaStateDatabase();
+    restoreTvboxRecentProgress();
     await loadMetadataDatabase();
     loaded = true;
     notifyListeners();
@@ -376,6 +380,9 @@ class AppStore extends ChangeNotifier {
       'version': 2,
       'tmdbConfig': tmdbConfig.toJson(),
       'danmuConfig': danmuConfig.toJson(),
+      'tvboxApiUrl': tvboxApiUrl,
+      'tvboxTrustedApiUrl': tvboxTrustedApiUrl,
+      'tvboxRecent': tvboxRecent.map((entry) => entry.toJson()).toList(),
       'mpvAdvancedPreset': mpvAdvancedPreset,
       'mpvAdvancedOptions': effectiveMpvAdvancedOptions(),
       'syncConfig': syncConfig?.toJson(),
@@ -419,6 +426,13 @@ class AppStore extends ChangeNotifier {
     danmuConfig = danmu == null
         ? const DanmuConfig()
         : DanmuConfig.fromJson(danmu as Map<String, dynamic>);
+    tvboxApiUrl = json['tvboxApiUrl'] as String? ?? '';
+    tvboxTrustedApiUrl = json['tvboxTrustedApiUrl'] as String? ?? '';
+    tvboxRecent
+      ..clear()
+      ..addAll((json['tvboxRecent'] as List<dynamic>? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .map(TvboxRecentEntry.fromJson));
     mpvAdvancedPreset = normalizeMpvAdvancedPreset(json['mpvAdvancedPreset']);
     mpvAdvancedOptionValues = normalizeMpvAdvancedOptions(
       json['mpvAdvancedOptions'],
@@ -443,6 +457,43 @@ class AppStore extends ChangeNotifier {
     syncParserRegexesToCore(logErrors: false);
     diagnosticLoggingEnabled =
         json['diagnosticLoggingEnabled'] as bool? ?? false;
+  }
+
+  Future<void> setTvboxApiUrl(String value) async {
+    final next = value.trim();
+    if (next != tvboxApiUrl) tvboxTrustedApiUrl = '';
+    tvboxApiUrl = next;
+    notifyListeners();
+    await saveSettings();
+  }
+
+  Future<void> trustTvboxApiUrl() async {
+    tvboxTrustedApiUrl = tvboxApiUrl;
+    notifyListeners();
+    await saveSettings();
+  }
+
+  void restoreTvboxRecentProgress() {
+    for (final recent in tvboxRecent) {
+      final itemId = recent.item.id;
+      progress[itemId] = recent.positionMs;
+      if (recent.durationMs != null) durations[itemId] = recent.durationMs!;
+      lastPlayedAt[itemId] = recent.lastPlayedAt;
+    }
+  }
+
+  TvboxRecentEntry? tvboxRecentByItemId(String itemId) =>
+      tvboxRecent.where((entry) => entry.item.id == itemId).firstOrNull;
+
+  Future<void> rememberTvboxRecent(TvboxRecentEntry recent) async {
+    tvboxRecent.removeWhere((entry) => entry.groupKey == recent.groupKey);
+    tvboxRecent.insert(0, recent);
+    if (tvboxRecent.length > 12) {
+      tvboxRecent.removeRange(12, tvboxRecent.length);
+    }
+    restoreTvboxRecentProgress();
+    notifyListeners();
+    await saveSettings(logEvent: false);
   }
 
   void importMediaStateJson(Map<String, dynamic> json) {
@@ -483,6 +534,7 @@ class AppStore extends ChangeNotifier {
   Future<void> importState(String text, {bool persist = true}) async {
     final json = jsonDecode(text) as Map<String, dynamic>;
     importSettingsJson(json);
+    restoreTvboxRecentProgress();
     if (persist) await saveSettings();
     notifyListeners();
   }
@@ -2132,6 +2184,21 @@ class AppStore extends ChangeNotifier {
       'playback progress update: item=$itemId position=${position.inMilliseconds} duration=${duration?.inMilliseconds}',
       category: 'playback',
     );
+    final tvboxIndex =
+        tvboxRecent.indexWhere((entry) => entry.item.id == itemId);
+    if (tvboxIndex >= 0) {
+      final updated = tvboxRecent[tvboxIndex].copyWith(
+        positionMs: position.inMilliseconds,
+        durationMs: duration?.inMilliseconds,
+        lastPlayedAt: lastPlayedAt[itemId],
+      );
+      tvboxRecent
+        ..removeAt(tvboxIndex)
+        ..insert(0, updated);
+      await saveSettings(logEvent: false);
+      notifyListeners();
+      return;
+    }
     try {
       final db = await metadataDatabaseFile;
       await RustCoreService.instance.playbackProgressPutAsync(
@@ -2156,6 +2223,15 @@ class AppStore extends ChangeNotifier {
     addDiagnosticLog(
         'playback duration remembered: item=$itemId duration=$milliseconds',
         category: 'playback');
+    final tvboxIndex =
+        tvboxRecent.indexWhere((entry) => entry.item.id == itemId);
+    if (tvboxIndex >= 0) {
+      tvboxRecent[tvboxIndex] =
+          tvboxRecent[tvboxIndex].copyWith(durationMs: milliseconds);
+      await saveSettings(logEvent: false);
+      notifyListeners();
+      return;
+    }
     try {
       final db = await metadataDatabaseFile;
       await RustCoreService.instance
