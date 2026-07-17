@@ -236,6 +236,10 @@ void main() {
     expect(isLibmpvDolbyVisionTrack(null, null), isFalse);
   });
 
+  test('calculates network speed using the actual sample interval', () {
+    expect(networkBytesPerSecond(5 * 1024 * 1024, 5000), 1024 * 1024);
+  });
+
   test('uses series folder when video is inside a season folder', () {
     const item = MediaItem(
       id: 'source:C:/media/Low IQ Crime/Season 1/S01E01.mkv',

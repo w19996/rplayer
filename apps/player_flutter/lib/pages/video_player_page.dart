@@ -8,6 +8,11 @@ bool isLibmpvDolbyVisionTrack(String? profile, String? level) =>
     (num.tryParse(profile?.trim() ?? '') ?? 0) > 0 ||
     (num.tryParse(level?.trim() ?? '') ?? 0) > 0;
 
+int networkBytesPerSecond(int byteDelta, int elapsedMilliseconds) =>
+    byteDelta <= 0 || elapsedMilliseconds <= 0
+        ? 0
+        : byteDelta * 1000 ~/ elapsedMilliseconds;
+
 class VideoPlayerPage extends StatefulWidget {
   const VideoPlayerPage({required this.store, required this.item, super.key});
 
@@ -118,6 +123,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   int openAttempt = 0;
   int battery = -1;
   int? lastRxBytes;
+  int? lastRxSampleMs;
   String network = 'NET';
   String networkSpeed = '0 KB/s';
   bool charging = false;
@@ -1620,15 +1626,22 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       if (status == null) return;
       final rx = (status['rxBytes'] as num?)?.toInt();
       final previous = lastRxBytes;
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      final previousSampleMs = lastRxSampleMs;
       lastRxBytes = rx;
+      lastRxSampleMs = nowMs;
       final nextBattery = (status['battery'] as num?)?.toInt();
       if (nextBattery != null && nextBattery >= 0) {
         battery = nextBattery.clamp(0, 100);
       }
       charging = status['charging'] == true;
       network = status['network'] as String? ?? network;
-      if (rx != null && previous != null && rx >= previous) {
-        networkSpeed = formatNetworkSpeed(rx - previous);
+      if (rx != null &&
+          previous != null &&
+          rx >= previous &&
+          previousSampleMs != null) {
+        networkSpeed = formatNetworkSpeed(
+            networkBytesPerSecond(rx - previous, nowMs - previousSampleMs));
       }
       notifyControlsChanged();
     } catch (_) {
@@ -2411,6 +2424,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
             alignment: Alignment.centerLeft,
             child: FractionallySizedBox(
               widthFactor: level / 100,
+              heightFactor: 1,
               child: DecoratedBox(
                 decoration: BoxDecoration(
                     color: Colors.white,
