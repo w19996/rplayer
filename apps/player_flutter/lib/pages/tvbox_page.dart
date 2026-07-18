@@ -69,6 +69,7 @@ class TvboxVideo {
     this.content = '',
     this.playFrom = '',
     this.playUrl = '',
+    this.action = '',
   });
 
   factory TvboxVideo.fromJson(Map<String, dynamic> json) => TvboxVideo(
@@ -79,6 +80,7 @@ class TvboxVideo {
         content: '${json['vod_content'] ?? json['des'] ?? ''}',
         playFrom: '${json['vod_play_from'] ?? ''}',
         playUrl: '${json['vod_play_url'] ?? ''}',
+        action: '${json['action'] ?? ''}',
       );
 
   final String id;
@@ -88,6 +90,7 @@ class TvboxVideo {
   final String content;
   final String playFrom;
   final String playUrl;
+  final String action;
 
   Map<String, dynamic> toJson() => {
         'vod_id': id,
@@ -97,8 +100,18 @@ class TvboxVideo {
         'vod_content': content,
         'vod_play_from': playFrom,
         'vod_play_url': playUrl,
+        'action': action,
       };
 }
+
+enum TvboxVideoOpenTarget { action, search, detail }
+
+TvboxVideoOpenTarget tvboxVideoOpenTarget(TvboxVideo video) =>
+    video.action.isNotEmpty
+        ? TvboxVideoOpenTarget.action
+        : video.id.isEmpty || video.id.startsWith('msearch:')
+            ? TvboxVideoOpenTarget.search
+            : TvboxVideoOpenTarget.detail;
 
 class TvboxEpisode {
   const TvboxEpisode(this.name, this.url);
@@ -112,6 +125,50 @@ class TvboxPlayGroup {
 
   final String name;
   final List<TvboxEpisode> episodes;
+}
+
+class TvboxLiveSource {
+  const TvboxLiveSource({
+    required this.name,
+    required this.url,
+    this.headers = const {},
+    this.epg = '',
+  });
+
+  final String name;
+  final String url;
+  final Map<String, String> headers;
+  final String epg;
+}
+
+class TvboxLiveChannel {
+  const TvboxLiveChannel({
+    required this.name,
+    required this.urls,
+    this.logo = '',
+    this.headers = const {},
+    this.epg = '',
+  });
+
+  final String name;
+  final List<String> urls;
+  final String logo;
+  final Map<String, String> headers;
+  final String epg;
+}
+
+class TvboxLiveGroup {
+  const TvboxLiveGroup(this.name, this.channels);
+
+  final String name;
+  final List<TvboxLiveChannel> channels;
+}
+
+class TvboxResolvedConfig {
+  const TvboxResolvedConfig(this.sites, this.lives);
+
+  final List<TvboxSite> sites;
+  final List<TvboxLiveSource> lives;
 }
 
 typedef TvboxVideoSource = ({TvboxSite site, TvboxVideo video});
@@ -511,6 +568,172 @@ List<TvboxSite> tvboxSitesFromConfig(
       '配置已读取，但 ${all.length} 个站点均需当前不支持的 Spider/JAR/JS（type ${types.join(', ')}）');
 }
 
+List<TvboxLiveSource> tvboxLivesFromConfig(
+        String sourceUrl, Map<String, dynamic> json) =>
+    (json['lives'] as List<dynamic>? ?? const [])
+        .whereType<Map>()
+        .map((value) {
+          final headers = {
+            ..._tvboxHeaders(value['header']),
+            if ('${value['ua'] ?? ''}'.trim().isNotEmpty)
+              'User-Agent': '${value['ua']}'.trim(),
+          };
+          return TvboxLiveSource(
+            name: '${value['name'] ?? '直播'}'.trim(),
+            url: _tvboxConfigValue(sourceUrl, value['url']),
+            headers: headers,
+            epg: _tvboxConfigValue(sourceUrl, value['epg']),
+          );
+        })
+        .where((value) => value.url.isNotEmpty)
+        .toList();
+
+List<TvboxLiveGroup> parseTvboxLiveGroups(String text) {
+  final value = text.trim();
+  if (value.isEmpty) return const [];
+  try {
+    final decoded = jsonDecode(value);
+    if (decoded is List) return _parseTvboxLiveJson(decoded);
+  } catch (_) {}
+  return value.startsWith('#EXTM3U')
+      ? _parseTvboxLiveM3u(value)
+      : _parseTvboxLiveTxt(value);
+}
+
+List<TvboxLiveGroup> _parseTvboxLiveJson(List<dynamic> values) => values
+    .whereType<Map>()
+    .map((group) {
+      final channels = (group['channels'] as List<dynamic>? ??
+              group['channel'] as List<dynamic>? ??
+              const [])
+          .whereType<Map>()
+          .map((channel) => TvboxLiveChannel(
+                name: '${channel['name'] ?? '未命名频道'}'.trim(),
+                urls: (channel['urls'] as List<dynamic>? ?? const [])
+                    .map((url) => '$url'.trim())
+                    .where(_isTvboxLiveUrl)
+                    .toSet()
+                    .toList(),
+                logo: '${channel['logo'] ?? ''}'.trim(),
+                headers: _liveHeaders(channel),
+                epg: '${channel['epg'] ?? ''}'.trim(),
+              ))
+          .where((channel) => channel.urls.isNotEmpty)
+          .toList();
+      return TvboxLiveGroup(
+          '${group['group'] ?? group['name'] ?? '直播'}'.trim(), channels);
+    })
+    .where((group) => group.channels.isNotEmpty)
+    .toList();
+
+List<TvboxLiveGroup> _parseTvboxLiveTxt(String text) {
+  final groups = <String, List<TvboxLiveChannel>>{};
+  var group = '直播';
+  for (final raw in const LineSplitter().convert(text)) {
+    final line = raw.trim();
+    if (line.isEmpty || line.startsWith('#')) continue;
+    if (line.contains('#genre#')) {
+      group = line.split(',').first.trim();
+      continue;
+    }
+    final separator = line.indexOf(',');
+    if (separator < 1) continue;
+    final urls = line
+        .substring(separator + 1)
+        .split('#')
+        .map((url) => url.trim())
+        .where(_isTvboxLiveUrl)
+        .toSet()
+        .toList();
+    if (urls.isEmpty) continue;
+    groups.putIfAbsent(group, () => []).add(TvboxLiveChannel(
+        name: line.substring(0, separator).trim(), urls: urls));
+  }
+  return groups.entries
+      .map((entry) => TvboxLiveGroup(entry.key, entry.value))
+      .toList();
+}
+
+List<TvboxLiveGroup> _parseTvboxLiveM3u(String text) {
+  final groups = <String, List<TvboxLiveChannel>>{};
+  String? info;
+  for (final raw in const LineSplitter().convert(text)) {
+    final line = raw.trim();
+    if (line.startsWith('#EXTINF')) {
+      info = line;
+      continue;
+    }
+    if (line.isEmpty || line.startsWith('#') || info == null) continue;
+    final parsed = _splitTvboxLiveUrl(line);
+    if (!_isTvboxLiveUrl(parsed.$1)) continue;
+    final group = _m3uAttribute(info, 'group-title').isEmpty
+        ? '直播'
+        : _m3uAttribute(info, 'group-title');
+    final comma = info.lastIndexOf(',');
+    final name = comma < 0 ? '未命名频道' : info.substring(comma + 1).trim();
+    groups.putIfAbsent(group, () => []).add(TvboxLiveChannel(
+          name: name,
+          urls: [parsed.$1],
+          logo: _m3uAttribute(info, 'tvg-logo'),
+          headers: parsed.$2,
+          epg: _m3uAttribute(info, 'tvg-url'),
+        ));
+  }
+  return groups.entries
+      .map((entry) =>
+          TvboxLiveGroup(entry.key, _mergeTvboxLiveChannels(entry.value)))
+      .toList();
+}
+
+List<TvboxLiveChannel> _mergeTvboxLiveChannels(
+    List<TvboxLiveChannel> channels) {
+  final merged = <String, TvboxLiveChannel>{};
+  for (final channel in channels) {
+    final old = merged[channel.name];
+    merged[channel.name] = old == null
+        ? channel
+        : TvboxLiveChannel(
+            name: old.name,
+            urls: {...old.urls, ...channel.urls}.toList(),
+            logo: old.logo.isEmpty ? channel.logo : old.logo,
+            headers: {...channel.headers, ...old.headers},
+            epg: old.epg.isEmpty ? channel.epg : old.epg,
+          );
+  }
+  return merged.values.toList();
+}
+
+Map<String, String> _liveHeaders(Map channel) => {
+      ..._tvboxHeaders(channel['header']),
+      if ('${channel['ua'] ?? ''}'.trim().isNotEmpty)
+        'User-Agent': '${channel['ua']}'.trim(),
+      if ('${channel['referer'] ?? ''}'.trim().isNotEmpty)
+        'Referer': '${channel['referer']}'.trim(),
+      if ('${channel['origin'] ?? ''}'.trim().isNotEmpty)
+        'Origin': '${channel['origin']}'.trim(),
+    };
+
+(String, Map<String, String>) _splitTvboxLiveUrl(String value) {
+  final parts = value.split('|');
+  if (parts.length < 2) return (value.trim(), const {});
+  final headers = <String, String>{};
+  for (final item in parts.skip(1).join('|').split('&')) {
+    final separator = item.indexOf('=');
+    if (separator > 0) {
+      headers[Uri.decodeComponent(item.substring(0, separator))] =
+          Uri.decodeComponent(item.substring(separator + 1));
+    }
+  }
+  return (parts.first.trim(), headers);
+}
+
+String _m3uAttribute(String line, String name) =>
+    RegExp('$name="([^"]*)"').firstMatch(line)?.group(1)?.trim() ?? '';
+
+bool _isTvboxLiveUrl(String value) =>
+    RegExp(r'^(?:https?|rtmp|rtsp|udp|rtp)://', caseSensitive: false)
+        .hasMatch(value);
+
 List<TvboxPlayGroup> parseTvboxPlayGroups(String from, String value) {
   final names = from.split(r'$$$');
   final groups = value.split(r'$$$');
@@ -556,6 +779,13 @@ class TvboxResolver {
   const TvboxResolver();
 
   Future<List<TvboxSite>> resolve(String sourceUrl, {int depth = 0}) async {
+    final result = await resolveConfig(sourceUrl, depth: depth);
+    if (result.sites.isEmpty) throw const FormatException('配置中没有点播站点');
+    return result.sites;
+  }
+
+  Future<TvboxResolvedConfig> resolveConfig(String sourceUrl,
+      {int depth = 0}) async {
     if (depth > 3) throw const FormatException('TVBox 多仓嵌套过深');
     sourceUrl = normalizeTvboxSourceUrl(sourceUrl);
     final response = await http.get(Uri.parse(sourceUrl),
@@ -565,9 +795,9 @@ class TvboxResolver {
     }
     final text = decodeTvboxConfigBytes(response.bodyBytes);
     if (text.startsWith('<rss')) {
-      return [
-        TvboxSite(key: 'direct', name: '当前接口', type: 0, apiUrl: sourceUrl)
-      ];
+      return TvboxResolvedConfig(
+          [TvboxSite(key: 'direct', name: '当前接口', type: 0, apiUrl: sourceUrl)],
+          const []);
     }
     final value = jsonDecode(text);
     if (value is! Map<String, dynamic>) {
@@ -577,9 +807,16 @@ class TvboxResolver {
       final first = urls.whereType<Map>().firstOrNull;
       final nested = first?['url'];
       if (nested == null) throw const FormatException('多仓订阅中没有有效地址');
-      return resolve(_tvboxConfigValue(sourceUrl, nested), depth: depth + 1);
+      return resolveConfig(_tvboxConfigValue(sourceUrl, nested),
+          depth: depth + 1);
     }
-    return tvboxSitesFromConfig(sourceUrl, value);
+    final lives = tvboxLivesFromConfig(sourceUrl, value);
+    try {
+      return TvboxResolvedConfig(tvboxSitesFromConfig(sourceUrl, value), lives);
+    } on FormatException {
+      if (lives.isNotEmpty) return TvboxResolvedConfig(const [], lives);
+      rethrow;
+    }
   }
 }
 
@@ -654,22 +891,22 @@ class TvboxClient {
             includeExt: site.type == 4);
     final categories = _parseCategories(body);
     if (categories.isNotEmpty) {
-      return (categories: categories, videos: _parseVideos(body));
+      return (categories: categories, videos: parseVideos(body));
     }
     if (site.type == 3) {
-      return (categories: categories, videos: _parseVideos(body));
+      return (categories: categories, videos: parseVideos(body));
     }
     final fallback =
         await _get({'ac': site.type == 0 ? 'videolist' : 'detail'});
     return (
       categories: _parseCategories(fallback),
-      videos: _parseVideos(fallback),
+      videos: parseVideos(fallback),
     );
   }
 
   Future<List<TvboxVideo>> videos({String? typeId, String? keyword}) async {
     if (site.type == 3) {
-      return _parseVideos(await _spider(
+      return parseVideos(await _spider(
         keyword == null ? 'category' : 'search',
         keyword == null
             ? {'typeId': typeId ?? '', 'page': '1'}
@@ -684,7 +921,7 @@ class TvboxClient {
             if (site.type == 4) 'ext': base64Url.encode(utf8.encode('{}')),
           }
         : {'wd': keyword, 'quick': 'false', 'extend': '', 'pg': '1'};
-    return _parseVideos(await _get(query));
+    return parseVideos(await _get(query));
   }
 
   Future<TvboxVideo> detail(String id) async {
@@ -694,7 +931,7 @@ class TvboxClient {
             'ac': site.type == 0 ? 'videolist' : 'detail',
             'ids': id,
           });
-    final values = _parseVideos(body);
+    final values = parseVideos(body);
     if (values.isEmpty) throw const FormatException('接口未返回播放详情');
     return values.first;
   }
@@ -717,6 +954,7 @@ class TvboxClient {
       throw const FormatException('播放接口未返回地址');
     }
     final format = '${value['format'] ?? ''}'.trim();
+    final danmaku = '${value['danmaku'] ?? ''}'.trim();
     final inferredMimeType = format.isEmpty && _tvboxLooksHls('$resolved')
         ? 'application/x-mpegURL'
         : null;
@@ -727,7 +965,16 @@ class TvboxClient {
         ..._tvboxHeaders(value['header']),
       },
       mimeType: format.isEmpty ? inferredMimeType : format,
+      danmaku: danmaku.isEmpty ? null : danmaku,
     );
+  }
+
+  Future<String?> action(String value) async {
+    final body = await _spider('action', {'value': value});
+    final result = jsonDecode(body);
+    if (result is! Map) return null;
+    final message = '${result['msg'] ?? ''}'.trim();
+    return message.isEmpty ? null : message;
   }
 
   List<TvboxCategory> _parseCategories(String body) {
@@ -750,7 +997,7 @@ class TvboxClient {
         .toList();
   }
 
-  List<TvboxVideo> _parseVideos(String body) {
+  List<TvboxVideo> parseVideos(String body) {
     if (body.startsWith('<')) return _parseXmlVideos(body);
     final value = jsonDecode(body);
     if (value is! Map) return const [];
@@ -758,7 +1005,9 @@ class TvboxClient {
         .whereType<Map>()
         .map((item) => TvboxVideo.fromJson(
             item.map((key, value) => MapEntry('$key', value))))
-        .where((item) => item.id.isNotEmpty && item.name.isNotEmpty)
+        .where((item) =>
+            (item.id.isNotEmpty || item.action.isNotEmpty) &&
+            item.name.isNotEmpty)
         .toList();
   }
 
@@ -804,6 +1053,7 @@ class TvboxPage extends StatefulWidget {
 
 class _TvboxPageState extends State<TvboxPage> {
   List<TvboxSite> sites = const [];
+  List<TvboxLiveSource> liveSources = const [];
   TvboxSite? site;
   List<TvboxCategory> categories = const [];
   List<TvboxVideo> videos = const [];
@@ -818,8 +1068,11 @@ class _TvboxPageState extends State<TvboxPage> {
   }
 
   Future<void> _resolveSites() async {
-    if (sites.isNotEmpty) return;
-    sites = await const TvboxResolver().resolve(widget.store.tvboxApiUrl);
+    if (sites.isNotEmpty || liveSources.isNotEmpty) return;
+    final config =
+        await const TvboxResolver().resolveConfig(widget.store.tvboxApiUrl);
+    sites = config.sites;
+    liveSources = config.lives;
     if (sites.any((value) => value.type == 3) &&
         widget.store.tvboxTrustedApiUrl != widget.store.tvboxApiUrl) {
       if (!mounted) return;
@@ -855,6 +1108,15 @@ class _TvboxPageState extends State<TvboxPage> {
       TvboxHome? loadedHome;
       if (site == null) {
         await _resolveSites();
+        if (sites.isEmpty && liveSources.isNotEmpty) {
+          if (mounted) {
+            setState(() {
+              categories = const [];
+              videos = const [];
+            });
+          }
+          return;
+        }
         Object? lastError;
         for (final source in sites) {
           try {
@@ -933,6 +1195,7 @@ class _TvboxPageState extends State<TvboxPage> {
     }
     await widget.store.setTvboxApiUrl(value);
     sites = const [];
+    liveSources = const [];
     site = null;
     categories = const [];
     videos = const [];
@@ -967,6 +1230,22 @@ class _TvboxPageState extends State<TvboxPage> {
     }
   }
 
+  Future<void> _openLive() async {
+    try {
+      await _resolveSites();
+      if (!mounted) return;
+      if (liveSources.isEmpty) throw const FormatException('配置中没有直播源');
+      await Navigator.of(context).push(appSlideRoute(
+        (_) => TvboxLivePage(store: widget.store, sources: liveSources),
+      ));
+    } catch (value) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('直播加载失败：$value')));
+      }
+    }
+  }
+
   Future<void> _openFastSearch(String keyword) async {
     try {
       await _resolveSites();
@@ -986,6 +1265,40 @@ class _TvboxPageState extends State<TvboxPage> {
     }
   }
 
+  Future<void> _openVideo(TvboxVideo video) async {
+    final source = site;
+    if (source == null) return;
+    final target = tvboxVideoOpenTarget(video);
+    if (target == TvboxVideoOpenTarget.action) {
+      try {
+        final message = await TvboxClient(source).action(video.action);
+        if (!mounted) return;
+        if (message != null) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text(message)));
+        }
+        await _load(typeId: selectedTypeId);
+      } catch (value) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text('操作失败：$value')));
+        }
+      }
+      return;
+    }
+    if (target == TvboxVideoOpenTarget.search) {
+      await _openFastSearch(video.name);
+      return;
+    }
+    await Navigator.of(context).push(appSlideRoute(
+      (_) => TvboxDetailPage(
+        store: widget.store,
+        client: TvboxClient(source),
+        video: video,
+      ),
+    ));
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -993,6 +1306,11 @@ class _TvboxPageState extends State<TvboxPage> {
         title: const Text('TVBox'),
         centerTitle: true,
         actions: [
+          if (widget.store.tvboxApiUrl.isNotEmpty)
+            IconButton(
+                tooltip: '直播',
+                onPressed: _openLive,
+                icon: const Icon(Icons.live_tv_outlined)),
           if (widget.store.tvboxApiUrl.isNotEmpty)
             IconButton(
                 tooltip: '搜索',
@@ -1091,13 +1409,200 @@ class _TvboxPageState extends State<TvboxPage> {
                       itemBuilder: (context, index) {
                         return _TvboxVideoCard(
                           video: videos[index],
-                          onTap: () => _openFastSearch(videos[index].name),
+                          onTap: () => _openVideo(videos[index]),
                         );
                       },
                     ),
                   ),
               ],
             ),
+    );
+  }
+}
+
+class TvboxLivePage extends StatefulWidget {
+  const TvboxLivePage({required this.store, required this.sources, super.key});
+
+  final AppStore store;
+  final List<TvboxLiveSource> sources;
+
+  @override
+  State<TvboxLivePage> createState() => _TvboxLivePageState();
+}
+
+class _TvboxLivePageState extends State<TvboxLivePage> {
+  late TvboxLiveSource source = widget.sources.first;
+  List<TvboxLiveGroup> groups = const [];
+  int groupIndex = 0;
+  String? error;
+  bool loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      loading = true;
+      error = null;
+    });
+    try {
+      final response = await http
+          .get(Uri.parse(source.url), headers: source.headers)
+          .timeout(const Duration(seconds: 20));
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw HttpException('直播源返回 HTTP ${response.statusCode}');
+      }
+      final parsed = parseTvboxLiveGroups(
+          utf8.decode(response.bodyBytes, allowMalformed: true));
+      if (parsed.isEmpty) throw const FormatException('直播源中没有可用频道');
+      if (!mounted) return;
+      setState(() {
+        groups = parsed;
+        groupIndex = 0;
+      });
+    } catch (value) {
+      if (mounted) setState(() => error = '$value');
+    } finally {
+      if (mounted) setState(() => loading = false);
+    }
+  }
+
+  Future<void> _open(TvboxLiveChannel selected) async {
+    final group = groups[groupIndex];
+    final selectedUrls = <String, String>{};
+    if (selected.urls.length > 1) {
+      final chosen = await showDialog<String>(
+        context: context,
+        builder: (context) => SimpleDialog(
+          title: Text('${selected.name} · 选择线路'),
+          children: [
+            for (final entry in selected.urls.indexed)
+              SimpleDialogOption(
+                onPressed: () => Navigator.pop(context, entry.$2),
+                child: Text('线路 ${entry.$1 + 1}'),
+              ),
+          ],
+        ),
+      );
+      if (chosen == null) return;
+      selectedUrls[selected.name] = chosen;
+    }
+    final items = [
+      for (final channel in group.channels)
+        MediaItem(
+          id: 'tvbox-live:${source.name}:${group.name}:${channel.name}',
+          sourceId: 'tvbox',
+          sourceName: source.name,
+          type: SourceType.local,
+          title: channel.name,
+          uri: channel.urls.first,
+          folderTitle: group.name,
+          groupPath: 'live/${source.name}/${group.name}',
+        ),
+    ];
+    final current =
+        items.where((item) => item.title == selected.name).firstOrNull;
+    if (current == null || !mounted) return;
+
+    Future<RemotePlayback> resolve(MediaItem item) async {
+      final channel =
+          group.channels.where((value) => value.name == item.title).first;
+      final raw = selectedUrls[channel.name] ?? channel.urls.first;
+      final parsed = _splitTvboxLiveUrl(raw);
+      return RemotePlayback(
+        parsed.$1,
+        {...source.headers, ...channel.headers, ...parsed.$2},
+        mimeType: _tvboxLooksHls(parsed.$1) ? 'application/x-mpegURL' : null,
+      );
+    }
+
+    final playback = await resolve(current);
+    if (!mounted) return;
+    openPlayer(context, widget.store, current,
+        playback: playback, episodes: items, playbackResolver: resolve);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final channels = groups.isEmpty
+        ? const <TvboxLiveChannel>[]
+        : groups[groupIndex].channels;
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('TVBox 直播'),
+        actions: [
+          IconButton(onPressed: _load, icon: const Icon(Icons.refresh)),
+        ],
+      ),
+      body: Column(
+        children: [
+          if (widget.sources.length > 1)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: DropdownButtonFormField<TvboxLiveSource>(
+                initialValue: source,
+                decoration: const InputDecoration(
+                    labelText: '直播源', border: OutlineInputBorder()),
+                items: [
+                  for (final item in widget.sources)
+                    DropdownMenuItem(value: item, child: Text(item.name)),
+                ],
+                onChanged: (value) {
+                  if (value == null) return;
+                  source = value;
+                  unawaited(_load());
+                },
+              ),
+            ),
+          if (groups.isNotEmpty)
+            SizedBox(
+              height: 48,
+              child: ListView.separated(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                scrollDirection: Axis.horizontal,
+                itemCount: groups.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 6),
+                itemBuilder: (_, index) => ChoiceChip(
+                  label: Text(groups[index].name),
+                  selected: groupIndex == index,
+                  onSelected: (_) => setState(() => groupIndex = index),
+                ),
+              ),
+            ),
+          if (loading) const LinearProgressIndicator(),
+          Expanded(
+            child: error != null
+                ? EmptyState(
+                    icon: Icons.cloud_off_outlined,
+                    title: '直播源加载失败',
+                    message: error!,
+                    action:
+                        FilledButton(onPressed: _load, child: const Text('重试')),
+                  )
+                : ListView.separated(
+                    padding: const EdgeInsets.all(12),
+                    itemCount: channels.length,
+                    separatorBuilder: (_, __) => const Divider(height: 1),
+                    itemBuilder: (_, index) {
+                      final channel = channels[index];
+                      return ListTile(
+                        leading: const Icon(Icons.live_tv_outlined),
+                        title: Text(channel.name),
+                        subtitle: channel.urls.length > 1
+                            ? Text('${channel.urls.length} 条线路')
+                            : null,
+                        trailing: const Icon(Icons.play_arrow),
+                        onTap: () => _open(channel),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
     );
   }
 }

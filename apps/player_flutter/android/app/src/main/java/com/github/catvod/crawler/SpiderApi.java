@@ -36,7 +36,7 @@ public class SpiderApi {
     public SpiderApi() { this.context = null; }
 
     public SpiderApi(Context context) {
-        this.context = context == null ? null : context.getApplicationContext();
+        this.context = context;
     }
 
     public String getAddress(boolean local) {

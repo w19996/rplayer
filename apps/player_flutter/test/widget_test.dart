@@ -30,6 +30,24 @@ void main() {
     }
   });
 
+  test('changing TVBox source clears the old native cache once', () async {
+    var clearCalls = 0;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(appChannel, (call) async {
+      if (call.method == 'appFilesDir') return testAppFilesDir.path;
+      if (call.method == 'tvboxClearCache') clearCalls++;
+      return null;
+    });
+    final store = AppStore();
+
+    await store.setTvboxApiUrl('https://example.com/one.json');
+    await store.setTvboxApiUrl('https://example.com/one.json');
+    expect(clearCalls, 0);
+
+    await store.setTvboxApiUrl('https://example.com/two.json');
+    expect(clearCalls, 1);
+  });
+
   test('media library groups videos by folder', () {
     const sourceId = 'source';
     const items = [

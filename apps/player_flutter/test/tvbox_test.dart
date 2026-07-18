@@ -10,6 +10,29 @@ void main() {
     expect(tvboxSearchNameMatches('功夫足球', '功夫 女足'), isFalse);
   });
 
+  test('keeps Spider action cards without video ids', () {
+    final action = TvboxClient(const TvboxSite(
+      key: 'cloud',
+      name: '网盘',
+      type: 3,
+      apiUrl: 'csp_Cloud',
+    ))
+        .parseVideos(jsonEncode({
+          'list': [
+            {'vod_name': '登录网盘', 'action': 'login'},
+          ],
+        }))
+        .single;
+
+    expect(action.id, isEmpty);
+    expect(action.action, 'login');
+    expect(tvboxVideoOpenTarget(action), TvboxVideoOpenTarget.action);
+    expect(
+      tvboxVideoOpenTarget(const TvboxVideo(id: 'movie-1', name: '电影')),
+      TvboxVideoOpenTarget.detail,
+    );
+  });
+
   test('parses TVBox image headers', () {
     final request = tvboxImageRequest(
         'https://img.example/poster.jpg@Headers=%7B%22X-Test%22%3A%221%22%7D@Referer=https://example.com/@User-Agent=TVBox');
@@ -95,6 +118,7 @@ void main() {
           'url': 'https://cdn.example/video.m3u8',
           'format': 'application/dash+xml',
           'header': {'Referer': 'https://example.com/'},
+          'danmaku': 'https://cdn.example/video.xml',
         }));
       } else if (request.uri.queryParameters['ids'] == 'movie-1') {
         request.response.write(jsonEncode({
@@ -138,6 +162,7 @@ void main() {
       expect(playback.uri, 'https://cdn.example/video.m3u8');
       expect(playback.mimeType, 'application/dash+xml');
       expect(playback.headers['Referer'], 'https://example.com/');
+      expect(playback.danmaku, 'https://cdn.example/video.xml');
     } finally {
       await server.close(force: true);
       await subscription.cancel();
@@ -168,6 +193,37 @@ void main() {
       await server.close(force: true);
       await subscription.cancel();
     }
+  });
+
+  test('parses TVBox live config, M3U and TXT channel lists', () {
+    final lives = tvboxLivesFromConfig('https://example.com/config/main.json', {
+      'lives': [
+        {
+          'name': '主直播',
+          'url': '../live.m3u',
+          'ua': 'TVBox',
+          'header': {'Referer': 'https://example.com/'},
+        },
+      ],
+    });
+    expect(lives.single.url, 'https://example.com/live.m3u');
+    expect(lives.single.headers['User-Agent'], 'TVBox');
+
+    final m3u = parseTvboxLiveGroups('''#EXTM3U
+#EXTINF:-1 group-title="央视" tvg-logo="cctv.png",CCTV-1
+https://live.example/cctv1.m3u8|User-Agent=TVBox&Referer=https%3A%2F%2Fexample.com%2F
+#EXTINF:-1 group-title="央视",CCTV-1
+https://backup.example/cctv1.m3u8
+''');
+    expect(m3u.single.name, '央视');
+    expect(m3u.single.channels.single.urls, hasLength(2));
+    expect(m3u.single.channels.single.headers['User-Agent'], 'TVBox');
+
+    final txt = parseTvboxLiveGroups('''地方台,#genre#
+测试台,https://live.example/1.m3u8#https://live.example/2.m3u8
+''');
+    expect(txt.single.name, '地方台');
+    expect(txt.single.channels.single.urls, hasLength(2));
   });
 
   test('parses type 0 XML and skips failed sites', () async {

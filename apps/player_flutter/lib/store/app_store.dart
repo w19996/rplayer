@@ -461,7 +461,14 @@ class AppStore extends ChangeNotifier {
 
   Future<void> setTvboxApiUrl(String value) async {
     final next = value.trim();
-    if (next != tvboxApiUrl) tvboxTrustedApiUrl = '';
+    if (tvboxApiUrl.isNotEmpty && next != tvboxApiUrl) {
+      try {
+        await appChannel.invokeMethod<void>('tvboxClearCache');
+      } on MissingPluginException {
+        // TVBox JAR cache only exists on Android.
+      }
+      tvboxTrustedApiUrl = '';
+    }
     tvboxApiUrl = next;
     notifyListeners();
     await saveSettings();

@@ -38,7 +38,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class TvboxBridge(private val activity: Activity) {
     private val main = Handler(Looper.getMainLooper())
     private val executor = Executors.newFixedThreadPool(18)
-    private val engine = TvboxJarEngine(activity.applicationContext)
+    private val engine = TvboxJarEngine(activity)
 
     fun handle(call: MethodCall, result: MethodChannel.Result) {
         val arguments = call.arguments as? Map<*, *>
@@ -59,6 +59,18 @@ class TvboxBridge(private val activity: Activity) {
         }
     }
 
+    fun clearCache(result: MethodChannel.Result) {
+        executor.execute {
+            runCatching { engine.clearCache() }
+                .onSuccess { main.post { result.success(null) } }
+                .onFailure { error ->
+                    main.post {
+                        result.error("TVBOX_CACHE", error.message ?: "TVBox 缓存清理失败", null)
+                    }
+                }
+        }
+    }
+
     private fun finishPlayer(response: String, result: MethodChannel.Result) {
         try {
             val json = JSONObject(response)
@@ -68,6 +80,9 @@ class TvboxBridge(private val activity: Activity) {
             if (url.startsWith("video://")) {
                 url = url.removePrefix("video://")
                 json.put("parse", 1)
+            } else if (url.startsWith("tvbox-drive://")) {
+                url = url.removePrefix("tvbox-drive://")
+                json.put("parse", 0)
             } else if (url.startsWith("proxy://")) {
                 url = engine.localUrl(url)
                 json.put("parse", 0)
@@ -183,8 +198,10 @@ private class TvboxJarEngine(private val context: Context) {
     private val playbackHeaders = ConcurrentHashMap<String, Map<String, String>>()
     private val protectedInit = ProtectedInitJar(context)
     private val proxyServer = TvboxProxyServer(this).also { it.start() }
-    @Volatile private var recentJar = ""
-    @Volatile private var recentSpider: Spider? = null
+    // ponytail: one active proxy target matches rplayer's single active player;
+    // key proxy sessions if concurrent playback is ever added.
+    @Volatile private var playbackJar = ""
+    @Volatile private var playbackSpider: Spider? = null
 
     fun call(arguments: Map<*, *>): String {
         val action = arguments["action"]?.toString().orEmpty()
@@ -208,10 +225,7 @@ private class TvboxJarEngine(private val context: Context) {
             value.init(context, ext)
             value
         }
-        recentJar = jarUrl
-        recentSpider = spider
-
-        return when (action) {
+        val response = when (action) {
             "home" -> spider.homeContent(true)
             "category" -> spider.categoryContent(
                 arguments["typeId"]?.toString().orEmpty(),
@@ -230,8 +244,15 @@ private class TvboxJarEngine(private val context: Context) {
                 arguments["id"]?.toString().orEmpty(),
                 emptyList(),
             )
+            "action" -> spider.action(arguments["value"]?.toString().orEmpty()).orEmpty()
             else -> throw IllegalArgumentException("未知 Spider 操作：$action")
-        }.ifBlank { throw IllegalStateException("Spider 未返回数据") }
+        }
+        if (action == "player") {
+            playbackJar = jarUrl
+            playbackSpider = spider
+        }
+        return if (action == "action") response.ifBlank { "{}" }
+        else response.ifBlank { throw IllegalStateException("Spider 未返回数据") }
     }
 
     private fun loadJar(url: String, expectedMd5: String): LoadedJar = loaded.computeIfAbsent(url) {
@@ -286,9 +307,9 @@ private class TvboxJarEngine(private val context: Context) {
     }
 
     fun proxy(params: Map<String, String>): Array<Any?>? {
-        val method = loaded[recentJar]?.proxy
+        val method = loaded[playbackJar]?.proxy
         val result = runCatching { method?.invoke(null, params) as? Array<Any?> }.getOrNull()
-        return result ?: runCatching { recentSpider?.proxy(params) }.getOrNull()
+        return result ?: runCatching { playbackSpider?.proxy(params) }.getOrNull()
     }
 
     fun localUrl(url: String): String = if (url.startsWith("proxy://")) {
@@ -317,17 +338,35 @@ private class TvboxJarEngine(private val context: Context) {
 
     fun close() {
         proxyServer.stop()
+        clearRuntime()
+    }
+
+    fun clearCache() {
+        clearRuntime()
+        tvboxDeleteDirectory(File(context.filesDir, "tvbox/jars"))
+        tvboxDeleteDirectory(File(context.codeCacheDir, "tvbox"))
+    }
+
+    private fun clearRuntime() {
         spiders.values.forEach { runCatching { it.destroy() } }
         spiders.clear()
         loaded.clear()
         playbackHeaders.clear()
         protectedInit.clear()
+        playbackJar = ""
+        playbackSpider = null
     }
 
     private fun md5(file: File) = digest("MD5", file.readBytes())
     private fun sha256(value: String) = digest("SHA-256", value.toByteArray())
     private fun digest(algorithm: String, bytes: ByteArray) =
         MessageDigest.getInstance(algorithm).digest(bytes).joinToString("") { "%02x".format(it) }
+}
+
+internal fun tvboxDeleteDirectory(directory: File) {
+    if (directory.exists() && !directory.deleteRecursively()) {
+        throw IllegalStateException("无法删除 TVBox 缓存：${directory.absolutePath}")
+    }
 }
 
 private class TvboxProxyServer(private val engine: TvboxJarEngine) : NanoHTTPD(PORT) {
@@ -411,7 +450,7 @@ private class TvboxProxyServer(private val engine: TvboxJarEngine) : NanoHTTPD(P
             when {
                 line.isBlank() -> line
                 line.startsWith("#") -> uri.replace(line) { match ->
-                    "URI=\"${rewrite(match.groupValues[1])}\""
+                    "URI=\"${rewrite(match.groupValues[1], mediaSegment = true)}\""
                 }
                 else -> rewrite(line.trim(), mediaSegment = true)
             }

@@ -5,8 +5,22 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.nio.file.Files
 
 class TvboxBridgeTest {
+    @Test
+    fun deletesTvboxCacheDirectory() {
+        val directory = Files.createTempDirectory("tvbox-cache-test").toFile()
+        directory.resolve("nested/spider.jar").also {
+            it.parentFile.mkdirs()
+            it.writeText("jar")
+        }
+
+        tvboxDeleteDirectory(directory)
+
+        assertFalse(directory.exists())
+    }
+
     @Test
     fun detectsM3u8UrlsWithoutM3u8Suffix() {
         assertTrue(tvboxIsM3u8Url("https://api.example/getm3u8?vid=1"))

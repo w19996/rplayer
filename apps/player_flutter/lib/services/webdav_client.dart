@@ -13,11 +13,12 @@ RemoteFileClient remoteClientForSource(MediaSourceConfig source) =>
         : WebdavClient.fromSource(source);
 
 class RemotePlayback {
-  const RemotePlayback(this.uri, this.headers, {this.mimeType});
+  const RemotePlayback(this.uri, this.headers, {this.mimeType, this.danmaku});
 
   final String uri;
   final Map<String, String> headers;
   final String? mimeType;
+  final String? danmaku;
 }
 
 Future<RemotePlayback> playbackForItem(AppStore store, MediaItem item) async {

@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+use url::Url;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DanmuMatchRequest {
@@ -107,6 +108,8 @@ struct DanmuLoadInput {
     episode: Option<u16>,
     episode_id: Option<String>,
     episode_title: Option<String>,
+    source: Option<String>,
+    headers: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -219,6 +222,14 @@ async fn load_danmu_session(input: DanmuLoadInput) -> Result<DanmuLoadOutput> {
         .user_agent("player_flutter/0.1")
         .build()?;
     let base_url = input.base_url.trim_end_matches('/').to_string();
+    if let Some(source) = input
+        .source
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return load_source_danmu(&client, source, input.headers.as_ref()).await;
+    }
     logs.push(format!(
         "rust danmu load start: base={} title={} S{:?} E{:?} candidates={:?}",
         base_url, input.title, input.season, input.episode, input.file_names
@@ -440,6 +451,85 @@ async fn load_danmu_session(input: DanmuLoadInput) -> Result<DanmuLoadOutput> {
     Ok(DanmuLoadOutput {
         session_id: 0,
         count: 0,
+        matched_episode_id: String::new(),
+        matched_title: String::new(),
+        matched_episode: String::new(),
+        logs,
+    })
+}
+
+async fn load_source_danmu(
+    client: &Client,
+    source: &str,
+    headers: Option<&HashMap<String, String>>,
+) -> Result<DanmuLoadOutput> {
+    let mut logs = Vec::new();
+    let body = if source.starts_with("http://") || source.starts_with("https://") {
+        logs.push(format!("rust tvbox danmu request: {}", source));
+        let mut request = client.get(source);
+        if let Some(headers) = headers {
+            for (name, value) in headers {
+                request = request.header(name, value);
+            }
+        }
+        let response = request.send().await?;
+        let status = response.status();
+        let body = response.text().await?;
+        logs.push(format!(
+            "rust tvbox danmu response: status={} body={}",
+            status.as_u16(),
+            short_body(&body)
+        ));
+        if !status.is_success() {
+            return Err(anyhow!("TVBox danmu HTTP {}", status.as_u16()));
+        }
+        body
+    } else if source.starts_with("file:") {
+        let path = Url::parse(source)
+            .map_err(anyhow::Error::from)?
+            .to_file_path()
+            .map_err(|_| anyhow!("invalid TVBox danmu file URI"))?;
+        logs.push(format!("rust tvbox danmu file: {}", path.display()));
+        std::fs::read_to_string(path)?
+    } else {
+        logs.push(format!(
+            "rust tvbox danmu inline xml: length={}",
+            source.len()
+        ));
+        source.to_string()
+    };
+    let events = parse_bilibili_xml_events(&body)?;
+    let count = events.len();
+    if count == 0 {
+        logs.push("rust tvbox danmu empty after parse".to_string());
+        return Ok(DanmuLoadOutput {
+            session_id: 0,
+            count: 0,
+            matched_episode_id: String::new(),
+            matched_title: String::new(),
+            matched_episode: String::new(),
+            logs,
+        });
+    }
+    let session_id = NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed);
+    SESSIONS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_| anyhow!("danmu session lock poisoned"))?
+        .insert(
+            session_id,
+            DanmuSession {
+                events,
+                layout: None,
+            },
+        );
+    logs.push(format!(
+        "rust tvbox danmu session loaded: session={} count={}",
+        session_id, count
+    ));
+    Ok(DanmuLoadOutput {
+        session_id,
+        count,
         matched_episode_id: String::new(),
         matched_title: String::new(),
         matched_episode: String::new(),
@@ -684,6 +774,41 @@ fn parse_comment_events(body: &str) -> Result<Vec<DanmuEvent>> {
     Ok(events)
 }
 
+fn parse_bilibili_xml_events(body: &str) -> Result<Vec<DanmuEvent>> {
+    let document = roxmltree::Document::parse(body)?;
+    let mut events = Vec::new();
+    for node in document.descendants().filter(|node| node.has_tag_name("d")) {
+        let Some(param) = node.attribute("p") else {
+            continue;
+        };
+        let parts = param.split(',').collect::<Vec<_>>();
+        if parts.len() < 4 {
+            continue;
+        }
+        let seconds = parts[0].trim().parse::<f64>().unwrap_or(0.0);
+        let mode_value = parts[1].trim().parse::<u8>().unwrap_or(1);
+        let color = parts[3].trim().parse::<u32>().unwrap_or(0x00ff_ffff);
+        let text = node.text().unwrap_or("").trim().to_string();
+        if text.is_empty() {
+            continue;
+        }
+        events.push(DanmuEvent {
+            time_ms: (seconds * 1000.0).round().max(0.0) as u64,
+            mode: match mode_value {
+                4 => DanmuMode::Bottom,
+                5 => DanmuMode::Top,
+                1 | 6 => DanmuMode::Scroll,
+                _ => DanmuMode::Scroll,
+            },
+            color,
+            text,
+            source: Some("tvbox".to_string()),
+        });
+    }
+    events.sort_by_key(|event| event.time_ms);
+    Ok(events)
+}
+
 fn render_item(
     id: usize,
     event: &DanmuEvent,
@@ -845,5 +970,26 @@ fn short_body(body: &str) -> String {
         compact
     } else {
         compact.chars().take(800).collect::<String>() + "..."
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_bilibili_xml_events, DanmuMode};
+
+    #[test]
+    fn parses_tvbox_bilibili_xml_danmu() {
+        let events = parse_bilibili_xml_events(
+            r#"<?xml version="1.0"?><i><d p="2.5,1,25,16711680,0,0,0,0">滚动 &amp; 测试</d><d p="1,5,25,255,0,0,0,0">顶部</d></i>"#,
+        )
+        .unwrap();
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].time_ms, 1000);
+        assert!(matches!(events[0].mode, DanmuMode::Top));
+        assert_eq!(events[0].color, 255);
+        assert_eq!(events[1].text, "滚动 & 测试");
+        assert_eq!(events[1].color, 16_711_680);
+        assert_eq!(events[1].source.as_deref(), Some("tvbox"));
     }
 }

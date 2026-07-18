@@ -65,6 +65,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   String media3Subtitle = '';
   final Map<String, bool> dolbyVisionCache = {};
   late MediaItem currentItem = widget.item;
+  RemotePlayback? currentResolvedPlayback;
   final subscriptions = <StreamSubscription<dynamic>>[];
   Timer? statusTimer;
   Timer? loadingHideTimer;
@@ -244,6 +245,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   }
 
   Future<void> loadDanmuForCurrentItem() async {
+    if (currentItem.sourceId == 'tvbox') {
+      await loadTvboxDanmuForCurrentItem();
+      return;
+    }
     final config = widget.store.danmuConfig;
     final file = currentDbFile;
     final title = file?.showTitle?.trim().isNotEmpty == true
@@ -314,6 +319,63 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     }
   }
 
+  Future<void> loadTvboxDanmuForCurrentItem() async {
+    final playback = currentResolvedPlayback;
+    final source = playback?.danmaku?.trim() ?? '';
+    final loadId = ++danmuLoadId;
+    if (source.isEmpty) {
+      clearDanmuSession();
+      setStateIfMounted(() {
+        danmuLoading = false;
+        danmuTotalCount = 0;
+        danmuStatus = playback == null ? '正在等待源弹幕信息' : '此源未提供弹幕';
+      });
+      clearDanmuOverlay();
+      return;
+    }
+    setStateIfMounted(() {
+      danmuLoading = true;
+      danmuStatus = '正在加载 TVBox 源弹幕...';
+    });
+    widget.store.addDiagnosticLog(
+      'tvbox danmu load: item=${currentItem.id}, source=${source.startsWith('http') ? source : 'inline xml (${source.length})'}',
+      category: 'danmu',
+    );
+    try {
+      final result = await RustCoreService.instance.danmuLoadAsync({
+        'base_url': '',
+        'title': '',
+        'file_names': const <String>[],
+        'source': source,
+        'headers': playback?.headers ?? const <String, String>{},
+      });
+      if (!mounted || loadId != danmuLoadId) return;
+      for (final line in result.logs) {
+        widget.store.addDiagnosticLog(line, category: 'danmu');
+      }
+      clearDanmuSession();
+      setState(() {
+        danmuSessionId = result.sessionId;
+        danmuTotalCount = result.count;
+        danmuStatus = result.count == 0 ? '源弹幕为空' : '已加载 ${result.count} 条源弹幕';
+        danmuLoading = false;
+      });
+      clearDanmuOverlay();
+      if (ready) refreshVisibleDanmu(force: true);
+    } catch (error) {
+      if (!mounted || loadId != danmuLoadId) return;
+      widget.store.addDiagnosticLog('tvbox danmu load failed: $error',
+          category: 'danmu');
+      clearDanmuSession();
+      setState(() {
+        danmuTotalCount = 0;
+        danmuStatus = '源弹幕加载失败：$error';
+        danmuLoading = false;
+      });
+      clearDanmuOverlay();
+    }
+  }
+
   void clearDanmuSession() {
     final sessionId = danmuSessionId;
     if (sessionId <= 0) return;
@@ -346,7 +408,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     final config = widget.store.danmuConfig;
     return ready &&
         danmuSessionId > 0 &&
-        config.available &&
+        (currentItem.sourceId == 'tvbox' || config.available) &&
         config.visible &&
         danmuTotalCount > 0;
   }
@@ -593,6 +655,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         await appChannel.invokeMethod<void>('media3Release');
       }
       if (!mounted || attempt != openAttempt) return;
+      currentResolvedPlayback = playback;
+      if (isTvboxPlayback) unawaited(loadDanmuForCurrentItem());
       setState(() {
         usingMedia3 = Platform.isAndroid &&
             shouldUseMedia3OnAndroid(
@@ -1830,6 +1894,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
 
   void openDanmuSearchPanel() {
     if (controlsLocked) return;
+    if (currentItem.sourceId == 'tvbox') {
+      setStateIfMounted(() => danmuStatus = 'TVBox 内容仅使用源自带弹幕');
+      return;
+    }
     final config = widget.store.danmuConfig;
     if (!config.available) {
       setStateIfMounted(() => danmuStatus = '请先在我的页面启用并配置弹幕设置');
@@ -2344,6 +2412,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     landscapeSensorTimer?.cancel();
     setStateIfMounted(() {
       currentItem = item;
+      currentResolvedPlayback = null;
       position = saved > 0 ? Duration(milliseconds: saved) : Duration.zero;
       duration = rememberedDuration > 0
           ? Duration(milliseconds: rememberedDuration)
@@ -2827,13 +2896,15 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
                           )),
                         ),
                         const SizedBox(height: 14),
-                        OutlinedButton.icon(
-                          onPressed:
-                              config.available ? openDanmuSearchPanel : null,
-                          icon: const Icon(Icons.search),
-                          label: const Text('搜索弹幕'),
-                        ),
-                        const SizedBox(height: 10),
+                        if (currentItem.sourceId != 'tvbox') ...[
+                          OutlinedButton.icon(
+                            onPressed:
+                                config.available ? openDanmuSearchPanel : null,
+                            icon: const Icon(Icons.search),
+                            label: const Text('搜索弹幕'),
+                          ),
+                          const SizedBox(height: 10),
+                        ],
                         FilledButton.icon(
                           onPressed:
                               danmuLoading ? null : loadDanmuForCurrentItem,
@@ -2845,7 +2916,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
                                       CircularProgressIndicator(strokeWidth: 2),
                                 )
                               : const Icon(Icons.refresh),
-                          label: Text(danmuLoading ? '加载中' : '重新匹配弹幕'),
+                          label: Text(danmuLoading
+                              ? '加载中'
+                              : currentItem.sourceId == 'tvbox'
+                                  ? '重新加载源弹幕'
+                                  : '重新匹配弹幕'),
                         ),
                       ],
                     ),
@@ -3143,7 +3218,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         child: ValueListenableBuilder<List<RustDanmuRenderItem>>(
           valueListenable: danmuOverlayItems,
           builder: (context, items, _) {
-            if (!config.available || !config.visible || items.isEmpty) {
+            if ((currentItem.sourceId != 'tvbox' && !config.available) ||
+                !config.visible ||
+                items.isEmpty) {
               return const SizedBox.shrink();
             }
             return ClipRect(
@@ -3155,21 +3232,15 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
                     return const SizedBox.shrink();
                   }
                   return RepaintBoundary(
-                    child: Stack(
-                      clipBehavior: Clip.none,
-                      children: [
-                        for (final item in items)
-                          _DanmuItemView(
-                            key: ValueKey(
-                              '${item.id}:${item.timeMs}:${item.mode}:${item.text}:${config.fontSize}:${config.topPadding}',
-                            ),
-                            item: item,
-                            config: config,
-                            viewportWidth: width,
-                            ticker: danmuTicker,
-                            positionProvider: () => currentDanmuPosition,
-                          ),
-                      ],
+                    child: CustomPaint(
+                      size: Size(width, height),
+                      painter: _DanmuOverlayPainter(
+                        items: items,
+                        config: config,
+                        viewportWidth: width,
+                        ticker: danmuTicker,
+                        positionProvider: () => currentDanmuPosition,
+                      ),
                     ),
                   );
                 },
@@ -3676,81 +3747,78 @@ class _DanmuPanelSlider extends StatelessWidget {
   }
 }
 
-class _DanmuItemView extends StatelessWidget {
-  const _DanmuItemView({
-    required this.item,
+class _DanmuOverlayPainter extends CustomPainter {
+  _DanmuOverlayPainter({
+    required this.items,
     required this.config,
     required this.viewportWidth,
     required this.ticker,
     required this.positionProvider,
-    super.key,
-  });
+  })  : layouts = {
+          for (final value in items)
+            value.id: TextPainter(
+              text: TextSpan(
+                text: value.text,
+                style: TextStyle(
+                  color: Color(0xFF000000 | value.color).withValues(
+                    alpha: config.opacity.clamp(0.0, 1.0).toDouble(),
+                  ),
+                  fontSize: config.fontSize,
+                  fontWeight: FontWeight.w500,
+                  shadows: const [
+                    Shadow(
+                      color: Colors.black87,
+                      blurRadius: 2,
+                      offset: Offset(0, 1),
+                    ),
+                  ],
+                ),
+              ),
+              maxLines: 1,
+              textDirection: TextDirection.ltr,
+              textScaler: TextScaler.noScaling,
+            )..layout(),
+        },
+        super(repaint: ticker);
 
-  final RustDanmuRenderItem item;
+  final List<RustDanmuRenderItem> items;
   final DanmuConfig config;
   final double viewportWidth;
   final Listenable ticker;
   final Duration Function() positionProvider;
+  final Map<int, TextPainter> layouts;
 
   @override
-  Widget build(BuildContext context) {
-    final child = RepaintBoundary(
-      child: Text(
-        item.text,
-        maxLines: 1,
-        softWrap: false,
-        overflow: TextOverflow.visible,
-        textScaler: TextScaler.noScaling,
-        style: TextStyle(
-          color: Color(0xFF000000 | item.color).withValues(
-            alpha: config.opacity.clamp(0.0, 1.0).toDouble(),
-          ),
-          fontSize: config.fontSize,
-          fontWeight: FontWeight.w500,
-          shadows: const [
-            Shadow(
-              color: Colors.black87,
-              blurRadius: 2,
-              offset: Offset(0, 1),
-            ),
-          ],
-        ),
-      ),
-    );
-
-    return Positioned(
-      left: 0,
-      top: item.top + config.topPadding,
-      child: AnimatedBuilder(
-        animation: ticker,
-        child: child,
-        builder: (context, child) {
-          final left = itemLeft();
-          if (left == null) return const SizedBox.shrink();
-          return Transform.translate(
-            offset: Offset(left, 0),
-            child: child,
-          );
-        },
-      ),
-    );
+  void paint(Canvas canvas, Size size) {
+    for (final value in items) {
+      final left = itemLeft(value);
+      final layout = layouts[value.id];
+      if (left == null || layout == null) continue;
+      layout.paint(canvas, Offset(left, value.top + config.topPadding));
+    }
   }
 
-  double? itemLeft() {
+  double? itemLeft(RustDanmuRenderItem value) {
     final effectiveMs = positionProvider().inMilliseconds + config.offsetMs;
-    final elapsedMs = effectiveMs - item.timeMs;
-    if (item.mode == 4 || item.mode == 5) {
+    final elapsedMs = effectiveMs - value.timeMs;
+    if (value.mode == 4 || value.mode == 5) {
       if (elapsedMs < 0 ||
           elapsedMs > _VideoPlayerPageState._danmuFixedVisibleMs) {
         return null;
       }
-      return item.left;
+      return value.left;
     }
     final speed = config.speed.clamp(0.5, 2.0).toDouble();
     final travelMs = (_VideoPlayerPageState._danmuBaseTravelMs / speed).round();
     if (elapsedMs < 0 || elapsedMs > travelMs) return null;
     final progress = elapsedMs / travelMs;
-    final width = item.textWidth <= 0 ? viewportWidth * 0.5 : item.textWidth;
+    final width = value.textWidth <= 0 ? viewportWidth * 0.5 : value.textWidth;
     return viewportWidth - progress * (viewportWidth + width);
   }
+
+  @override
+  bool shouldRepaint(covariant _DanmuOverlayPainter oldDelegate) =>
+      oldDelegate.items != items ||
+      oldDelegate.config != config ||
+      oldDelegate.viewportWidth != viewportWidth;
 }
