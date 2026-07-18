@@ -184,18 +184,14 @@ class RustCoreService {
     return Isolate.run(() => _rustDanmuLoadWorker(args));
   }
 
-  List<RustDanmuRenderItem> danmuVisible(Map<String, dynamic> input) {
+  RustDanmuFrame danmuVisible(Map<String, dynamic> input) {
     _ensureAvailable();
     if (_danmuVisibleJson == null) {
       throw StateError('Rust danmu is not available: missing visible symbol');
     }
     final text = _callString(_danmuVisibleJson, [jsonEncode(input)]);
     final data = jsonDecode(text) as Map<String, dynamic>;
-    final items = data['items'] as List<dynamic>? ?? const [];
-    return items
-        .map((value) =>
-            RustDanmuRenderItem.fromJson(value as Map<String, dynamic>))
-        .toList(growable: false);
+    return RustDanmuFrame.fromJson(data);
   }
 
   void danmuClear(int sessionId) {
@@ -1080,6 +1076,25 @@ class RustDanmuRenderItem {
       startMs: (json['start_ms'] as num?)?.toInt() ?? 0,
       endMs: (json['end_ms'] as num?)?.toInt() ?? 0,
       velocityX: (json['velocity_x'] as num?)?.toDouble() ?? 0,
+    );
+  }
+}
+
+class RustDanmuFrame {
+  const RustDanmuFrame({required this.items, required this.nextRefreshMs});
+
+  final List<RustDanmuRenderItem> items;
+  final int nextRefreshMs;
+
+  factory RustDanmuFrame.fromJson(Map<String, dynamic> json) {
+    final items = json['items'] as List<dynamic>? ?? const [];
+    return RustDanmuFrame(
+      items: items
+          .map((value) =>
+              RustDanmuRenderItem.fromJson(value as Map<String, dynamic>))
+          .toList(growable: false),
+      nextRefreshMs: ((json['next_refresh_ms'] as num?)?.toInt() ?? 1500)
+          .clamp(100, 60000),
     );
   }
 }

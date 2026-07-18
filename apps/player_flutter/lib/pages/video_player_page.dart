@@ -48,9 +48,6 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     with SingleTickerProviderStateMixin {
   static const Duration _danmuPositionSyncThreshold =
       Duration(milliseconds: 120);
-  static const Duration _danmuVisibleRefreshInterval =
-      Duration(milliseconds: 1500);
-  static const int _danmuMaxVisibleItems = 120;
   static const double _verticalControlSensitivity = 1.35;
   static const double _verticalControlEdgeDeadZoneRatio = 0.14;
   static const List<double> _playbackRates = [
@@ -213,7 +210,6 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     unawaited(setNativePlaybackPipEnabled(true));
     unawaited(setNativePlaybackPipPlaybackState(playing));
     startStatusTimer();
-    startDanmuRenderTimer();
     unawaited(loadCurrentLibraryDetail());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) init();
@@ -448,9 +444,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     syncDanmuTickerState();
   }
 
-  void startDanmuRenderTimer() {
+  void scheduleDanmuRefresh(Duration delay) {
     danmuRenderTimer?.cancel();
-    danmuRenderTimer = Timer.periodic(_danmuVisibleRefreshInterval, (_) {
+    danmuRenderTimer = Timer(delay, () {
+      danmuRenderTimer = null;
       if (shouldRefreshDanmuOverlay) refreshVisibleDanmu();
     });
   }
@@ -476,6 +473,12 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     } else if (danmuTicker.isAnimating) {
       danmuTicker.stop(canceled: false);
     }
+    if (shouldRefreshDanmuOverlay) {
+      if (danmuRenderTimer == null) scheduleDanmuRefresh(Duration.zero);
+    } else {
+      danmuRenderTimer?.cancel();
+      danmuRenderTimer = null;
+    }
   }
 
   void syncDanmuClock(Duration value) {
@@ -499,8 +502,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       return danmuClockPosition;
     }
     final elapsed = DateTime.now().difference(danmuClockStamp);
-    final milliseconds =
-        danmuClockPosition.inMilliseconds + elapsed.inMilliseconds;
+    final milliseconds = danmuClockPosition.inMilliseconds +
+        (elapsed.inMilliseconds * playbackRate).round();
     final maxMilliseconds = duration.inMilliseconds;
     if (maxMilliseconds > 0) {
       return Duration(
@@ -521,18 +524,19 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     final size = MediaQuery.sizeOf(context);
     final renderPosition = currentDanmuPosition;
     try {
-      final items = RustCoreService.instance.danmuVisible({
+      final frame = RustCoreService.instance.danmuVisible({
         'session_id': danmuSessionId,
         'position_ms': renderPosition.inMilliseconds,
         'width': size.width,
         'height': size.height,
         'font_size': config.fontSize,
         'speed': config.speed,
+        'playback_rate': playbackRate,
         'offset_ms': config.offsetMs,
-        'max_items': _danmuMaxVisibleItems,
         'max_lines': config.maxLines,
         'top_padding': 0.0,
       });
+      final items = frame.items;
       if (!sameDanmuItems(danmuOverlayItems.value, items)) {
         final visibleIds = items.map((item) => item.id).toSet();
         danmuBitmaps.removeWhere((id, bitmap) {
@@ -542,10 +546,12 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         });
         danmuOverlayItems.value = items;
       }
+      scheduleDanmuRefresh(Duration(milliseconds: frame.nextRefreshMs));
       syncDanmuTickerState();
     } catch (error) {
       widget.store
           .addDiagnosticLog('danmu visible failed: $error', category: 'danmu');
+      scheduleDanmuRefresh(const Duration(seconds: 1));
       syncDanmuTickerState();
     }
   }
@@ -639,8 +645,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         playbackVolume = value.clamp(0, 100).toDouble();
       }))
       ..add(player.stream.rate.listen((value) {
+        final anchor = currentDanmuPosition;
         playbackRate = value;
+        syncDanmuClock(anchor);
         notifyControlsChanged();
+        if (shouldRefreshDanmuOverlay) refreshVisibleDanmu(force: true);
       }))
       ..add(player.stream.width.listen((value) {
         videoWidth = value;
@@ -1825,8 +1834,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   }
 
   Future<void> setPlaybackRate(double rate) async {
+    final anchor = currentDanmuPosition;
     setStateIfMounted(() => playbackRate = rate);
+    syncDanmuClock(anchor);
     await setPlaybackSpeed(rate);
+    if (shouldRefreshDanmuOverlay) refreshVisibleDanmu(force: true);
     scheduleControlsAutoHide();
   }
 

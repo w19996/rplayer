@@ -120,6 +120,7 @@ struct DanmuVisibleInput {
     height: f64,
     font_size: f64,
     speed: f64,
+    playback_rate: Option<f64>,
     offset_ms: i64,
     max_lines: Option<usize>,
     top_padding: Option<f64>,
@@ -737,15 +738,18 @@ fn visible_danmu(session: &mut DanmuSession, input: &DanmuVisibleInput) -> Danmu
         }
     }
 
+    let playback_rate = input.playback_rate.unwrap_or(1.0).clamp(0.25, 2.0);
     let next_refresh_ms = session
         .events
         .iter()
         .enumerate()
         .skip(end_index)
         .find(|(index, _)| layout.lanes.get(*index).is_some_and(Option::is_some))
-        .map(|(_, event)| event.time_ms as i64 - now - lookahead_ms)
-        .unwrap_or(5000)
-        .clamp(100, 1500) as u64;
+        .map(|(_, event)| {
+            (((event.time_ms as i64 - now - lookahead_ms).max(100) as f64) / playback_rate).round()
+                as u64
+        })
+        .unwrap_or(60_000);
 
     DanmuVisibleOutput {
         items,
@@ -1061,6 +1065,7 @@ mod tests {
                 height: 600.0,
                 font_size: 24.0,
                 speed: 1.0,
+                playback_rate: Some(1.0),
                 offset_ms: 0,
                 max_lines: Some(3),
                 top_padding: Some(0.0),
@@ -1101,6 +1106,7 @@ mod tests {
                 height: 600.0,
                 font_size: 24.0,
                 speed: 1.0,
+                playback_rate: Some(1.0),
                 offset_ms: 0,
                 max_lines: Some(8),
                 top_padding: Some(0.0),
