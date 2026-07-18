@@ -121,7 +121,6 @@ struct DanmuVisibleInput {
     font_size: f64,
     speed: f64,
     offset_ms: i64,
-    max_items: Option<usize>,
     max_lines: Option<usize>,
     top_padding: Option<f64>,
 }
@@ -139,6 +138,7 @@ struct DanmuLoadOutput {
 #[derive(Debug, Serialize)]
 struct DanmuVisibleOutput {
     items: Vec<DanmuRenderItem>,
+    next_refresh_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -651,7 +651,6 @@ fn visible_danmu(session: &mut DanmuSession, input: &DanmuVisibleInput) -> Danmu
     let travel_ms = (9500.0 / speed).round() as i64;
     let fixed_ms = 3800_i64;
     let now = input.position_ms as i64 + input.offset_ms;
-    let max_items = input.max_items.unwrap_or(56).clamp(8, 120);
     let lookahead_ms = 3200_i64;
     let layout_key = DanmuLayoutKey {
         width_px: width.round().max(1.0) as u32,
@@ -664,22 +663,24 @@ fn visible_danmu(session: &mut DanmuSession, input: &DanmuVisibleInput) -> Danmu
     ensure_danmu_layout(session, layout_key, width, font_size, travel_ms, fixed_ms);
     let layout = session.layout.as_ref().expect("danmu layout initialized");
 
-    let mut items = Vec::with_capacity(max_items);
-
     let lookback_ms = travel_ms + 500;
     let start_time = (now - lookback_ms).max(0) as u64;
     let start_index = session
         .events
         .partition_point(|event| event.time_ms < start_time);
+    let end_index = session
+        .events
+        .partition_point(|event| event.time_ms as i64 <= now + lookahead_ms);
+    let mut items = Vec::with_capacity(end_index.saturating_sub(start_index));
 
-    for (absolute_index, event) in session.events.iter().enumerate().skip(start_index) {
-        if items.len() >= max_items {
-            break;
-        }
+    for (absolute_index, event) in session
+        .events
+        .iter()
+        .enumerate()
+        .take(end_index)
+        .skip(start_index)
+    {
         let event_time = event.time_ms as i64;
-        if event_time - now > lookahead_ms {
-            break;
-        }
         let elapsed = now - event_time;
         let Some(lane) = layout.lanes.get(absolute_index).and_then(|value| *value) else {
             continue;
@@ -736,7 +737,20 @@ fn visible_danmu(session: &mut DanmuSession, input: &DanmuVisibleInput) -> Danmu
         }
     }
 
-    DanmuVisibleOutput { items }
+    let next_refresh_ms = session
+        .events
+        .iter()
+        .enumerate()
+        .skip(end_index)
+        .find(|(index, _)| layout.lanes.get(*index).is_some_and(Option::is_some))
+        .map(|(_, event)| event.time_ms as i64 - now - lookahead_ms)
+        .unwrap_or(5000)
+        .clamp(100, 1500) as u64;
+
+    DanmuVisibleOutput {
+        items,
+        next_refresh_ms,
+    }
 }
 
 fn parse_comment_events(body: &str) -> Result<Vec<DanmuEvent>> {
@@ -1048,7 +1062,6 @@ mod tests {
                 font_size: 24.0,
                 speed: 1.0,
                 offset_ms: 0,
-                max_items: None,
                 max_lines: Some(3),
                 top_padding: Some(0.0),
             },
@@ -1063,5 +1076,38 @@ mod tests {
             (item.left + item.velocity_x * 500.0 - (1_000.0 + item.velocity_x * 1_500.0)).abs()
                 < 0.001
         );
+    }
+
+    #[test]
+    fn rust_timeline_does_not_drop_dense_future_items() {
+        let mut session = DanmuSession {
+            events: (0..200)
+                .map(|index| DanmuEvent {
+                    time_ms: index * 100,
+                    mode: DanmuMode::Scroll,
+                    color: 0xFFFFFF,
+                    text: format!("dense-{index}"),
+                    source: None,
+                })
+                .collect(),
+            layout: None,
+        };
+        let frame = visible_danmu(
+            &mut session,
+            &DanmuVisibleInput {
+                session_id: 1,
+                position_ms: 10_000,
+                width: 1_000.0,
+                height: 600.0,
+                font_size: 24.0,
+                speed: 1.0,
+                offset_ms: 0,
+                max_lines: Some(8),
+                top_padding: Some(0.0),
+            },
+        );
+
+        assert!(frame.items.len() > 36);
+        assert!(frame.items.iter().any(|item| item.start_ms > 10_000));
     }
 }

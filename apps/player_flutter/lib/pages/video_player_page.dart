@@ -50,7 +50,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       Duration(milliseconds: 120);
   static const Duration _danmuVisibleRefreshInterval =
       Duration(milliseconds: 1500);
-  static const int _danmuMaxVisibleItems = 36;
+  static const int _danmuMaxVisibleItems = 120;
   static const double _verticalControlSensitivity = 1.35;
   static const double _verticalControlEdgeDeadZoneRatio = 0.14;
   static const List<double> _playbackRates = [
@@ -3821,16 +3821,8 @@ class _DanmuBitmap {
       fontSize: config.fontSize,
       fontWeight: FontWeight.w500,
     );
-    final stroke = fill.copyWith(
-      color: null,
-      foreground: Paint()
-        ..color = Colors.black.withValues(alpha: opacity)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 3,
-    );
     final fillPainter = _textPainter(value.text, fill, value.textWidth);
-    final strokePainter = _textPainter(value.text, stroke, value.textWidth);
-    const padding = 3.0;
+    const padding = 1.0;
     final ratio = pixelRatio.clamp(1.0, 4.0);
     final width =
         ((fillPainter.width + padding * 2) * ratio).ceil().clamp(1, 8192);
@@ -3839,7 +3831,6 @@ class _DanmuBitmap {
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder);
     canvas.scale(ratio);
-    strokePainter.paint(canvas, const Offset(padding, padding));
     fillPainter.paint(canvas, const Offset(padding, padding));
     final picture = recorder.endRecording();
     final image = picture.toImageSync(width, height);
