@@ -7,6 +7,7 @@ import android.content.Context
 import android.graphics.Color
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.view.ViewGroup
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
@@ -31,6 +32,7 @@ import java.net.HttpURLConnection
 import java.net.URLEncoder
 import java.net.URL
 import java.security.MessageDigest
+import java.lang.reflect.Method
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -190,11 +192,14 @@ class TvboxBridge(private val activity: Activity) {
 private class TvboxJarEngine(private val context: Context) {
     private data class LoadedJar(
         val loader: DexClassLoader,
-        val proxy: java.lang.reflect.Method?,
+        val proxy: Method?,
+        val danmuClick: Method?,
+        val danmuLongClick: Method?,
     )
 
     private val loaded = ConcurrentHashMap<String, LoadedJar>()
     private val spiders = ConcurrentHashMap<String, Spider>()
+    private val siteJars = ConcurrentHashMap<String, String>()
     private val playbackHeaders = ConcurrentHashMap<String, Map<String, String>>()
     private val protectedInit = ProtectedInitJar(context)
     private val proxyServer = TvboxProxyServer(this).also { it.start() }
@@ -202,6 +207,7 @@ private class TvboxJarEngine(private val context: Context) {
     // key proxy sessions if concurrent playback is ever added.
     @Volatile private var playbackJar = ""
     @Volatile private var playbackSpider: Spider? = null
+    @Volatile private var recentJar = ""
 
     fun call(arguments: Map<*, *>): String {
         val action = arguments["action"]?.toString().orEmpty()
@@ -216,6 +222,9 @@ private class TvboxJarEngine(private val context: Context) {
         }
 
         val jar = loadJar(jarUrl, jarMd5)
+        recentJar = jarUrl
+        siteJars[siteKey] = jarUrl
+        injectProxyPort(jar.loader)
         val spiderKey = "$jarUrl#$siteKey#$api"
         val spider = spiders.computeIfAbsent(spiderKey) {
             val value = jar.loader.loadClass("com.github.catvod.spider.$api")
@@ -274,18 +283,38 @@ private class TvboxJarEngine(private val context: Context) {
         initialize(loader, file)
         val proxy = runCatching {
             loader.loadClass("com.github.catvod.spider.Proxy").getMethod("proxy", Map::class.java)
+        }.onFailure { Log.d(TAG, "JAR 未提供 Proxy.proxy", it) }.getOrNull()
+        val danmaku = runCatching { loader.loadClass("com.github.catvod.spider.Danmaku") }.getOrNull()
+        val danmuClick = runCatching {
+            danmaku?.getMethod("onClick", String::class.java, String::class.java)
         }.getOrNull()
-        LoadedJar(loader, proxy)
+        val danmuLongClick = runCatching {
+            danmaku?.getMethod("onLongClick", String::class.java, String::class.java)
+        }.getOrNull()
+        injectProxyPort(loader)
+        Log.i(TAG, "load success jar=$url")
+        LoadedJar(loader, proxy, danmuClick, danmuLongClick)
     }
 
     private fun initialize(loader: DexClassLoader, file: File) {
         val init = runCatching { loader.loadClass("com.github.catvod.spider.Init") }.getOrNull() ?: return
         if (protectedInit.check(file.absolutePath)) {
+            Log.i(TAG, "init protected jar=${file.name}")
             protectedInit.init(init)
         } else {
             runCatching { init.getMethod("init", Context::class.java).invoke(null, context) }
                 .getOrElse { throw IllegalStateException("Spider/JAR 初始化失败", it) }
         }
+    }
+
+    private fun injectProxyPort(loader: DexClassLoader?) {
+        com.github.catvod.Proxy.set(TvboxProxyServer.PORT)
+        if (loader == null) return
+        runCatching {
+            loader.loadClass("com.github.catvod.Proxy")
+                .getMethod("set", Int::class.javaPrimitiveType)
+                .invoke(null, TvboxProxyServer.PORT)
+        }.onFailure { Log.d(TAG, "JAR 未提供 Proxy.set", it) }
     }
 
     private fun download(url: String, target: File) {
@@ -307,9 +336,28 @@ private class TvboxJarEngine(private val context: Context) {
     }
 
     fun proxy(params: Map<String, String>): Array<Any?>? {
-        val method = loaded[playbackJar]?.proxy
-        val result = runCatching { method?.invoke(null, params) as? Array<Any?> }.getOrNull()
-        return result ?: runCatching { playbackSpider?.proxy(params) }.getOrNull()
+        val candidates = linkedSetOf<String>()
+        params["siteKey"]?.let(siteJars::get)?.let(candidates::add)
+        candidates.add(recentJar)
+        candidates.add(playbackJar)
+        candidates.addAll(loaded.keys)
+        for (jar in candidates) {
+            if (jar.isBlank()) continue
+            val result = runCatching {
+                @Suppress("UNCHECKED_CAST")
+                loaded[jar]?.proxy?.invoke(null, params) as? Array<Any?>
+            }.onFailure { Log.w(TAG, "proxy failed jar=$jar", it) }.getOrNull()
+            if (result != null) return result
+        }
+        return runCatching { playbackSpider?.proxy(params) }
+            .onFailure { Log.w(TAG, "spider proxy failed", it) }.getOrNull()
+    }
+
+    fun searchDanmu(name: String, episode: String, longClick: Boolean) {
+        val jar = loaded[recentJar] ?: return
+        val method = if (longClick) jar.danmuLongClick else jar.danmuClick
+        runCatching { method?.invoke(null, name, episode) }
+            .onFailure { Log.w(TAG, "danmu search failed", it) }
     }
 
     fun localUrl(url: String): String = if (url.startsWith("proxy://")) {
@@ -351,16 +399,20 @@ private class TvboxJarEngine(private val context: Context) {
         spiders.values.forEach { runCatching { it.destroy() } }
         spiders.clear()
         loaded.clear()
+        siteJars.clear()
         playbackHeaders.clear()
         protectedInit.clear()
         playbackJar = ""
         playbackSpider = null
+        recentJar = ""
     }
 
     private fun md5(file: File) = digest("MD5", file.readBytes())
     private fun sha256(value: String) = digest("SHA-256", value.toByteArray())
     private fun digest(algorithm: String, bytes: ByteArray) =
         MessageDigest.getInstance(algorithm).digest(bytes).joinToString("") { "%02x".format(it) }
+
+    companion object { private const val TAG = "TvboxJarLoader" }
 }
 
 internal fun tvboxDeleteDirectory(directory: File) {

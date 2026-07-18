@@ -2,12 +2,21 @@ package com.example.player_flutter
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.nio.file.Files
 
 class TvboxBridgeTest {
+    @Test
+    fun injectsTvboxProxyPort() {
+        com.github.catvod.Proxy.set(12345)
+
+        assertEquals(12345, com.github.catvod.Proxy.getPort())
+        assertEquals("http://127.0.0.1:12345/proxy", com.github.catvod.Proxy.getUrl(true))
+    }
+
     @Test
     fun deletesTvboxCacheDirectory() {
         val directory = Files.createTempDirectory("tvbox-cache-test").toFile()

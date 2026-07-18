@@ -87,7 +87,7 @@ jobs:
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
 
   android:
-    name: Android armv7, armv8, universal
+    name: Android arm64
     runs-on: ubuntu-latest
     needs: version
 
@@ -114,7 +114,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: armv7-linux-androideabi,aarch64-linux-android
+          targets: aarch64-linux-android
 
       - name: Set up Android NDK
         id: setup-ndk
@@ -152,15 +152,12 @@ jobs:
           rm -rf apps/player_flutter/android/app/src/main/jniLibs
           cargo ndk \
             --link-libcxx-shared \
-            -t armeabi-v7a \
             -t arm64-v8a \
             -o apps/player_flutter/android/app/src/main/jniLibs \
             build -p player_core --release
-          test -f apps/player_flutter/android/app/src/main/jniLibs/armeabi-v7a/libplayer_core.so
-          test -f apps/player_flutter/android/app/src/main/jniLibs/armeabi-v7a/libc++_shared.so
           test -f apps/player_flutter/android/app/src/main/jniLibs/arm64-v8a/libplayer_core.so
           test -f apps/player_flutter/android/app/src/main/jniLibs/arm64-v8a/libc++_shared.so
-          rm apps/player_flutter/android/app/src/main/jniLibs/{armeabi-v7a,arm64-v8a}/libc++_shared.so
+          rm apps/player_flutter/android/app/src/main/jniLibs/arm64-v8a/libc++_shared.so
 
       - name: Strip Android native libraries
         working-directory: .
@@ -177,6 +174,9 @@ jobs:
 
       - name: Analyze
         run: flutter analyze --no-fatal-infos
+
+      - name: Test
+        run: flutter test --no-pub
 
       - name: Configure Android signing
         env:
@@ -201,77 +201,72 @@ jobs:
             "storeFile=upload-keystore.jks" \
             > android/key.properties
 
-      - name: Build Android armv7 APK
-        env:
-          APP_VERSION: ${{ needs.version.outputs.app_version }}
-          BUILD_NUMBER: ${{ needs.version.outputs.build_number }}
-        run: |
-          flutter build apk --release --target-platform android-arm --build-name "$APP_VERSION" --build-number "$BUILD_NUMBER" --android-project-arg=targetAbi=armeabi-v7a --no-pub
-          mkdir -p build/ci
-          cp build/app/outputs/flutter-apk/app-release.apk build/ci/rplayer-android-armeabi-v7a.apk
-
-      - name: Build Android armv8 APK
+      - name: Build Android arm64 APK
         env:
           APP_VERSION: ${{ needs.version.outputs.app_version }}
           BUILD_NUMBER: ${{ needs.version.outputs.build_number }}
         run: |
           flutter build apk --release --target-platform android-arm64 --build-name "$APP_VERSION" --build-number "$BUILD_NUMBER" --android-project-arg=targetAbi=arm64-v8a --no-pub
+          mkdir -p build/ci
           cp build/app/outputs/flutter-apk/app-release.apk build/ci/rplayer-android-arm64-v8a.apk
 
-      - name: Build Android universal APK
-        env:
-          APP_VERSION: ${{ needs.version.outputs.app_version }}
-          BUILD_NUMBER: ${{ needs.version.outputs.build_number }}
-        run: |
-          flutter build apk --release --target-platform android-arm,android-arm64 --build-name "$APP_VERSION" --build-number "$BUILD_NUMBER" --android-project-arg=targetAbi=armeabi-v7a,arm64-v8a --no-pub
-          cp build/app/outputs/flutter-apk/app-release.apk build/ci/rplayer-android-universal.apk
-
-      - name: Check Android APK versions
+      - name: Check Android APK version
         env:
           APP_VERSION: ${{ needs.version.outputs.app_version }}
         run: |
           aapt="$(find "$ANDROID_HOME/build-tools" -name aapt -type f | sort -V | tail -n 1)"
-          for apk in build/ci/*.apk; do
-            badging="$("$aapt" dump badging "$apk")"
-            version_name="$(printf '%s\n' "$badging" | grep -o "versionName='[^']*'" | head -n 1 | cut -d"'" -f2)"
-            if [ -z "$version_name" ]; then
-              echo "Could not read versionName from $apk." >&2
-              exit 1
-            fi
-            if [ "$version_name" != "$APP_VERSION" ]; then
-              echo "$apk versionName '$version_name' does not match app version '$APP_VERSION'." >&2
-              exit 1
-            fi
-          done
+          apk="build/ci/rplayer-android-arm64-v8a.apk"
+          badging="$("$aapt" dump badging "$apk")"
+          version_name="$(printf '%s\n' "$badging" | grep -o "versionName='[^']*'" | head -n 1 | cut -d"'" -f2)"
+          if [ -z "$version_name" ]; then
+            echo "Could not read versionName from $apk." >&2
+            exit 1
+          fi
+          if [ "$version_name" != "$APP_VERSION" ]; then
+            echo "$apk versionName '$version_name' does not match app version '$APP_VERSION'." >&2
+            exit 1
+          fi
 
-      - name: Upload Android armv7 APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: rplayer-android-armeabi-v7a
-          path: apps/player_flutter/build/ci/rplayer-android-armeabi-v7a.apk
-          if-no-files-found: error
+      - name: Check Android APK native libraries
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
 
-      - name: Upload Android armv8 APK
+          apk = Path("build/ci/rplayer-android-arm64-v8a.apk")
+          with ZipFile(apk) as archive:
+              libraries = {name for name in archive.namelist() if name.startswith("lib/")}
+
+          abis = {name.split("/", 2)[1] for name in libraries}
+          if abis != {"arm64-v8a"}:
+              raise SystemExit(f"Unexpected APK ABIs: {sorted(abis)}")
+
+          required = {
+              "lib/arm64-v8a/libapp.so",
+              "lib/arm64-v8a/libc++_shared.so",
+              "lib/arm64-v8a/libflutter.so",
+              "lib/arm64-v8a/libmediakitandroidhelper.so",
+              "lib/arm64-v8a/libmpv.so",
+              "lib/arm64-v8a/libplayer_core.so",
+          }
+          missing = required - libraries
+          if missing:
+              raise SystemExit(f"Missing APK native libraries: {sorted(missing)}")
+          print("\n".join(sorted(libraries)))
+          PY
+
+      - name: Upload Android arm64 APK
         uses: actions/upload-artifact@v4
         with:
           name: rplayer-android-arm64-v8a
           path: apps/player_flutter/build/ci/rplayer-android-arm64-v8a.apk
           if-no-files-found: error
 
-      - name: Upload Android universal APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: rplayer-android-universal
-          path: apps/player_flutter/build/ci/rplayer-android-universal.apk
-          if-no-files-found: error
-
       - name: Upload Rust Android libraries
         uses: actions/upload-artifact@v4
         with:
           name: player-core-android-libs
-          path: |
-            apps/player_flutter/android/app/src/main/jniLibs/**/libplayer_core.so
-            apps/player_flutter/android/app/src/main/jniLibs/**/libc++_shared.so
+          path: apps/player_flutter/android/app/src/main/jniLibs/arm64-v8a/libplayer_core.so
           if-no-files-found: error
 
   windows-x64:

@@ -35,6 +35,10 @@ android {
     compileSdk = flutter.compileSdkVersion
     ndkVersion = "27.3.13750724"
 
+    lint {
+        disable += "ExpiredTargetSdkVersion"
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -50,7 +54,9 @@ android {
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
-        targetSdk = flutter.targetSdkVersion
+        // TVBox Spider JARs can launch bundled helper binaries from app storage.
+        // Android blocks that for targetSdk 29+, while TVBoxOS and 影视仓 target 28.
+        targetSdk = 28
         versionCode = flutter.versionCode
         versionName = flutter.versionName
         ndk {
