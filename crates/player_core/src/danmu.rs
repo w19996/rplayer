@@ -173,6 +173,10 @@ struct DanmuRenderItem {
     left: f64,
     top: f64,
     text_width: f64,
+    sample_ms: i64,
+    start_ms: i64,
+    end_ms: i64,
+    velocity_x: f64,
 }
 
 static SESSIONS: OnceLock<Mutex<HashMap<u64, DanmuSession>>> = OnceLock::new();
@@ -692,6 +696,10 @@ fn visible_danmu(session: &mut DanmuSession, input: &DanmuVisibleInput) -> Danmu
                     (width - text_width) / 2.0,
                     top,
                     text_width,
+                    now,
+                    event_time,
+                    event_time + fixed_ms,
+                    0.0,
                 ));
             }
             DanmuMode::Bottom if elapsed <= fixed_ms => {
@@ -702,13 +710,27 @@ fn visible_danmu(session: &mut DanmuSession, input: &DanmuVisibleInput) -> Danmu
                     (width - text_width) / 2.0,
                     top,
                     text_width,
+                    now,
+                    event_time,
+                    event_time + fixed_ms,
+                    0.0,
                 ));
             }
             _ if elapsed <= travel_ms => {
                 let progress = elapsed as f64 / travel_ms as f64;
                 let left = width - progress * (width + text_width);
                 let top = top_padding + lane as f64 * lane_height;
-                items.push(render_item(absolute_index, event, left, top, text_width));
+                items.push(render_item(
+                    absolute_index,
+                    event,
+                    left,
+                    top,
+                    text_width,
+                    now,
+                    event_time,
+                    event_time + travel_ms,
+                    -(width + text_width) / travel_ms as f64,
+                ));
             }
             _ => {}
         }
@@ -815,6 +837,10 @@ fn render_item(
     left: f64,
     top: f64,
     text_width: f64,
+    sample_ms: i64,
+    start_ms: i64,
+    end_ms: i64,
+    velocity_x: f64,
 ) -> DanmuRenderItem {
     DanmuRenderItem {
         id,
@@ -830,6 +856,10 @@ fn render_item(
         left,
         top,
         text_width,
+        sample_ms,
+        start_ms,
+        end_ms,
+        velocity_x,
     }
 }
 
@@ -975,7 +1005,10 @@ fn short_body(body: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_bilibili_xml_events, DanmuMode};
+    use super::{
+        parse_bilibili_xml_events, visible_danmu, DanmuEvent, DanmuMode, DanmuSession,
+        DanmuVisibleInput,
+    };
 
     #[test]
     fn parses_tvbox_bilibili_xml_danmu() {
@@ -991,5 +1024,44 @@ mod tests {
         assert_eq!(events[1].text, "滚动 & 测试");
         assert_eq!(events[1].color, 16_711_680);
         assert_eq!(events[1].source.as_deref(), Some("tvbox"));
+    }
+
+    #[test]
+    fn rust_builds_the_complete_scroll_trajectory() {
+        let mut session = DanmuSession {
+            events: vec![DanmuEvent {
+                time_ms: 1_000,
+                mode: DanmuMode::Scroll,
+                color: 0xFFFFFF,
+                text: "trajectory".to_string(),
+                source: None,
+            }],
+            layout: None,
+        };
+        let frame = visible_danmu(
+            &mut session,
+            &DanmuVisibleInput {
+                session_id: 1,
+                position_ms: 2_000,
+                width: 1_000.0,
+                height: 600.0,
+                font_size: 24.0,
+                speed: 1.0,
+                offset_ms: 0,
+                max_items: None,
+                max_lines: Some(3),
+                top_padding: Some(0.0),
+            },
+        );
+
+        let item = &frame.items[0];
+        assert_eq!(item.sample_ms, 2_000);
+        assert_eq!(item.start_ms, 1_000);
+        assert_eq!(item.end_ms, 10_500);
+        assert!(item.velocity_x < 0.0);
+        assert!(
+            (item.left + item.velocity_x * 500.0 - (1_000.0 + item.velocity_x * 1_500.0)).abs()
+                < 0.001
+        );
     }
 }

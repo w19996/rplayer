@@ -1047,6 +1047,10 @@ class RustDanmuRenderItem {
     required this.left,
     required this.top,
     required this.textWidth,
+    required this.sampleMs,
+    required this.startMs,
+    required this.endMs,
+    required this.velocityX,
   });
 
   final int id;
@@ -1057,6 +1061,10 @@ class RustDanmuRenderItem {
   final double left;
   final double top;
   final double textWidth;
+  final int sampleMs;
+  final int startMs;
+  final int endMs;
+  final double velocityX;
 
   factory RustDanmuRenderItem.fromJson(Map<String, dynamic> json) {
     return RustDanmuRenderItem(
@@ -1068,6 +1076,10 @@ class RustDanmuRenderItem {
       left: (json['left'] as num?)?.toDouble() ?? 0,
       top: (json['top'] as num?)?.toDouble() ?? 0,
       textWidth: (json['text_width'] as num?)?.toDouble() ?? 0,
+      sampleMs: (json['sample_ms'] as num?)?.toInt() ?? 0,
+      startMs: (json['start_ms'] as num?)?.toInt() ?? 0,
+      endMs: (json['end_ms'] as num?)?.toInt() ?? 0,
+      velocityX: (json['velocity_x'] as num?)?.toDouble() ?? 0,
     );
   }
 }
