@@ -36,6 +36,7 @@ class AppStore extends ChangeNotifier {
   final List<String> diagnosticLogs = [];
   int diagnosticLogCount = 0;
   Future<void> _diagnosticLogWriteChain = Future.value();
+  Future<void> _settingsWriteChain = Future.value();
   Future<void> _metadataDatabaseWriteChain = Future.value();
   Future<void> _backgroundDatabaseWriteChain = Future.value();
   Future<void> _databaseWriteChain = Future.value();
@@ -90,15 +91,36 @@ class AppStore extends ChangeNotifier {
 
   Future<void> load() async {
     final file = await configFile;
-    if (await file.exists()) {
-      final text = await file.readAsString();
-      importSettingsJson(jsonDecode(text) as Map<String, dynamic>);
+    File? loadedSettingsFile;
+    Object? settingsLoadError;
+    for (final candidate in [file, File('${file.path}.backup')]) {
+      if (!await candidate.exists()) continue;
+      try {
+        final text = await candidate.readAsString();
+        if (text.trim().isEmpty) {
+          throw const FormatException('settings file is empty');
+        }
+        final decoded = jsonDecode(text);
+        if (decoded is! Map<String, dynamic>) {
+          throw const FormatException('settings root must be an object');
+        }
+        importSettingsJson(decoded);
+        loadedSettingsFile = candidate;
+        break;
+      } catch (error) {
+        settingsLoadError ??= error;
+      }
     }
     await loadDiagnosticLogState();
     addDiagnosticLog('app load started', category: 'app');
-    if (await file.exists()) {
-      addDiagnosticLog('settings file loaded: ${file.path}',
+    if (loadedSettingsFile != null) {
+      addDiagnosticLog('settings file loaded: ${loadedSettingsFile.path}',
           category: 'config');
+    } else if (settingsLoadError != null) {
+      addDiagnosticLog(
+        'settings file ignored, database recovery will continue: $settingsLoadError',
+        category: 'config',
+      );
     }
     await loadMediaStateDatabase();
     restoreTvboxRecentProgress();
@@ -119,10 +141,45 @@ class AppStore extends ChangeNotifier {
     addDiagnosticLog('save finished', category: 'app');
   }
 
-  Future<void> saveSettings({bool logEvent = true}) async {
+  Future<void> saveSettings({bool logEvent = true}) {
+    final run = _settingsWriteChain.catchError((_) {}).then(
+          (_) => _saveSettingsNow(logEvent: logEvent),
+        );
+    _settingsWriteChain = run.then<void>((_) {}, onError: (_) {});
+    return run;
+  }
+
+  Future<void> _saveSettingsNow({required bool logEvent}) async {
     final text = exportSettings();
     final file = await configFile;
-    await file.writeAsString(text);
+    final temp = File('${file.path}.tmp');
+    final backup = File('${file.path}.backup');
+    if (await temp.exists()) await temp.delete();
+    await temp.writeAsString(text, flush: true);
+
+    if (await file.exists()) {
+      var currentIsValid = false;
+      try {
+        final current = jsonDecode(await file.readAsString());
+        currentIsValid = current is Map<String, dynamic>;
+      } catch (_) {}
+      if (currentIsValid) {
+        if (await backup.exists()) await backup.delete();
+        await file.rename(backup.path);
+      } else {
+        final timestamp = DateTime.now().millisecondsSinceEpoch;
+        await file.rename('${file.path}.corrupt.$timestamp');
+      }
+    }
+
+    try {
+      await temp.rename(file.path);
+    } catch (_) {
+      if (await backup.exists() && !await file.exists()) {
+        await backup.rename(file.path);
+      }
+      rethrow;
+    }
     if (logEvent) {
       addDiagnosticLog('settings saved: ${file.path}', category: 'config');
     }

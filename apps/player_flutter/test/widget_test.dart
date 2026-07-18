@@ -48,6 +48,36 @@ void main() {
     expect(clearCalls, 1);
   });
 
+  test('empty settings do not abort database-backed app loading', () async {
+    await File('${testAppFilesDir.path}/player_config.json').writeAsString('');
+    final store = AppStore();
+
+    await store.load();
+
+    expect(store.loaded, isTrue);
+    expect(
+      await File('${testAppFilesDir.path}/player_config.json').readAsString(),
+      isEmpty,
+    );
+  });
+
+  test('settings writes keep the previous valid file as a backup', () async {
+    final store = AppStore()..tvboxApiUrl = 'https://example.com/old.json';
+    await store.saveSettings();
+    store.tvboxApiUrl = 'https://example.com/new.json';
+
+    await store.saveSettings();
+
+    final current = jsonDecode(
+        await File('${testAppFilesDir.path}/player_config.json')
+            .readAsString()) as Map<String, dynamic>;
+    final backup = jsonDecode(
+        await File('${testAppFilesDir.path}/player_config.json.backup')
+            .readAsString()) as Map<String, dynamic>;
+    expect(current['tvboxApiUrl'], 'https://example.com/new.json');
+    expect(backup['tvboxApiUrl'], 'https://example.com/old.json');
+  });
+
   test('TVBox incognito site keys round-trip through settings', () {
     final store = AppStore();
     store.importSettingsJson({
