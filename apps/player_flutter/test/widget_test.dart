@@ -292,6 +292,16 @@ void main() {
     expect(shouldUseMedia3OnAndroid(false, false), isFalse);
   });
 
+  test('retries only placeholder TVBox file danmu', () {
+    expect(shouldRetryTvboxDanmu('file:///cache/danmu.xml', 1, 0), isTrue);
+    expect(
+        shouldRetryTvboxDanmu('http://127.0.0.1:5266/fishdanmu/auto.xml', 1, 0),
+        isTrue);
+    expect(shouldRetryTvboxDanmu('file:///cache/danmu.xml', 2, 0), isFalse);
+    expect(
+        shouldRetryTvboxDanmu('https://example.com/danmu.xml', 1, 0), isFalse);
+  });
+
   test('calculates network speed using the actual sample interval', () {
     expect(networkBytesPerSecond(5 * 1024 * 1024, 5000), 1024 * 1024);
   });

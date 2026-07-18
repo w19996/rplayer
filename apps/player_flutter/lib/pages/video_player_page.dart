@@ -11,6 +11,15 @@ bool isLibmpvDolbyVisionTrack(String? profile, String? level) =>
 bool shouldUseMedia3OnAndroid(bool isTvboxPlayback, bool isDolbyVision) =>
     isTvboxPlayback || isDolbyVision;
 
+bool shouldRetryTvboxDanmu(String source, int count, int retries) {
+  final uri = Uri.tryParse(source);
+  return count <= 1 &&
+      retries < 5 &&
+      (source.startsWith('file:') ||
+          (uri?.host == '127.0.0.1' &&
+              uri?.path.contains('/fishdanmu/') == true));
+}
+
 int networkBytesPerSecond(int byteDelta, int elapsedMilliseconds) =>
     byteDelta <= 0 || elapsedMilliseconds <= 0
         ? 0
@@ -236,7 +245,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       final detail = await widget.store.loadLibraryShowDetail(groupKey);
       if (!mounted || mediaFolderKey(currentItem) != groupKey) return;
       setState(() => libraryDetail = detail);
-      unawaited(loadDanmuForCurrentItem());
+      if (currentItem.sourceId != 'tvbox') {
+        unawaited(loadDanmuForCurrentItem());
+      }
     } catch (_) {
       if (mounted && mediaFolderKey(currentItem) == groupKey) {
         setState(() => libraryDetail = null);
@@ -320,9 +331,26 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   }
 
   Future<void> loadTvboxDanmuForCurrentItem() async {
-    final playback = currentResolvedPlayback;
-    final source = playback?.danmaku?.trim() ?? '';
     final loadId = ++danmuLoadId;
+    var playback = currentResolvedPlayback;
+    var source = playback?.danmaku?.trim() ?? '';
+    if (source.isEmpty) {
+      try {
+        final refreshed = await resolvePlayback(currentItem);
+        if (!mounted || loadId != danmuLoadId) return;
+        final refreshedSource = refreshed.danmaku?.trim() ?? '';
+        if (refreshedSource.isNotEmpty) {
+          currentResolvedPlayback = refreshed;
+          playback = refreshed;
+          source = refreshedSource;
+        }
+      } catch (error) {
+        widget.store.addDiagnosticLog(
+          'tvbox danmu playback refresh failed: $error',
+          category: 'danmu',
+        );
+      }
+    }
     if (source.isEmpty) {
       clearDanmuSession();
       setStateIfMounted(() {
@@ -342,13 +370,28 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       category: 'danmu',
     );
     try {
-      final result = await RustCoreService.instance.danmuLoadAsync({
+      final request = {
         'base_url': '',
         'title': '',
         'file_names': const <String>[],
         'source': source,
         'headers': playback?.headers ?? const <String, String>{},
-      });
+      };
+      var result = await RustCoreService.instance.danmuLoadAsync(request);
+      var retries = 0;
+      while (shouldRetryTvboxDanmu(source, result.count, retries)) {
+        if (result.sessionId > 0) {
+          RustCoreService.instance.danmuClear(result.sessionId);
+        }
+        retries++;
+        widget.store.addDiagnosticLog(
+          'tvbox danmu placeholder detected: count=${result.count}, retry=$retries',
+          category: 'danmu',
+        );
+        await Future<void>.delayed(const Duration(seconds: 1));
+        if (!mounted || loadId != danmuLoadId) return;
+        result = await RustCoreService.instance.danmuLoadAsync(request);
+      }
       if (!mounted || loadId != danmuLoadId) return;
       for (final line in result.logs) {
         widget.store.addDiagnosticLog(line, category: 'danmu');

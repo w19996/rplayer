@@ -307,6 +307,20 @@ https://backup.example/cctv1.m3u8
     expect(playback.uri, 'https://cdn.example/1.m3u8');
   });
 
+  test('tries later TVBox lines with the same episode', () {
+    final groups = parseTvboxPlayGroups(
+      r'线路A$$$线路B$$$线路C',
+      r'1$a1#2$a2$$$上集$b1#下集$b2$$$1$c1#2$c2',
+    );
+
+    final candidates = tvboxPlaybackCandidates(
+        groups, groups.first, groups.first.episodes.last);
+
+    expect(candidates.map((candidate) => candidate.$1.name),
+        ['线路A', '线路B', '线路C']);
+    expect(candidates.map((candidate) => candidate.$2.url), ['a2', 'b2', 'c2']);
+  });
+
   test('keeps the TVBox episode queue and recent playback context', () {
     const site = TvboxSite(
       key: 'site',

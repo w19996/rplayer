@@ -322,6 +322,34 @@ List<MediaItem> tvboxMediaItems(
         tvboxMediaItem(site, video, group.name, group.episodes[index], index),
     ];
 
+List<(TvboxPlayGroup, TvboxEpisode)> tvboxPlaybackCandidates(
+    List<TvboxPlayGroup> groups,
+    TvboxPlayGroup selectedGroup,
+    TvboxEpisode selectedEpisode) {
+  final groupIndex =
+      groups.indexWhere((group) => group.name == selectedGroup.name);
+  if (groupIndex < 0) return [(selectedGroup, selectedEpisode)];
+  final episodeIndex = selectedGroup.episodes
+      .indexWhere((episode) => episode.url == selectedEpisode.url);
+  final candidates = <(TvboxPlayGroup, TvboxEpisode)>[];
+  for (var index = groupIndex; index < groups.length; index++) {
+    final group = groups[index];
+    final episode = index == groupIndex
+        ? group.episodes
+                .where((value) => value.url == selectedEpisode.url)
+                .firstOrNull ??
+            selectedEpisode
+        : group.episodes
+                .where((value) => value.name == selectedEpisode.name)
+                .firstOrNull ??
+            (episodeIndex >= 0 && episodeIndex < group.episodes.length
+                ? group.episodes[episodeIndex]
+                : null);
+    if (episode != null) candidates.add((group, episode));
+  }
+  return candidates;
+}
+
 Future<void> openTvboxPlayback(
   BuildContext context,
   AppStore store,
@@ -330,20 +358,45 @@ Future<void> openTvboxPlayback(
   TvboxPlayGroup group,
   TvboxEpisode episode,
 ) async {
-  final episodes = tvboxMediaItems(client.site, video, group);
-  final index = group.episodes.indexWhere((value) => value.url == episode.url);
+  final groups = parseTvboxPlayGroups(video.playFrom, video.playUrl);
+  (TvboxPlayGroup, TvboxEpisode, RemotePlayback)? resolved;
+  Object? lastError;
+  StackTrace? lastStackTrace;
+  for (final candidate in tvboxPlaybackCandidates(groups, group, episode)) {
+    try {
+      resolved = (
+        candidate.$1,
+        candidate.$2,
+        await client.playback(candidate.$1.name, candidate.$2.url),
+      );
+      break;
+    } catch (error, stackTrace) {
+      lastError = error;
+      lastStackTrace = stackTrace;
+    }
+  }
+  if (resolved == null) {
+    if (lastError != null) {
+      Error.throwWithStackTrace(lastError, lastStackTrace!);
+    }
+    throw StateError('找不到所选剧集');
+  }
+  final (resolvedGroup, resolvedEpisode, playback) = resolved;
+  final episodes = tvboxMediaItems(client.site, video, resolvedGroup);
+  final index = resolvedGroup.episodes
+      .indexWhere((value) => value.url == resolvedEpisode.url);
   if (index < 0) throw StateError('找不到所选剧集');
   final current = episodes[index];
 
   Future<RemotePlayback> resolve(MediaItem item) async {
     final itemIndex = episodes.indexWhere((value) => value.id == item.id);
     if (itemIndex < 0) throw StateError('找不到所选剧集');
-    final selected = group.episodes[itemIndex];
+    final selected = resolvedGroup.episodes[itemIndex];
     if (!store.isTvboxSiteIncognito(client.site.key)) {
       await store.rememberTvboxRecent(TvboxRecentEntry(
         site: client.site,
         video: video,
-        groupName: group.name,
+        groupName: resolvedGroup.name,
         episodeName: selected.name,
         episodeUrl: selected.url,
         lastPlayedAt: DateTime.now().millisecondsSinceEpoch,
@@ -351,10 +404,28 @@ Future<void> openTvboxPlayback(
         durationMs: store.durations[item.id],
       ));
     }
-    return client.playback(group.name, selected.url);
+    var playback = await client.playback(resolvedGroup.name, selected.url);
+    if (playback.danmaku?.trim().isEmpty != false) {
+      try {
+        await client.detail(video.id);
+        playback = await client.playback(resolvedGroup.name, selected.url);
+      } catch (_) {}
+    }
+    return playback;
   }
 
-  final playback = await resolve(current);
+  if (!store.isTvboxSiteIncognito(client.site.key)) {
+    await store.rememberTvboxRecent(TvboxRecentEntry(
+      site: client.site,
+      video: video,
+      groupName: resolvedGroup.name,
+      episodeName: resolvedEpisode.name,
+      episodeUrl: resolvedEpisode.url,
+      lastPlayedAt: DateTime.now().millisecondsSinceEpoch,
+      positionMs: store.progress[current.id] ?? 0,
+      durationMs: store.durations[current.id],
+    ));
+  }
   if (!context.mounted) return;
   openPlayer(
     context,
@@ -368,17 +439,21 @@ Future<void> openTvboxPlayback(
 
 Future<void> openTvboxRecent(
     BuildContext context, AppStore store, TvboxRecentEntry recent) async {
-  final group =
-      parseTvboxPlayGroups(recent.video.playFrom, recent.video.playUrl)
-          .where((value) => value.name == recent.groupName)
-          .firstOrNull;
+  final client = TvboxClient(recent.site);
+  var video = recent.video;
+  try {
+    video = await client.detail(video.id);
+  } catch (_) {}
+  if (!context.mounted) return;
+  final group = parseTvboxPlayGroups(video.playFrom, video.playUrl)
+      .where((value) => value.name == recent.groupName)
+      .firstOrNull;
   if (group == null) throw StateError('最近播放的剧集数据已失效');
   final episode = group.episodes
       .where((value) => value.url == recent.episodeUrl)
       .firstOrNull;
   if (episode == null) throw StateError('最近播放的选集已失效');
-  await openTvboxPlayback(
-      context, store, TvboxClient(recent.site), recent.video, group, episode);
+  await openTvboxPlayback(context, store, client, video, group, episode);
 }
 
 const _tvboxHomeTypeId = 'rplayer_tvbox_home';
