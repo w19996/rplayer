@@ -276,11 +276,22 @@ https://backup.example/cctv1.m3u8
   test('passes resolved playback and direct media URLs to the player',
       () async {
     final groups = parseTvboxPlayGroups(
-      r'线路A$$$线路B',
+      r'夸克原画#0102$$$线路B',
       r'第1集$https://cdn.example/1.m3u8#第2集$https://cdn.example/2.m3u8$$$正片$https://cdn.example/movie.mp4',
     );
-    expect(groups.map((group) => group.name), ['线路A', '线路B']);
+    expect(groups.map((group) => group.name), ['夸克原画#0102', '线路B']);
     expect(groups.first.episodes.last.name, '第2集');
+
+    final detail = TvboxVideo.fromJson({
+      'vod_id': 'movie-1',
+      'vod_name': '测试',
+      'vod_actor': '演员甲,演员乙',
+      'vod_director': '导演甲',
+      'vod_year': '2026',
+      'vod_score': '8.6',
+    });
+    expect((detail.actor, detail.director, detail.year, detail.score),
+        ('演员甲,演员乙', '导演甲', '2026', '8.6'));
 
     final playback = await playbackForItem(
       AppStore(),

@@ -67,6 +67,14 @@ class TvboxVideo {
     this.picture = '',
     this.remarks = '',
     this.content = '',
+    this.typeName = '',
+    this.year = '',
+    this.area = '',
+    this.language = '',
+    this.director = '',
+    this.actor = '',
+    this.score = '',
+    this.backdrop = '',
     this.playFrom = '',
     this.playUrl = '',
     this.action = '',
@@ -78,6 +86,14 @@ class TvboxVideo {
         picture: '${json['vod_pic'] ?? json['pic'] ?? ''}',
         remarks: '${json['vod_remarks'] ?? json['note'] ?? ''}',
         content: '${json['vod_content'] ?? json['des'] ?? ''}',
+        typeName: '${json['type_name'] ?? json['vod_class'] ?? ''}',
+        year: '${json['vod_year'] ?? ''}',
+        area: '${json['vod_area'] ?? ''}',
+        language: '${json['vod_lang'] ?? ''}',
+        director: '${json['vod_director'] ?? ''}',
+        actor: '${json['vod_actor'] ?? ''}',
+        score: '${json['vod_score'] ?? ''}',
+        backdrop: '${json['vod_pic_slide'] ?? ''}',
         playFrom: '${json['vod_play_from'] ?? ''}',
         playUrl: '${json['vod_play_url'] ?? ''}',
         action: '${json['action'] ?? ''}',
@@ -88,6 +104,14 @@ class TvboxVideo {
   final String picture;
   final String remarks;
   final String content;
+  final String typeName;
+  final String year;
+  final String area;
+  final String language;
+  final String director;
+  final String actor;
+  final String score;
+  final String backdrop;
   final String playFrom;
   final String playUrl;
   final String action;
@@ -98,6 +122,14 @@ class TvboxVideo {
         'vod_pic': picture,
         'vod_remarks': remarks,
         'vod_content': content,
+        'type_name': typeName,
+        'vod_year': year,
+        'vod_area': area,
+        'vod_lang': language,
+        'vod_director': director,
+        'vod_actor': actor,
+        'vod_score': score,
+        'vod_pic_slide': backdrop,
         'vod_play_from': playFrom,
         'vod_play_url': playUrl,
         'action': action,
@@ -1025,6 +1057,13 @@ class TvboxClient {
             picture: text('pic'),
             remarks: text('note'),
             content: text('des'),
+            typeName: text('type'),
+            year: text('year'),
+            area: text('area'),
+            language: text('lang'),
+            director: text('director'),
+            actor: text('actor'),
+            score: text('score'),
             playFrom: lines
                 .map((line) => line.getAttribute('flag') ?? '线路')
                 .join(r'$$$'),
@@ -1303,8 +1342,38 @@ class _TvboxPageState extends State<TvboxPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('TVBox'),
-        centerTitle: true,
+        titleSpacing: 16,
+        title: sites.isEmpty
+            ? null
+            : DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  key: ValueKey(site?.key),
+                  value: site?.key,
+                  isExpanded: true,
+                  icon: const Icon(Icons.arrow_drop_down),
+                  items: [
+                    for (final item in sites)
+                      DropdownMenuItem(
+                        value: item.key,
+                        child: Text(
+                          '${item.name} · type ${item.type}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 15, fontWeight: FontWeight.normal),
+                        ),
+                      ),
+                  ],
+                  onChanged: (value) {
+                    site = sites.where((item) => item.key == value).firstOrNull;
+                    categories = const [];
+                    videos = const [];
+                    selectedTypeId = null;
+                    unawaited(_load());
+                  },
+                ),
+              ),
+        centerTitle: false,
         actions: [
           if (widget.store.tvboxApiUrl.isNotEmpty)
             IconButton(
@@ -1334,31 +1403,6 @@ class _TvboxPageState extends State<TvboxPage> {
             )
           : Column(
               children: [
-                if (sites.length > 1)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-                    child: DropdownButtonFormField<String>(
-                      key: ValueKey(site?.key),
-                      initialValue: site?.key,
-                      decoration: const InputDecoration(
-                          labelText: '站点', border: OutlineInputBorder()),
-                      items: [
-                        for (final item in sites)
-                          DropdownMenuItem(
-                              value: item.key,
-                              child: Text('${item.name} · type ${item.type}')),
-                      ],
-                      onChanged: (value) {
-                        site = sites
-                            .where((item) => item.key == value)
-                            .firstOrNull;
-                        categories = const [];
-                        videos = const [];
-                        selectedTypeId = null;
-                        unawaited(_load());
-                      },
-                    ),
-                  ),
                 if (categories.isNotEmpty)
                   SizedBox(
                     height: 48,
@@ -1400,11 +1444,11 @@ class _TvboxPageState extends State<TvboxPage> {
                     child: GridView.builder(
                       padding: const EdgeInsets.all(16),
                       gridDelegate:
-                          const SliverGridDelegateWithMaxCrossAxisExtent(
-                              maxCrossAxisExtent: 190,
-                              childAspectRatio: .62,
-                              crossAxisSpacing: 12,
-                              mainAxisSpacing: 12),
+                          const SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: 3,
+                              childAspectRatio: .58,
+                              crossAxisSpacing: 10,
+                              mainAxisSpacing: 10),
                       itemCount: videos.length,
                       itemBuilder: (context, index) {
                         return _TvboxVideoCard(
@@ -1658,7 +1702,10 @@ class _TvboxVideoCard extends StatelessWidget {
                           '$sourceName${video.remarks.isEmpty ? '' : ' · ${video.remarks}'}',
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(color: Colors.white),
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.normal),
                         ),
                       ),
                     ),
@@ -1672,7 +1719,10 @@ class _TvboxVideoCard extends StatelessWidget {
                             maxLines: 1,
                             textAlign: TextAlign.center,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(color: Colors.white)),
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                                fontWeight: FontWeight.normal)),
                       ),
                     ),
                   ]),
@@ -1683,12 +1733,16 @@ class _TvboxVideoCard extends StatelessWidget {
           Text(video.name,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontWeight: FontWeight.w600)),
+              style:
+                  const TextStyle(fontSize: 13, fontWeight: FontWeight.normal)),
           if (video.remarks.isNotEmpty)
             Text(video.remarks,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                style: const TextStyle(
+                    color: Colors.grey,
+                    fontSize: 11,
+                    fontWeight: FontWeight.normal)),
         ],
       ]),
     );
@@ -1796,11 +1850,13 @@ class _TvboxFastSearchPageState extends State<TvboxFastSearchPage> {
         child: ListTile(
           dense: true,
           selected: selected,
-          contentPadding: const EdgeInsets.symmetric(horizontal: 10),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 4),
           title: Text(label,
-              maxLines: 2,
+              maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.center),
+              textAlign: TextAlign.center,
+              style:
+                  const TextStyle(fontSize: 11, fontWeight: FontWeight.normal)),
           onTap: () => setState(() => selectedSourceKey = key),
         ),
       ),
@@ -1812,14 +1868,22 @@ class _TvboxFastSearchPageState extends State<TvboxFastSearchPage> {
     final visible = visibleResults;
     final progress = total == 0 ? 0.0 : finished / total;
     return Scaffold(
-      appBar: AppBar(title: Text(widget.keyword)),
+      appBar: AppBar(
+          title: Text(widget.keyword,
+              style: const TextStyle(
+                  fontSize: 18, fontWeight: FontWeight.normal))),
       body: Column(
         children: [
           ListTile(
+            dense: true,
             title: Text(
-                searching ? '搜索($finished/$total)' : '搜索完成 ${results.length}'),
+                searching ? '搜索($finished/$total)' : '搜索完成 ${results.length}',
+                style: const TextStyle(
+                    fontSize: 15, fontWeight: FontWeight.normal)),
             subtitle: Text(
-                '源 $finished/$total${timedOut == 0 ? '' : ' · 超时 $timedOut'}'),
+                '源 $finished/$total${timedOut == 0 ? '' : ' · 超时 $timedOut'}',
+                style: const TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.normal)),
           ),
           if (searching) LinearProgressIndicator(value: progress),
           Expanded(
@@ -1830,7 +1894,7 @@ class _TvboxFastSearchPageState extends State<TvboxFastSearchPage> {
                   width:
                       math.min(132.0, MediaQuery.sizeOf(context).width * 0.32),
                   child: ListView(
-                    padding: const EdgeInsets.fromLTRB(10, 10, 6, 10),
+                    padding: const EdgeInsets.fromLTRB(6, 10, 4, 10),
                     children: [
                       _sourceTile('全部显示', null),
                       for (final source in resultSites.values)
@@ -1888,6 +1952,7 @@ class TvboxDetailPage extends StatefulWidget {
 
 class _TvboxDetailPageState extends State<TvboxDetailPage> {
   late Future<TvboxVideo> detail = widget.client.detail(widget.video.id);
+  String? selectedGroupName;
 
   Future<void> _play(
       TvboxVideo video, TvboxPlayGroup group, TvboxEpisode episode) async {
@@ -1902,64 +1967,459 @@ class _TvboxDetailPageState extends State<TvboxDetailPage> {
     }
   }
 
+  Widget _image(String value, {BoxFit fit = BoxFit.cover}) {
+    final request = tvboxImageRequest(value);
+    if (request.url.isEmpty) {
+      return const ColoredBox(
+        color: Color(0xFF252A22),
+        child: Center(
+          child: Icon(Icons.movie_creation_outlined, color: Colors.white70),
+        ),
+      );
+    }
+    return FutureBuilder<Uint8List?>(
+      future: _loadTvboxImage(request),
+      builder: (_, snapshot) {
+        final bytes = snapshot.data;
+        if (bytes == null || bytes.isEmpty) {
+          return const ColoredBox(color: Color(0xFF252A22));
+        }
+        return Image.memory(bytes,
+            fit: fit,
+            gaplessPlayback: true,
+            errorBuilder: (_, __, ___) =>
+                const ColoredBox(color: Color(0xFF252A22)));
+      },
+    );
+  }
+
+  TvboxRecentEntry? _recent(TvboxVideo video, TvboxPlayGroup group) =>
+      widget.store.tvboxRecent
+          .where((entry) =>
+              entry.site.key == widget.client.site.key &&
+              entry.video.id == video.id &&
+              entry.groupName == group.name)
+          .firstOrNull;
+
   @override
-  Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(title: Text(widget.video.name)),
-        body: FutureBuilder<TvboxVideo>(
-          future: detail,
-          builder: (context, snapshot) {
-            if (snapshot.connectionState != ConnectionState.done) {
-              return const Center(child: CircularProgressIndicator());
-            }
-            if (snapshot.hasError) {
-              return EmptyState(
-                  icon: Icons.error_outline,
-                  title: '详情加载失败',
-                  message: '${snapshot.error}',
-                  action: FilledButton(
-                      onPressed: () => setState(
-                          () => detail = widget.client.detail(widget.video.id)),
-                      child: const Text('重试')));
-            }
-            final video = snapshot.requireData;
-            final groups = parseTvboxPlayGroups(video.playFrom, video.playUrl);
-            return ListView(
-              padding: const EdgeInsets.all(18),
-              children: [
-                Text(video.name,
-                    style: Theme.of(context).textTheme.headlineSmall),
-                if (video.remarks.isNotEmpty)
-                  Padding(
-                      padding: const EdgeInsets.only(top: 6),
-                      child: Text(video.remarks,
-                          style: const TextStyle(color: Colors.grey))),
-                if (video.content.isNotEmpty)
-                  Padding(
-                      padding: const EdgeInsets.only(top: 12),
-                      child: Text(
-                          video.content.replaceAll(RegExp(r'<[^>]*>'), ''))),
-                const SizedBox(height: 18),
-                if (groups.isEmpty) const Text('接口未返回可播放地址'),
-                for (final group in groups) ...[
-                  Text(group.name,
-                      style: const TextStyle(
-                          fontSize: 17, fontWeight: FontWeight.w700)),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
+  Widget build(BuildContext context) => FutureBuilder<TvboxVideo>(
+        future: detail,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState != ConnectionState.done) {
+            return const Scaffold(
+              backgroundColor: Color(0xFF090B08),
+              body: Center(child: CircularProgressIndicator()),
+            );
+          }
+          if (snapshot.hasError) {
+            return Scaffold(
+              appBar: AppBar(),
+              body: EmptyState(
+                icon: Icons.error_outline,
+                title: '详情加载失败',
+                message: '${snapshot.error}',
+                action: FilledButton(
+                  onPressed: () => setState(
+                      () => detail = widget.client.detail(widget.video.id)),
+                  child: const Text('重试'),
+                ),
+              ),
+            );
+          }
+
+          final video = snapshot.requireData;
+          final groups = parseTvboxPlayGroups(video.playFrom, video.playUrl);
+          final recentGroup = widget.store.tvboxRecent
+              .where((entry) =>
+                  entry.site.key == widget.client.site.key &&
+                  entry.video.id == video.id)
+              .firstOrNull
+              ?.groupName;
+          final selectedGroup = groups
+                  .where((group) =>
+                      group.name == (selectedGroupName ?? recentGroup))
+                  .firstOrNull ??
+              groups.firstOrNull;
+          final recent =
+              selectedGroup == null ? null : _recent(video, selectedGroup);
+          final currentEpisode = selectedGroup?.episodes
+                  .where((episode) => episode.url == recent?.episodeUrl)
+                  .firstOrNull ??
+              selectedGroup?.episodes.firstOrNull;
+          final currentItem = selectedGroup == null || currentEpisode == null
+              ? null
+              : tvboxMediaItem(
+                  widget.client.site,
+                  video,
+                  selectedGroup.name,
+                  currentEpisode,
+                  selectedGroup.episodes.indexOf(currentEpisode),
+                );
+          final progress = currentItem == null
+              ? 0
+              : widget.store.progress[currentItem.id] ?? 0;
+          final overview = video.content
+              .replaceAll(RegExp(r'<[^>]*>'), '')
+              .replaceAll('&nbsp;', ' ')
+              .trim();
+          final actors = video.actor
+              .split(RegExp(r'[,，/、]+'))
+              .map((value) => value.trim())
+              .where((value) => value.isNotEmpty)
+              .toList();
+          final info = [video.typeName, video.area, video.language]
+              .where((value) => value.trim().isNotEmpty)
+              .join('  ');
+          final score = double.tryParse(video.score);
+
+          return Scaffold(
+            backgroundColor: const Color(0xFF090B08),
+            body: CustomScrollView(
+              slivers: [
+                SliverToBoxAdapter(
+                  child: Stack(
                     children: [
-                      for (final episode in group.episodes)
-                        OutlinedButton(
-                            onPressed: () => _play(video, group, episode),
-                            child: Text(episode.name)),
+                      Positioned.fill(
+                        child: _image(video.backdrop.isEmpty
+                            ? video.picture
+                            : video.backdrop),
+                      ),
+                      Positioned.fill(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: [
+                                Colors.black.withValues(alpha: 0.34),
+                                const Color(0xFF090B08).withValues(alpha: 0.78),
+                                const Color(0xFF090B08),
+                              ],
+                              stops: const [0, 0.58, 1],
+                            ),
+                          ),
+                        ),
+                      ),
+                      SafeArea(
+                        bottom: false,
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(22, 8, 22, 34),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  IconButton(
+                                    color: Colors.white,
+                                    onPressed: () =>
+                                        Navigator.of(context).maybePop(),
+                                    icon: const Icon(Icons.chevron_left,
+                                        size: 32),
+                                  ),
+                                  Expanded(
+                                    child: Text(
+                                      video.name,
+                                      textAlign: TextAlign.center,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 21,
+                                        fontWeight: FontWeight.normal,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 48),
+                                ],
+                              ),
+                              const SizedBox(height: 128),
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(8),
+                                    child: SizedBox(
+                                      width: 82,
+                                      height: 123,
+                                      child: _image(video.picture),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 14),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Wrap(
+                                          spacing: 10,
+                                          runSpacing: 8,
+                                          children: [
+                                            if ((score ?? 0) > 0)
+                                              _DarkMetaChip(
+                                                icon: Icons.local_movies,
+                                                label:
+                                                    score!.toStringAsFixed(1),
+                                                accent: const Color(0xFF60D264),
+                                              ),
+                                            if (video.year.isNotEmpty)
+                                              _DarkMetaChip(
+                                                icon: Icons
+                                                    .calendar_month_outlined,
+                                                label: video.year,
+                                              ),
+                                            if (video.remarks.isNotEmpty)
+                                              _DarkTextChip(
+                                                  label: video.remarks),
+                                          ],
+                                        ),
+                                        if (info.isNotEmpty) ...[
+                                          const SizedBox(height: 12),
+                                          Text(
+                                            info,
+                                            maxLines: 2,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                              color: Color(0xDDFFFFFF),
+                                              fontSize: 15,
+                                              fontWeight: FontWeight.normal,
+                                            ),
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                     ],
                   ),
-                  const SizedBox(height: 18),
-                ],
+                ),
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(28, 0, 28, 34),
+                  sliver: SliverList(
+                    delegate: SliverChildListDelegate([
+                      SizedBox(
+                        height: 46,
+                        child: FilledButton.icon(
+                          style: FilledButton.styleFrom(
+                            backgroundColor: Colors.white,
+                            foregroundColor: Colors.black,
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(6)),
+                          ),
+                          onPressed: selectedGroup == null ||
+                                  currentEpisode == null
+                              ? null
+                              : () =>
+                                  _play(video, selectedGroup, currentEpisode),
+                          icon: const Icon(Icons.play_arrow, size: 22),
+                          label: Text(
+                            currentEpisode == null
+                                ? '接口未返回可播放地址'
+                                : progress <= 0
+                                    ? '播放 ${currentEpisode.name}'
+                                    : '继续播放 ${currentEpisode.name} ${formatDuration(Duration(milliseconds: progress))}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.normal,
+                            ),
+                          ),
+                        ),
+                      ),
+                      if (selectedGroup != null) ...[
+                        const SizedBox(height: 34),
+                        Row(
+                          children: [
+                            const Text(
+                              '版本',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 16,
+                                fontWeight: FontWeight.normal,
+                              ),
+                            ),
+                            const SizedBox(width: 14),
+                            PopupMenuButton<String>(
+                              tooltip: '切换版本',
+                              color: Colors.white,
+                              initialValue: selectedGroup.name,
+                              onSelected: (value) =>
+                                  setState(() => selectedGroupName = value),
+                              itemBuilder: (_) => [
+                                for (final group in groups)
+                                  PopupMenuItem(
+                                    value: group.name,
+                                    child: Text(group.name),
+                                  ),
+                              ],
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child: Text(
+                                      selectedGroup.name,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.normal,
+                                      ),
+                                    ),
+                                  ),
+                                  const Icon(Icons.arrow_drop_down,
+                                      color: Colors.white),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        const Divider(
+                          height: 1,
+                          thickness: 1,
+                          color: Color(0x44FFFFFF),
+                        ),
+                        const SizedBox(height: 20),
+                        SizedBox(
+                          height: 154,
+                          child: ListView.separated(
+                            scrollDirection: Axis.horizontal,
+                            itemCount: selectedGroup.episodes.length,
+                            separatorBuilder: (_, __) =>
+                                const SizedBox(width: 12),
+                            itemBuilder: (context, index) {
+                              final episode = selectedGroup.episodes[index];
+                              final item = tvboxMediaItem(widget.client.site,
+                                  video, selectedGroup.name, episode, index);
+                              final position =
+                                  widget.store.progress[item.id] ?? 0;
+                              final duration =
+                                  widget.store.durations[item.id] ?? 0;
+                              final progressValue = position <= 0
+                                  ? 0.0
+                                  : duration <= 0
+                                      ? 0.06
+                                      : (position / duration).clamp(0.0, 1.0);
+                              return SizedBox(
+                                width: 176,
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(8),
+                                  onTap: () =>
+                                      _play(video, selectedGroup, episode),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      ClipRRect(
+                                        borderRadius: BorderRadius.circular(8),
+                                        child: AspectRatio(
+                                          aspectRatio: 16 / 9,
+                                          child: Stack(
+                                            fit: StackFit.expand,
+                                            children: [
+                                              _image(video.picture),
+                                              const Center(
+                                                child: CircleAvatar(
+                                                  radius: 15,
+                                                  backgroundColor:
+                                                      Color(0xAA000000),
+                                                  child: Icon(Icons.play_arrow,
+                                                      color: Colors.white,
+                                                      size: 20),
+                                                ),
+                                              ),
+                                              Positioned(
+                                                left: 0,
+                                                right: 0,
+                                                bottom: 0,
+                                                child: LinearProgressIndicator(
+                                                  minHeight: 3,
+                                                  value: progressValue,
+                                                  backgroundColor:
+                                                      const Color(0x66FFFFFF),
+                                                  color:
+                                                      const Color(0xFF2E7AF6),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 7),
+                                      Text(
+                                        '${index + 1}. ${episode.name}',
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.normal,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ],
+                      if (overview.isNotEmpty) ...[
+                        const SizedBox(height: 28),
+                        const _DarkSectionHeader(title: '剧情简介'),
+                        const SizedBox(height: 12),
+                        Text(
+                          overview,
+                          style: const TextStyle(
+                            color: Color(0xDDFFFFFF),
+                            height: 1.65,
+                            fontSize: 15,
+                            fontWeight: FontWeight.normal,
+                          ),
+                        ),
+                      ],
+                      if (video.director.isNotEmpty) ...[
+                        const SizedBox(height: 24),
+                        Text(
+                          '导演：${video.director}',
+                          style: const TextStyle(
+                            color: Color(0xDDFFFFFF),
+                            fontSize: 14,
+                            fontWeight: FontWeight.normal,
+                          ),
+                        ),
+                      ],
+                      if (actors.isNotEmpty) ...[
+                        const SizedBox(height: 30),
+                        const _DarkSectionHeader(title: '相关演员'),
+                        const SizedBox(height: 16),
+                        SizedBox(
+                          height: 130,
+                          child: ListView.separated(
+                            scrollDirection: Axis.horizontal,
+                            itemCount: math.min(actors.length, 10),
+                            separatorBuilder: (_, __) =>
+                                const SizedBox(width: 18),
+                            itemBuilder: (_, index) => _ActorAvatar(
+                              store: widget.store,
+                              name: actors[index],
+                              imagePath: null,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ]),
+                  ),
+                ),
               ],
-            );
-          },
-        ),
+            ),
+          );
+        },
       );
 }
