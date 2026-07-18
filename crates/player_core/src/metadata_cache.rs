@@ -251,6 +251,21 @@ pub fn put_playback_progress_json(
     Ok(())
 }
 
+pub fn clear_playback_recent_json(db_path: &str, item_ids_json: &str) -> Result<()> {
+    let item_ids: Vec<String> = serde_json::from_str(item_ids_json)?;
+    let mut conn = open(db_path)?;
+    let transaction = conn.transaction()?;
+    for item_id in item_ids {
+        transaction.execute(
+            "update playback_progress set last_played_at=null, updated_at=?2
+             where file_id=(select id from media_files where item_id=?1)",
+            params![item_id, now_ms()],
+        )?;
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
 pub fn put_playback_duration_json(db_path: &str, item_id: &str, duration_ms: i64) -> Result<()> {
     if duration_ms <= 0 {
         return Ok(());
@@ -3732,6 +3747,19 @@ mod tests {
             Some(60000),
         )
         .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&query_recent_json(db_path.to_str().unwrap()).unwrap())
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        clear_playback_recent_json(
+            db_path.to_str().unwrap(),
+            r#"["source-1:/media/Show/01.mp4"]"#,
+        )
+        .unwrap();
         put_folder_orientation_json(
             db_path.to_str().unwrap(),
             "source-1:local:/media/Show",
@@ -3744,6 +3772,16 @@ mod tests {
         assert_eq!(exported["items"].as_array().unwrap().len(), 1);
         assert_eq!(exported["progress"]["source-1:/media/Show/01.mp4"], 42000);
         assert_eq!(exported["durations"]["source-1:/media/Show/01.mp4"], 60000);
+        assert!(exported["lastPlayedAt"]
+            .get("source-1:/media/Show/01.mp4")
+            .is_none());
+        assert!(serde_json::from_str::<Value>(
+            &query_recent_json(db_path.to_str().unwrap()).unwrap()
+        )
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .is_empty());
         assert_eq!(
             exported["folderOrientations"]["source-1:local:/media/Show/"],
             "landscape"

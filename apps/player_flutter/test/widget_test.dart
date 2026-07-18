@@ -48,6 +48,23 @@ void main() {
     expect(clearCalls, 1);
   });
 
+  test('TVBox incognito site keys round-trip through settings', () {
+    final store = AppStore();
+    store.importSettingsJson({
+      'tvboxApiUrl': 'https://example.com/config.json',
+      'tvboxIncognitoSiteKeys': [
+        'https://example.com/config.json\tsite-a',
+      ],
+    });
+
+    expect(store.isTvboxSiteIncognito('site-a'), isTrue);
+    expect(
+      (jsonDecode(store.exportSettings())
+          as Map<String, dynamic>)['tvboxIncognitoSiteKeys'],
+      ['https://example.com/config.json\tsite-a'],
+    );
+  });
+
   test('media library groups videos by folder', () {
     const sourceId = 'source';
     const items = [

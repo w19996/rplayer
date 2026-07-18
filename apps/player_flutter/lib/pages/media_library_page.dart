@@ -104,6 +104,9 @@ class MediaLibraryPage extends StatelessWidget {
                               recent: recent,
                               item: item,
                               tvboxPicture: tvbox?.video.picture,
+                              onLongPress: () => unawaited(
+                                  showRecentPlaybackMenu(
+                                      context, store, recent)),
                               onTap: item == null
                                   ? null
                                   : () async {
@@ -797,6 +800,7 @@ class _RecentDbTile extends StatelessWidget {
     required this.recent,
     required this.item,
     required this.onTap,
+    required this.onLongPress,
     this.tvboxPicture,
   });
 
@@ -804,6 +808,7 @@ class _RecentDbTile extends StatelessWidget {
   final LibraryRecentEntry recent;
   final MediaItem? item;
   final VoidCallback? onTap;
+  final VoidCallback onLongPress;
   final String? tvboxPicture;
 
   double get progressValue {
@@ -825,6 +830,7 @@ class _RecentDbTile extends StatelessWidget {
     return InkWell(
       borderRadius: BorderRadius.circular(8),
       onTap: onTap,
+      onLongPress: onLongPress,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -934,6 +940,27 @@ class _RecentDbTile extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+Future<void> showRecentPlaybackMenu(
+    BuildContext context, AppStore store, LibraryRecentEntry recent) async {
+  final remove = await showModalBottomSheet<bool>(
+    context: context,
+    builder: (context) => SafeArea(
+      child: ListTile(
+        leading: const Icon(Icons.delete_outline),
+        title: const Text('删除最近播放记录'),
+        onTap: () => Navigator.of(context).pop(true),
+      ),
+    ),
+  );
+  if (remove != true) return;
+  try {
+    await store.removeRecentPlayback(recent);
+    if (context.mounted) showSnack(context, '已删除最近播放记录');
+  } catch (error) {
+    if (context.mounted) showSnack(context, '删除失败：$error');
   }
 }
 

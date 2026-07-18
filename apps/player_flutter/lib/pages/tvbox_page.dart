@@ -339,16 +339,18 @@ Future<void> openTvboxPlayback(
     final itemIndex = episodes.indexWhere((value) => value.id == item.id);
     if (itemIndex < 0) throw StateError('找不到所选剧集');
     final selected = group.episodes[itemIndex];
-    await store.rememberTvboxRecent(TvboxRecentEntry(
-      site: client.site,
-      video: video,
-      groupName: group.name,
-      episodeName: selected.name,
-      episodeUrl: selected.url,
-      lastPlayedAt: DateTime.now().millisecondsSinceEpoch,
-      positionMs: store.progress[item.id] ?? 0,
-      durationMs: store.durations[item.id],
-    ));
+    if (!store.isTvboxSiteIncognito(client.site.key)) {
+      await store.rememberTvboxRecent(TvboxRecentEntry(
+        site: client.site,
+        video: video,
+        groupName: group.name,
+        episodeName: selected.name,
+        episodeUrl: selected.url,
+        lastPlayedAt: DateTime.now().millisecondsSinceEpoch,
+        positionMs: store.progress[item.id] ?? 0,
+        durationMs: store.durations[item.id],
+      ));
+    }
     return client.playback(group.name, selected.url);
   }
 
@@ -1242,6 +1244,13 @@ class _TvboxPageState extends State<TvboxPage> {
     await _load();
   }
 
+  Future<void> _toggleIncognito(TvboxSite selected) async {
+    final enabled = await widget.store.toggleTvboxSiteIncognito(selected.key);
+    if (!mounted) return;
+    setState(() {});
+    showSnack(context, '${selected.name}：${enabled ? '已开启无痕' : '已关闭无痕'}');
+  }
+
   Future<void> _search() async {
     final controller = TextEditingController();
     final value = await showDialog<String>(
@@ -1355,12 +1364,34 @@ class _TvboxPageState extends State<TvboxPage> {
                     for (final item in sites)
                       DropdownMenuItem(
                         value: item.key,
-                        child: Text(
-                          '${item.name} · type ${item.type}',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                              fontSize: 15, fontWeight: FontWeight.normal),
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onLongPress: () {
+                            if (ModalRoute.of(context)?.isCurrent == false) {
+                              Navigator.of(context).pop();
+                            }
+                            unawaited(_toggleIncognito(item));
+                          },
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  '${item.name} · type ${item.type}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.normal),
+                                ),
+                              ),
+                              if (widget.store.isTvboxSiteIncognito(item.key))
+                                const Padding(
+                                  padding: EdgeInsets.only(left: 8),
+                                  child: Icon(Icons.visibility_off_outlined,
+                                      size: 18),
+                                ),
+                            ],
+                          ),
                         ),
                       ),
                   ],

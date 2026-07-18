@@ -18,9 +18,9 @@ pub use media::{
     set_version_directory_regexes_json, MediaIdentity, MediaKind, SearchCandidate,
 };
 pub use metadata_cache::{
-    cache_images_json, get_all_metadata_json, get_app_state_json, get_cached_image_json,
-    get_metadata_flag_json, prune_metadata_json, put_app_state_json, put_cached_image_json,
-    put_folder_orientation_json, put_metadata_flag_json, put_metadata_json,
+    cache_images_json, clear_playback_recent_json, get_all_metadata_json, get_app_state_json,
+    get_cached_image_json, get_metadata_flag_json, prune_metadata_json, put_app_state_json,
+    put_cached_image_json, put_folder_orientation_json, put_metadata_flag_json, put_metadata_json,
     put_playback_duration_json, put_playback_progress_json, query_home_json, query_recent_json,
     query_show_detail_json, replace_all_metadata_json,
 };
@@ -264,6 +264,19 @@ pub extern "C" fn player_core_playback_duration_put_json(
         let item_id = read_c_string(item_id)?;
         let duration_ms = read_c_string(duration_ms)?.parse::<i64>()?;
         put_playback_duration_json(&db_path, &item_id, duration_ms)?;
+        Ok("{}".to_string())
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn player_core_playback_recent_clear_json(
+    db_path: *const c_char,
+    item_ids_json: *const c_char,
+) -> *mut c_char {
+    ffi_result(|| {
+        let db_path = read_c_string(db_path)?;
+        let item_ids_json = read_c_string(item_ids_json)?;
+        clear_playback_recent_json(&db_path, &item_ids_json)?;
         Ok("{}".to_string())
     })
 }

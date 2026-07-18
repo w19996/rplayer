@@ -22,6 +22,7 @@ class AppStore extends ChangeNotifier {
   String tvboxApiUrl = '';
   String tvboxTrustedApiUrl = '';
   final List<TvboxRecentEntry> tvboxRecent = [];
+  final Set<String> tvboxIncognitoSiteKeys = {};
   String mpvAdvancedPreset = mpvAdvancedPresetAuto;
   Map<String, String> mpvAdvancedOptionValues = {};
   SyncConfig? syncConfig;
@@ -383,6 +384,7 @@ class AppStore extends ChangeNotifier {
       'tvboxApiUrl': tvboxApiUrl,
       'tvboxTrustedApiUrl': tvboxTrustedApiUrl,
       'tvboxRecent': tvboxRecent.map((entry) => entry.toJson()).toList(),
+      'tvboxIncognitoSiteKeys': tvboxIncognitoSiteKeys.toList()..sort(),
       'mpvAdvancedPreset': mpvAdvancedPreset,
       'mpvAdvancedOptions': effectiveMpvAdvancedOptions(),
       'syncConfig': syncConfig?.toJson(),
@@ -433,6 +435,10 @@ class AppStore extends ChangeNotifier {
       ..addAll((json['tvboxRecent'] as List<dynamic>? ?? const [])
           .whereType<Map<String, dynamic>>()
           .map(TvboxRecentEntry.fromJson));
+    tvboxIncognitoSiteKeys
+      ..clear()
+      ..addAll((json['tvboxIncognitoSiteKeys'] as List<dynamic>? ?? const [])
+          .whereType<String>());
     mpvAdvancedPreset = normalizeMpvAdvancedPreset(json['mpvAdvancedPreset']);
     mpvAdvancedOptionValues = normalizeMpvAdvancedOptions(
       json['mpvAdvancedOptions'],
@@ -492,6 +498,20 @@ class AppStore extends ChangeNotifier {
   TvboxRecentEntry? tvboxRecentByItemId(String itemId) =>
       tvboxRecent.where((entry) => entry.item.id == itemId).firstOrNull;
 
+  String _tvboxIncognitoKey(String siteKey) => '$tvboxApiUrl\t$siteKey';
+
+  bool isTvboxSiteIncognito(String siteKey) =>
+      tvboxIncognitoSiteKeys.contains(_tvboxIncognitoKey(siteKey));
+
+  Future<bool> toggleTvboxSiteIncognito(String siteKey) async {
+    final key = _tvboxIncognitoKey(siteKey);
+    final enabled = tvboxIncognitoSiteKeys.add(key);
+    if (!enabled) tvboxIncognitoSiteKeys.remove(key);
+    notifyListeners();
+    await saveSettings(logEvent: false);
+    return enabled;
+  }
+
   Future<void> rememberTvboxRecent(TvboxRecentEntry recent) async {
     tvboxRecent.removeWhere((entry) => entry.groupKey == recent.groupKey);
     tvboxRecent.insert(0, recent);
@@ -501,6 +521,30 @@ class AppStore extends ChangeNotifier {
     restoreTvboxRecentProgress();
     notifyListeners();
     await saveSettings(logEvent: false);
+  }
+
+  Future<void> removeRecentPlayback(LibraryRecentEntry recent) async {
+    final tvbox = tvboxRecentByItemId(recent.itemId);
+    if (tvbox != null) {
+      tvboxRecent.removeWhere((entry) => entry.groupKey == tvbox.groupKey);
+      lastPlayedAt.remove(recent.itemId);
+      notifyListeners();
+      await saveSettings(logEvent: false);
+      return;
+    }
+    final item = itemById(recent.itemId);
+    if (item == null) return;
+    final groupKey = mediaFolderKey(item);
+    final itemIds = items
+        .where((value) => mediaFolderKey(value) == groupKey)
+        .map((value) => value.id)
+        .toList();
+    final db = await metadataDatabaseFile;
+    await RustCoreService.instance.playbackRecentClearAsync(db.path, itemIds);
+    for (final itemId in itemIds) {
+      lastPlayedAt.remove(itemId);
+    }
+    notifyListeners();
   }
 
   void importMediaStateJson(Map<String, dynamic> json) {
@@ -2194,6 +2238,10 @@ class AppStore extends ChangeNotifier {
     final tvboxIndex =
         tvboxRecent.indexWhere((entry) => entry.item.id == itemId);
     if (tvboxIndex >= 0) {
+      if (isTvboxSiteIncognito(tvboxRecent[tvboxIndex].site.key)) {
+        notifyListeners();
+        return;
+      }
       final updated = tvboxRecent[tvboxIndex].copyWith(
         positionMs: position.inMilliseconds,
         durationMs: duration?.inMilliseconds,

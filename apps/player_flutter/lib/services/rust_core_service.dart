@@ -42,6 +42,7 @@ class RustCoreService {
   _RustStringDart? _appStateGetJson;
   _RustTwoStringDart? _appStatePutJson;
   _RustFourStringDart? _playbackProgressPutJson;
+  _RustTwoStringDart? _playbackRecentClearJson;
   _RustThreeStringDart? _playbackDurationPutJson;
   _RustThreeStringDart? _folderOrientationPutJson;
   _RustThreeStringDart? _metadataCachedImageJson;
@@ -71,6 +72,7 @@ class RustCoreService {
       _metadataPruneJson != null &&
       _appStateGetJson != null &&
       _appStatePutJson != null &&
+      _playbackRecentClearJson != null &&
       _metadataCachedImageJson != null &&
       _metadataGetFlagJson != null &&
       _metadataPutFlagJson != null &&
@@ -337,6 +339,16 @@ class RustCoreService {
     return Isolate.run(() => _rustPlaybackProgressPutWorker(args));
   }
 
+  void playbackRecentClear(String dbPath, List<String> itemIds) {
+    _ensureAvailable();
+    _callTwoString(_playbackRecentClearJson, dbPath, jsonEncode(itemIds));
+  }
+
+  Future<void> playbackRecentClearAsync(String dbPath, List<String> itemIds) {
+    final args = [dbPath, jsonEncode(itemIds)];
+    return Isolate.run(() => _rustPlaybackRecentClearWorker(args));
+  }
+
   void playbackDurationPut(String dbPath, String itemId, int durationMs) {
     _ensureAvailable();
     if (_playbackDurationPutJson == null) {
@@ -577,6 +589,9 @@ class RustCoreService {
               'player_core_app_state_put_json');
       _playbackProgressPutJson =
           _lookupOptionalFourString('player_core_playback_progress_put_json');
+      _playbackRecentClearJson = _library!
+          .lookupFunction<_RustTwoStringFn, _RustTwoStringDart>(
+              'player_core_playback_recent_clear_json');
       _playbackDurationPutJson =
           _lookupOptionalThreeString('player_core_playback_duration_put_json');
       _folderOrientationPutJson =
@@ -834,6 +849,11 @@ void _rustPlaybackProgressPutWorker(List<String> args) {
     int.parse(args[2]),
     args[3].isEmpty ? null : int.parse(args[3]),
   );
+}
+
+void _rustPlaybackRecentClearWorker(List<String> args) {
+  final itemIds = (jsonDecode(args[1]) as List<dynamic>).cast<String>();
+  RustCoreService._().playbackRecentClear(args[0], itemIds);
 }
 
 void _rustPlaybackDurationPutWorker(List<String> args) {
