@@ -175,6 +175,10 @@ jobs:
       - name: Analyze
         run: flutter analyze --no-fatal-infos
 
+      - name: Build Rust/C++ core for Linux tests
+        working-directory: .
+        run: cargo build -p player_core --release
+
       - name: Test
         run: flutter test --no-pub
 

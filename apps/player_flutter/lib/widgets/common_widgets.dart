@@ -644,9 +644,10 @@ class AddSourceTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-          color: Colors.white, borderRadius: BorderRadius.circular(8)),
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(8),
+      clipBehavior: Clip.antiAlias,
       child: ListTile(
         leading: Icon(icon, color: const Color(0xFF2E7AF6), size: 28),
         title: Text(title, style: const TextStyle(fontSize: 16)),
