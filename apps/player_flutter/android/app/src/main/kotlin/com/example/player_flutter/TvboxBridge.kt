@@ -54,6 +54,11 @@ class TvboxBridge(private val activity: Activity) {
                     main.post { result.success(response) }
                 }
             } catch (error: Throwable) {
+                Log.e(
+                    "TvboxBridge",
+                    "TVBox call failed: action=${arguments["action"]}, key=${arguments["key"]}",
+                    error
+                )
                 main.post {
                     result.error("TVBOX_RUNTIME", error.message ?: error.javaClass.simpleName, null)
                 }
@@ -190,6 +195,13 @@ class TvboxBridge(private val activity: Activity) {
 }
 
 private class TvboxJarEngine(private val context: Context) {
+    init {
+        // Configuration-center Spider JARs share this TVBox host file.
+        File(context.filesDir, "config.json").also {
+            if (!it.exists() || it.length() == 0L) it.writeText("{}")
+        }
+    }
+
     private data class LoadedJar(
         val loader: DexClassLoader,
         val proxy: Method?,

@@ -10,6 +10,7 @@ import android.content.IntentFilter
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.media.MediaMetadataRetriever
 import android.graphics.drawable.Icon
 import android.net.ConnectivityManager
@@ -17,9 +18,11 @@ import android.net.NetworkCapabilities
 import android.net.TrafficStats
 import android.os.BatteryManager
 import android.os.Build
+import android.os.Bundle
 import android.provider.Settings
 import android.util.Rational
 import android.view.OrientationEventListener
+import androidx.core.view.WindowCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -44,6 +47,17 @@ class MainActivity : FlutterActivity() {
             if (intent?.action == ACTION_PIP_TOGGLE_PLAYBACK) {
                 appChannel?.invokeMethod("pipTogglePlayback", null)
             }
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        window.statusBarColor = Color.TRANSPARENT
+        window.navigationBarColor = Color.TRANSPARENT
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isStatusBarContrastEnforced = false
+            window.isNavigationBarContrastEnforced = false
         }
     }
 

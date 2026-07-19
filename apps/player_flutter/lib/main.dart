@@ -69,7 +69,18 @@ const appChannel = MethodChannel('rplayer/app');
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  const systemUiStyle = SystemUiOverlayStyle(
+    statusBarColor: Colors.transparent,
+    statusBarIconBrightness: Brightness.dark,
+    statusBarBrightness: Brightness.light,
+    systemNavigationBarColor: Colors.transparent,
+    systemNavigationBarDividerColor: Colors.transparent,
+    systemNavigationBarIconBrightness: Brightness.dark,
+    systemNavigationBarContrastEnforced: false,
+  );
   if (Platform.isAndroid) {
+    unawaited(SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge));
+    SystemChrome.setSystemUIOverlayStyle(systemUiStyle);
     LicenseRegistry.addLicense(() async* {
       yield LicenseEntryWithLineBreaks(
         const ['TVBoxOS Spider compatibility runtime'],
@@ -78,5 +89,8 @@ void main() {
     });
   }
   MediaKit.ensureInitialized();
-  runApp(const PlayerApp());
+  runApp(const AnnotatedRegion<SystemUiOverlayStyle>(
+    value: systemUiStyle,
+    child: PlayerApp(),
+  ));
 }

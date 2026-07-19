@@ -1029,8 +1029,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     danmuSearchEpisodeController.dispose();
     unawaited(setPlaybackWindowFullscreen(false));
     SystemChrome.setPreferredOrientations(DeviceOrientation.values);
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
-        overlays: SystemUiOverlay.values);
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     appChannel.setMethodCallHandler(null);
     unawaited(setNativePlaybackPipEnabled(false));
     unawaited(setNativePlaybackOrientationMode('off'));

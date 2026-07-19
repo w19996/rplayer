@@ -456,7 +456,6 @@ Future<void> openTvboxRecent(
   await openTvboxPlayback(context, store, client, video, group, episode);
 }
 
-const _tvboxHomeTypeId = 'rplayer_tvbox_home';
 final _tvboxImageFutures = <String, Future<Uint8List?>>{};
 
 bool tvboxSearchNameMatches(String name, String keyword) {
@@ -1246,19 +1245,14 @@ class _TvboxPageState extends State<TvboxPage> {
         if (site == null) {
           throw lastError ?? const FormatException('配置中没有可用站点');
         }
-      } else if (categories.isEmpty || typeId == _tvboxHomeTypeId) {
+      } else if (categories.isEmpty) {
         loadedHome = await TvboxClient(site!).home();
       }
-      final loadedCategories = loadedHome == null
-          ? categories
-          : [
-              const TvboxCategory(_tvboxHomeTypeId, '主页'),
-              ...loadedHome.categories,
-            ];
+      final loadedCategories = loadedHome?.categories ?? categories;
       final nextTypeId =
           typeId ?? selectedTypeId ?? loadedCategories.firstOrNull?.id;
-      final loadedVideos = nextTypeId == _tvboxHomeTypeId
-          ? loadedHome?.videos ?? (await TvboxClient(site!).home()).videos
+      final loadedVideos = nextTypeId == null
+          ? loadedHome?.videos ?? const <TvboxVideo>[]
           : await TvboxClient(site!).videos(typeId: nextTypeId);
       if (!mounted) return;
       setState(() {
