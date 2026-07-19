@@ -1271,10 +1271,43 @@ class _TvboxPageState extends State<TvboxPage> {
     }
   }
 
+  Future<void> _editApiAlias(String url, StateSetter refresh) async {
+    final controller =
+        TextEditingController(text: widget.store.tvboxApiAliases[url] ?? '');
+    final value = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('设置源别名'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: '别名（可选）',
+            hintText: '留空时显示源链接',
+          ),
+          onSubmitted: (value) => Navigator.pop(context, value),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context), child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, controller.text),
+              child: const Text('保存')),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (value == null) return;
+    final save = widget.store.setTvboxApiAlias(url, value);
+    refresh(() {});
+    await save;
+  }
+
   Future<void> _configure() async {
     final previous = widget.store.tvboxApiUrl;
     final controller = TextEditingController();
-    final value = await showDialog<String>(
+    final aliasController = TextEditingController();
+    final value = await showDialog<({String url, String? alias})>(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
@@ -1291,42 +1324,64 @@ class _TvboxPageState extends State<TvboxPage> {
                       leading: Icon(url == widget.store.tvboxApiUrl
                           ? Icons.check_circle
                           : Icons.circle_outlined),
-                      title: Text(url,
-                          maxLines: 2, overflow: TextOverflow.ellipsis),
-                      onTap: () => Navigator.pop(context, url),
-                      trailing: IconButton(
-                        tooltip: '删除接口及对应 JAR',
-                        icon: const Icon(Icons.delete_outline),
-                        onPressed: () async {
-                          final confirmed = await showDialog<bool>(
-                            context: context,
-                            builder: (context) => AlertDialog(
-                              title: const Text('删除接口？'),
-                              content: Text('将删除此接口及其对应的 JAR：\n$url'),
-                              actions: [
-                                TextButton(
-                                    onPressed: () =>
-                                        Navigator.pop(context, false),
-                                    child: const Text('取消')),
-                                FilledButton(
-                                    onPressed: () =>
-                                        Navigator.pop(context, true),
-                                    child: const Text('删除')),
-                              ],
-                            ),
-                          );
-                          if (confirmed != true) return;
-                          try {
-                            await widget.store.removeTvboxApiUrl(url);
-                          } catch (error) {
-                            if (mounted) {
-                              ScaffoldMessenger.of(this.context).showSnackBar(
-                                  SnackBar(content: Text('删除失败：$error')));
-                            }
-                            return;
-                          }
-                          setDialogState(() {});
-                        },
+                      title: SizedBox(
+                        height: 24,
+                        child: _AutoScrollingSingleLineText(
+                          widget.store.tvboxApiLabel(url),
+                          style: Theme.of(context).textTheme.bodyLarge ??
+                              const TextStyle(),
+                        ),
+                      ),
+                      subtitle: widget.store.tvboxApiAliases.containsKey(url)
+                          ? Text(url,
+                              maxLines: 1, overflow: TextOverflow.ellipsis)
+                          : null,
+                      onTap: () =>
+                          Navigator.pop(context, (url: url, alias: null)),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            tooltip: '修改别名',
+                            icon: const Icon(Icons.edit_outlined),
+                            onPressed: () => _editApiAlias(url, setDialogState),
+                          ),
+                          IconButton(
+                            tooltip: '删除接口及对应 JAR',
+                            icon: const Icon(Icons.delete_outline),
+                            onPressed: () async {
+                              final confirmed = await showDialog<bool>(
+                                context: context,
+                                builder: (context) => AlertDialog(
+                                  title: const Text('删除接口？'),
+                                  content: Text('将删除此接口及其对应的 JAR：\n$url'),
+                                  actions: [
+                                    TextButton(
+                                        onPressed: () =>
+                                            Navigator.pop(context, false),
+                                        child: const Text('取消')),
+                                    FilledButton(
+                                        onPressed: () =>
+                                            Navigator.pop(context, true),
+                                        child: const Text('删除')),
+                                  ],
+                                ),
+                              );
+                              if (confirmed != true) return;
+                              try {
+                                await widget.store.removeTvboxApiUrl(url);
+                              } catch (error) {
+                                if (mounted) {
+                                  ScaffoldMessenger.of(this.context)
+                                      .showSnackBar(SnackBar(
+                                          content: Text('删除失败：$error')));
+                                }
+                                return;
+                              }
+                              setDialogState(() {});
+                            },
+                          ),
+                        ],
                       ),
                     ),
                   if (widget.store.tvboxApiUrls.isNotEmpty)
@@ -1340,6 +1395,14 @@ class _TvboxPageState extends State<TvboxPage> {
                       hintText: 'https://example.com/tvbox.json',
                     ),
                   ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: aliasController,
+                    decoration: const InputDecoration(
+                      labelText: '源别名（可选）',
+                      hintText: '留空时显示源链接',
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -1349,15 +1412,23 @@ class _TvboxPageState extends State<TvboxPage> {
                 onPressed: () => Navigator.pop(context),
                 child: const Text('关闭')),
             FilledButton(
-                onPressed: () => Navigator.pop(context, controller.text.trim()),
+                onPressed: () => Navigator.pop(
+                      context,
+                      (
+                        url: controller.text.trim(),
+                        alias: aliasController.text.trim(),
+                      ),
+                    ),
                 child: const Text('添加并切换')),
           ],
         ),
       ),
     );
     controller.dispose();
-    if (value != null && value != widget.store.tvboxApiUrl) {
-      final uri = Uri.tryParse(value);
+    aliasController.dispose();
+    if (value != null &&
+        (value.url != widget.store.tvboxApiUrl || value.alias != null)) {
+      final uri = Uri.tryParse(value.url);
       if (uri == null ||
           !uri.hasAuthority ||
           (uri.scheme != 'http' && uri.scheme != 'https')) {
@@ -1367,7 +1438,7 @@ class _TvboxPageState extends State<TvboxPage> {
         }
         return;
       }
-      await widget.store.setTvboxApiUrl(value);
+      await widget.store.setTvboxApiUrl(value.url, alias: value.alias);
     }
     if (previous == widget.store.tvboxApiUrl) return;
     sites = const [];

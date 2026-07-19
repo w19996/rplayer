@@ -44,7 +44,7 @@ void main() {
     });
     final store = AppStore();
 
-    await store.setTvboxApiUrl('https://example.com/one.json');
+    await store.setTvboxApiUrl('https://example.com/one.json', alias: '主接口');
     await store.rememberTvboxJars('https://example.com/one.json', const [
       'https://example.com/shared.jar',
       'https://example.com/one.jar',
@@ -59,18 +59,26 @@ void main() {
       'https://example.com/one.json',
       'https://example.com/two.json',
     ]);
+    expect(store.tvboxApiLabel('https://example.com/one.json'), '主接口');
+    expect(store.tvboxApiLabel('https://example.com/two.json'),
+        'https://example.com/two.json');
     expect(deletedJars, isEmpty);
     final restored = AppStore()
       ..importSettingsJson(
           jsonDecode(store.exportSettings()) as Map<String, dynamic>);
     expect(restored.tvboxApiUrls, store.tvboxApiUrls);
+    expect(restored.tvboxApiAliases, store.tvboxApiAliases);
     expect(restored.tvboxJarUrlsByApi, store.tvboxJarUrlsByApi);
+    await restored.setTvboxApiAlias('https://example.com/one.json', '');
+    expect(restored.tvboxApiLabel('https://example.com/one.json'),
+        'https://example.com/one.json');
 
     await store.removeTvboxApiUrl('https://example.com/one.json');
     expect(deletedJars, [
       ['https://example.com/one.jar']
     ]);
     expect(store.tvboxApiUrls, ['https://example.com/two.json']);
+    expect(store.tvboxApiAliases, isEmpty);
     expect(store.tvboxApiUrl, 'https://example.com/two.json');
   });
 

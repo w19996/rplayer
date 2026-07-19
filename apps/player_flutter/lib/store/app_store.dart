@@ -21,6 +21,7 @@ class AppStore extends ChangeNotifier {
   DanmuConfig danmuConfig = const DanmuConfig();
   String tvboxApiUrl = '';
   final List<String> tvboxApiUrls = [];
+  final Map<String, String> tvboxApiAliases = {};
   final Set<String> tvboxTrustedApiUrls = {};
   final Map<String, List<String>> tvboxJarUrlsByApi = {};
   final List<TvboxRecentEntry> tvboxRecent = [];
@@ -442,6 +443,7 @@ class AppStore extends ChangeNotifier {
       'danmuConfig': danmuConfig.toJson(),
       'tvboxApiUrl': tvboxApiUrl,
       'tvboxApiUrls': tvboxApiUrls,
+      'tvboxApiAliases': tvboxApiAliases,
       'tvboxTrustedApiUrls': tvboxTrustedApiUrls.toList()..sort(),
       'tvboxJarUrlsByApi': tvboxJarUrlsByApi,
       'tvboxRecent': tvboxRecent.map((entry) => entry.toJson()).toList(),
@@ -499,6 +501,19 @@ class AppStore extends ChangeNotifier {
     if (tvboxApiUrl.isNotEmpty && !tvboxApiUrls.contains(tvboxApiUrl)) {
       tvboxApiUrls.insert(0, tvboxApiUrl);
     }
+    tvboxApiAliases
+      ..clear()
+      ..addEntries((json['tvboxApiAliases'] as Map? ?? const {})
+          .entries
+          .where((entry) => entry.key is String && entry.value is String)
+          .map((entry) => MapEntry(
+                (entry.key as String).trim(),
+                (entry.value as String).trim(),
+              ))
+          .where((entry) =>
+              entry.key.isNotEmpty &&
+              entry.value.isNotEmpty &&
+              tvboxApiUrls.contains(entry.key)));
     tvboxTrustedApiUrls
       ..clear()
       ..addAll((json['tvboxTrustedApiUrls'] as List<dynamic>? ?? const [])
@@ -549,10 +564,31 @@ class AppStore extends ChangeNotifier {
         json['diagnosticLoggingEnabled'] as bool? ?? false;
   }
 
-  Future<void> setTvboxApiUrl(String value) async {
+  String tvboxApiLabel(String url) => tvboxApiAliases[url] ?? url;
+
+  Future<void> setTvboxApiUrl(String value, {String? alias}) async {
     final next = value.trim();
     if (next.isNotEmpty && !tvboxApiUrls.contains(next)) tvboxApiUrls.add(next);
+    if (alias != null) {
+      final nextAlias = alias.trim();
+      if (nextAlias.isEmpty) {
+        tvboxApiAliases.remove(next);
+      } else {
+        tvboxApiAliases[next] = nextAlias;
+      }
+    }
     tvboxApiUrl = next;
+    notifyListeners();
+    await saveSettings();
+  }
+
+  Future<void> setTvboxApiAlias(String url, String alias) async {
+    final next = alias.trim();
+    if (next.isEmpty) {
+      tvboxApiAliases.remove(url);
+    } else {
+      tvboxApiAliases[url] = next;
+    }
     notifyListeners();
     await saveSettings();
   }
@@ -589,6 +625,7 @@ class AppStore extends ChangeNotifier {
       }
     }
     tvboxApiUrls.remove(value);
+    tvboxApiAliases.remove(value);
     tvboxTrustedApiUrls.remove(value);
     tvboxJarUrlsByApi.remove(value);
     tvboxIncognitoSiteKeys.removeWhere((key) => key.startsWith('$value\t'));
