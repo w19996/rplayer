@@ -125,7 +125,7 @@ class MainActivity : FlutterActivity() {
                 }
                 "tvboxCall" -> tvboxBridge?.handle(call, result)
                     ?: result.error("TVBOX_RUNTIME", "TVBox 运行时未初始化", null)
-                "tvboxClearCache" -> tvboxBridge?.clearCache(result)
+                "tvboxDeleteJars" -> tvboxBridge?.deleteJars(call, result)
                     ?: result.error("TVBOX_RUNTIME", "TVBox 运行时未初始化", null)
                 else -> result.notImplemented()
             }

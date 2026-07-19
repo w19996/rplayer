@@ -20,7 +20,9 @@ class AppStore extends ChangeNotifier {
   TmdbConfig tmdbConfig = const TmdbConfig();
   DanmuConfig danmuConfig = const DanmuConfig();
   String tvboxApiUrl = '';
-  String tvboxTrustedApiUrl = '';
+  final List<String> tvboxApiUrls = [];
+  final Set<String> tvboxTrustedApiUrls = {};
+  final Map<String, List<String>> tvboxJarUrlsByApi = {};
   final List<TvboxRecentEntry> tvboxRecent = [];
   final Set<String> tvboxIncognitoSiteKeys = {};
   String mpvAdvancedPreset = mpvAdvancedPresetAuto;
@@ -439,7 +441,9 @@ class AppStore extends ChangeNotifier {
       'tmdbConfig': tmdbConfig.toJson(),
       'danmuConfig': danmuConfig.toJson(),
       'tvboxApiUrl': tvboxApiUrl,
-      'tvboxTrustedApiUrl': tvboxTrustedApiUrl,
+      'tvboxApiUrls': tvboxApiUrls,
+      'tvboxTrustedApiUrls': tvboxTrustedApiUrls.toList()..sort(),
+      'tvboxJarUrlsByApi': tvboxJarUrlsByApi,
       'tvboxRecent': tvboxRecent.map((entry) => entry.toJson()).toList(),
       'tvboxIncognitoSiteKeys': tvboxIncognitoSiteKeys.toList()..sort(),
       'mpvAdvancedPreset': mpvAdvancedPreset,
@@ -486,7 +490,30 @@ class AppStore extends ChangeNotifier {
         ? const DanmuConfig()
         : DanmuConfig.fromJson(danmu as Map<String, dynamic>);
     tvboxApiUrl = json['tvboxApiUrl'] as String? ?? '';
-    tvboxTrustedApiUrl = json['tvboxTrustedApiUrl'] as String? ?? '';
+    tvboxApiUrls
+      ..clear()
+      ..addAll((json['tvboxApiUrls'] as List<dynamic>? ?? const [])
+          .whereType<String>()
+          .map((value) => value.trim())
+          .where((value) => value.isNotEmpty));
+    if (tvboxApiUrl.isNotEmpty && !tvboxApiUrls.contains(tvboxApiUrl)) {
+      tvboxApiUrls.insert(0, tvboxApiUrl);
+    }
+    tvboxTrustedApiUrls
+      ..clear()
+      ..addAll((json['tvboxTrustedApiUrls'] as List<dynamic>? ?? const [])
+          .whereType<String>());
+    final legacyTrusted = json['tvboxTrustedApiUrl'] as String? ?? '';
+    if (legacyTrusted.isNotEmpty) tvboxTrustedApiUrls.add(legacyTrusted);
+    tvboxJarUrlsByApi
+      ..clear()
+      ..addAll((json['tvboxJarUrlsByApi'] as Map?)?.map((key, value) =>
+              MapEntry(
+                  '$key',
+                  (value as List<dynamic>? ?? const [])
+                      .whereType<String>()
+                      .toList())) ??
+          const {});
     tvboxRecent
       ..clear()
       ..addAll((json['tvboxRecent'] as List<dynamic>? ?? const [])
@@ -524,21 +551,48 @@ class AppStore extends ChangeNotifier {
 
   Future<void> setTvboxApiUrl(String value) async {
     final next = value.trim();
-    if (tvboxApiUrl.isNotEmpty && next != tvboxApiUrl) {
-      try {
-        await appChannel.invokeMethod<void>('tvboxClearCache');
-      } on MissingPluginException {
-        // TVBox JAR cache only exists on Android.
-      }
-      tvboxTrustedApiUrl = '';
-    }
+    if (next.isNotEmpty && !tvboxApiUrls.contains(next)) tvboxApiUrls.add(next);
     tvboxApiUrl = next;
     notifyListeners();
     await saveSettings();
   }
 
+  bool isTvboxApiTrusted(String value) => tvboxTrustedApiUrls.contains(value);
+
   Future<void> trustTvboxApiUrl() async {
-    tvboxTrustedApiUrl = tvboxApiUrl;
+    tvboxTrustedApiUrls.add(tvboxApiUrl);
+    notifyListeners();
+    await saveSettings();
+  }
+
+  Future<void> rememberTvboxJars(String apiUrl, Iterable<String> values) async {
+    final jars = values.where((value) => value.isNotEmpty).toSet().toList()
+      ..sort();
+    if (listEquals(tvboxJarUrlsByApi[apiUrl], jars)) return;
+    tvboxJarUrlsByApi[apiUrl] = jars;
+    await saveSettings(logEvent: false);
+  }
+
+  Future<void> removeTvboxApiUrl(String value) async {
+    final jars = (tvboxJarUrlsByApi[value] ?? const <String>[]).toSet();
+    final retained = tvboxJarUrlsByApi.entries
+        .where((entry) => entry.key != value)
+        .expand((entry) => entry.value)
+        .toSet();
+    final removedJars = jars.difference(retained).toList();
+    if (removedJars.isNotEmpty) {
+      try {
+        await appChannel
+            .invokeMethod<void>('tvboxDeleteJars', {'urls': removedJars});
+      } on MissingPluginException {
+        // TVBox JAR cache only exists on Android.
+      }
+    }
+    tvboxApiUrls.remove(value);
+    tvboxTrustedApiUrls.remove(value);
+    tvboxJarUrlsByApi.remove(value);
+    tvboxIncognitoSiteKeys.removeWhere((key) => key.startsWith('$value\t'));
+    if (tvboxApiUrl == value) tvboxApiUrl = tvboxApiUrls.firstOrNull ?? '';
     notifyListeners();
     await saveSettings();
   }

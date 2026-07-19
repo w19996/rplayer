@@ -30,22 +30,48 @@ void main() {
     }
   });
 
-  test('changing TVBox source clears the old native cache once', () async {
-    var clearCalls = 0;
+  test('TVBox sources persist and only deleted source jars are removed',
+      () async {
+    final deletedJars = <List<String>>[];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(appChannel, (call) async {
       if (call.method == 'appFilesDir') return testAppFilesDir.path;
-      if (call.method == 'tvboxClearCache') clearCalls++;
+      if (call.method == 'tvboxDeleteJars') {
+        deletedJars.add(List<String>.from(
+            (call.arguments as Map<Object?, Object?>)['urls']! as List));
+      }
       return null;
     });
     final store = AppStore();
 
     await store.setTvboxApiUrl('https://example.com/one.json');
-    await store.setTvboxApiUrl('https://example.com/one.json');
-    expect(clearCalls, 0);
-
+    await store.rememberTvboxJars('https://example.com/one.json', const [
+      'https://example.com/shared.jar',
+      'https://example.com/one.jar',
+    ]);
     await store.setTvboxApiUrl('https://example.com/two.json');
-    expect(clearCalls, 1);
+    await store.rememberTvboxJars('https://example.com/two.json', const [
+      'https://example.com/shared.jar',
+      'https://example.com/two.jar',
+    ]);
+
+    expect(store.tvboxApiUrls, [
+      'https://example.com/one.json',
+      'https://example.com/two.json',
+    ]);
+    expect(deletedJars, isEmpty);
+    final restored = AppStore()
+      ..importSettingsJson(
+          jsonDecode(store.exportSettings()) as Map<String, dynamic>);
+    expect(restored.tvboxApiUrls, store.tvboxApiUrls);
+    expect(restored.tvboxJarUrlsByApi, store.tvboxJarUrlsByApi);
+
+    await store.removeTvboxApiUrl('https://example.com/one.json');
+    expect(deletedJars, [
+      ['https://example.com/one.jar']
+    ]);
+    expect(store.tvboxApiUrls, ['https://example.com/two.json']);
+    expect(store.tvboxApiUrl, 'https://example.com/two.json');
   });
 
   test('empty settings do not abort database-backed app loading', () async {

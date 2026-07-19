@@ -1188,8 +1188,12 @@ class _TvboxPageState extends State<TvboxPage> {
         await const TvboxResolver().resolveConfig(widget.store.tvboxApiUrl);
     sites = config.sites;
     liveSources = config.lives;
+    await widget.store.rememberTvboxJars(
+      widget.store.tvboxApiUrl,
+      sites.map((site) => site.jarUrl),
+    );
     if (sites.any((value) => value.type == 3) &&
-        widget.store.tvboxTrustedApiUrl != widget.store.tvboxApiUrl) {
+        !widget.store.isTvboxApiTrusted(widget.store.tvboxApiUrl)) {
       if (!mounted) return;
       final trusted = await showDialog<bool>(
         context: context,
@@ -1268,49 +1272,115 @@ class _TvboxPageState extends State<TvboxPage> {
   }
 
   Future<void> _configure() async {
-    final controller = TextEditingController(text: widget.store.tvboxApiUrl);
+    final previous = widget.store.tvboxApiUrl;
+    final controller = TextEditingController();
     final value = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('TVBox 接口'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          keyboardType: TextInputType.url,
-          decoration: const InputDecoration(
-            labelText: 'TVBox 订阅或 CMS 接口',
-            hintText: 'https://example.com/tvbox.json',
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('TVBox 接口'),
+          content: SizedBox(
+            width: 520,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final url in widget.store.tvboxApiUrls)
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(url == widget.store.tvboxApiUrl
+                          ? Icons.check_circle
+                          : Icons.circle_outlined),
+                      title: Text(url,
+                          maxLines: 2, overflow: TextOverflow.ellipsis),
+                      onTap: () => Navigator.pop(context, url),
+                      trailing: IconButton(
+                        tooltip: '删除接口及对应 JAR',
+                        icon: const Icon(Icons.delete_outline),
+                        onPressed: () async {
+                          final confirmed = await showDialog<bool>(
+                            context: context,
+                            builder: (context) => AlertDialog(
+                              title: const Text('删除接口？'),
+                              content: Text('将删除此接口及其对应的 JAR：\n$url'),
+                              actions: [
+                                TextButton(
+                                    onPressed: () =>
+                                        Navigator.pop(context, false),
+                                    child: const Text('取消')),
+                                FilledButton(
+                                    onPressed: () =>
+                                        Navigator.pop(context, true),
+                                    child: const Text('删除')),
+                              ],
+                            ),
+                          );
+                          if (confirmed != true) return;
+                          try {
+                            await widget.store.removeTvboxApiUrl(url);
+                          } catch (error) {
+                            if (mounted) {
+                              ScaffoldMessenger.of(this.context).showSnackBar(
+                                  SnackBar(content: Text('删除失败：$error')));
+                            }
+                            return;
+                          }
+                          setDialogState(() {});
+                        },
+                      ),
+                    ),
+                  if (widget.store.tvboxApiUrls.isNotEmpty)
+                    const Divider(height: 24),
+                  TextField(
+                    controller: controller,
+                    autofocus: widget.store.tvboxApiUrls.isEmpty,
+                    keyboardType: TextInputType.url,
+                    decoration: const InputDecoration(
+                      labelText: '添加 TVBox 订阅或 CMS 接口',
+                      hintText: 'https://example.com/tvbox.json',
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('关闭')),
+            FilledButton(
+                onPressed: () => Navigator.pop(context, controller.text.trim()),
+                child: const Text('添加并切换')),
+          ],
         ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context), child: const Text('取消')),
-          FilledButton(
-              onPressed: () => Navigator.pop(context, controller.text.trim()),
-              child: const Text('保存')),
-        ],
       ),
     );
     controller.dispose();
-    if (value == null) return;
-    final uri = Uri.tryParse(value);
-    if (uri == null ||
-        !uri.hasAuthority ||
-        (uri.scheme != 'http' && uri.scheme != 'https')) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('请输入有效的 HTTP(S) 地址')));
+    if (value != null && value != widget.store.tvboxApiUrl) {
+      final uri = Uri.tryParse(value);
+      if (uri == null ||
+          !uri.hasAuthority ||
+          (uri.scheme != 'http' && uri.scheme != 'https')) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('请输入有效的 HTTP(S) 地址')));
+        }
+        return;
       }
-      return;
+      await widget.store.setTvboxApiUrl(value);
     }
-    await widget.store.setTvboxApiUrl(value);
+    if (previous == widget.store.tvboxApiUrl) return;
     sites = const [];
     liveSources = const [];
     site = null;
     categories = const [];
     videos = const [];
     selectedTypeId = null;
-    await _load();
+    if (widget.store.tvboxApiUrl.isEmpty) {
+      if (mounted) setState(() {});
+    } else {
+      await _load();
+    }
   }
 
   Future<void> _toggleIncognito(TvboxSite selected) async {

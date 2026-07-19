@@ -66,13 +66,14 @@ class TvboxBridge(private val activity: Activity) {
         }
     }
 
-    fun clearCache(result: MethodChannel.Result) {
+    fun deleteJars(call: MethodCall, result: MethodChannel.Result) {
+        val urls = call.argument<List<String>>("urls").orEmpty()
         executor.execute {
-            runCatching { engine.clearCache() }
+            runCatching { engine.deleteJars(urls) }
                 .onSuccess { main.post { result.success(null) } }
                 .onFailure { error ->
                     main.post {
-                        result.error("TVBOX_CACHE", error.message ?: "TVBox 缓存清理失败", null)
+                        result.error("TVBOX_CACHE", error.message ?: "TVBox JAR 删除失败", null)
                     }
                 }
         }
@@ -278,7 +279,7 @@ private class TvboxJarEngine(private val context: Context) {
 
     private fun loadJar(url: String, expectedMd5: String): LoadedJar = loaded.computeIfAbsent(url) {
         val directory = File(context.filesDir, "tvbox/jars").also { it.mkdirs() }
-        val file = File(directory, sha256(url) + ".jar")
+        val file = File(directory, tvboxJarCacheName(url))
         if (!file.exists() || (expectedMd5.isNotBlank() && md5(file) != expectedMd5.lowercase())) {
             val temporary = File(directory, file.name + ".download")
             download(url, temporary)
@@ -401,10 +402,9 @@ private class TvboxJarEngine(private val context: Context) {
         clearRuntime()
     }
 
-    fun clearCache() {
+    fun deleteJars(urls: Collection<String>) {
         clearRuntime()
-        tvboxDeleteDirectory(File(context.filesDir, "tvbox/jars"))
-        tvboxDeleteDirectory(File(context.codeCacheDir, "tvbox"))
+        tvboxDeleteJars(File(context.filesDir, "tvbox/jars"), urls)
     }
 
     private fun clearRuntime() {
@@ -427,9 +427,19 @@ private class TvboxJarEngine(private val context: Context) {
     companion object { private const val TAG = "TvboxJarLoader" }
 }
 
-internal fun tvboxDeleteDirectory(directory: File) {
-    if (directory.exists() && !directory.deleteRecursively()) {
-        throw IllegalStateException("无法删除 TVBox 缓存：${directory.absolutePath}")
+internal fun tvboxJarCacheName(url: String) =
+    MessageDigest.getInstance("SHA-256")
+        .digest(url.toByteArray())
+        .joinToString("") { "%02x".format(it) } + ".jar"
+
+internal fun tvboxDeleteJars(directory: File, urls: Collection<String>) {
+    for (url in urls) {
+        val jar = File(directory, tvboxJarCacheName(url))
+        for (file in listOf(jar, File(directory, jar.name + ".download"))) {
+            if (file.exists() && !file.delete()) {
+                throw IllegalStateException("无法删除 TVBox JAR：${file.absolutePath}")
+            }
+        }
     }
 }
 

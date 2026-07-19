@@ -18,16 +18,18 @@ class TvboxBridgeTest {
     }
 
     @Test
-    fun deletesTvboxCacheDirectory() {
-        val directory = Files.createTempDirectory("tvbox-cache-test").toFile()
-        directory.resolve("nested/spider.jar").also {
-            it.parentFile.mkdirs()
-            it.writeText("jar")
-        }
+    fun deletesOnlySelectedTvboxJars() {
+        val directory = Files.createTempDirectory("tvbox-jar-test").toFile()
+        val removed = directory.resolve(tvboxJarCacheName("https://example.com/a.jar"))
+            .also { it.writeText("a") }
+        val retained = directory.resolve(tvboxJarCacheName("https://example.com/b.jar"))
+            .also { it.writeText("b") }
 
-        tvboxDeleteDirectory(directory)
+        tvboxDeleteJars(directory, listOf("https://example.com/a.jar"))
 
-        assertFalse(directory.exists())
+        assertFalse(removed.exists())
+        assertTrue(retained.exists())
+        directory.deleteRecursively()
     }
 
     @Test
