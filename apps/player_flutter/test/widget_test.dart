@@ -82,6 +82,21 @@ void main() {
     expect(store.tvboxApiUrl, 'https://example.com/two.json');
   });
 
+  test('custom TVBox live sources keep API live sources visible', () async {
+    final store = AppStore();
+
+    await store.addTvboxLiveSource(const TvboxLiveSource(
+      name: '自定义',
+      url: 'https://example.com/custom.m3u',
+    ));
+
+    final sources = store.effectiveTvboxLiveSources(const [
+      TvboxLiveSource(name: '接口', url: 'https://example.com/api.m3u'),
+    ]);
+
+    expect(sources.map((source) => source.name), ['自定义', '接口']);
+  });
+
   test('empty settings do not abort database-backed app loading', () async {
     await File('${testAppFilesDir.path}/player_config.json').writeAsString('');
     final store = AppStore();
@@ -127,6 +142,37 @@ void main() {
           as Map<String, dynamic>)['tvboxIncognitoSiteKeys'],
       ['https://example.com/config.json\tsite-a'],
     );
+  });
+
+  test('TVBox custom live sources merge with API live sources', () async {
+    final store = AppStore();
+    const apiSources = [
+      TvboxLiveSource(name: '接口直播', url: 'https://example.com/api.m3u'),
+    ];
+
+    expect(store.effectiveTvboxLiveSources(apiSources), apiSources);
+
+    await store.addTvboxLiveSource(const TvboxLiveSource(
+        name: '手动直播', url: 'https://example.com/live.m3u'));
+    expect(
+        store
+            .effectiveTvboxLiveSources(apiSources)
+            .map((source) => source.name),
+        ['手动直播', '接口直播']);
+
+    final restored = AppStore()
+      ..importSettingsJson(
+          jsonDecode(store.exportSettings()) as Map<String, dynamic>);
+    expect(
+        restored.tvboxLiveSources.single.url, 'https://example.com/live.m3u');
+    expect(
+        restored
+            .effectiveTvboxLiveSources(apiSources)
+            .map((source) => source.name),
+        ['手动直播', '接口直播']);
+
+    await restored.removeTvboxLiveSource('https://example.com/live.m3u');
+    expect(restored.effectiveTvboxLiveSources(apiSources), apiSources);
   });
 
   test('media library groups videos by folder', () {
@@ -350,10 +396,16 @@ void main() {
     expect(isLibmpvDolbyVisionTrack(null, null), isFalse);
   });
 
-  test('uses Media3 on Android for TVBox or Dolby Vision only', () {
-    expect(shouldUseMedia3OnAndroid(true, false), isTrue);
+  test('uses Media3 on Android for Dolby Vision only', () {
+    expect(shouldUseMedia3OnAndroid(true, false), isFalse);
     expect(shouldUseMedia3OnAndroid(false, true), isTrue);
     expect(shouldUseMedia3OnAndroid(false, false), isFalse);
+  });
+
+  test('marks HLS playback for libmpv', () {
+    expect(playbackMimeLooksHls('application/x-mpegURL'), isTrue);
+    expect(playbackMimeLooksHls('hls'), isTrue);
+    expect(playbackMimeLooksHls(null), isFalse);
   });
 
   test('retries only placeholder TVBox file danmu', () {
@@ -1713,7 +1765,7 @@ void main() {
 
     expect(find.text('媒体库'), findsOneWidget);
     expect(find.text('资源库'), findsOneWidget);
-    expect(find.text('TVBox'), findsNothing);
+    expect(find.text('TVBox'), findsOneWidget);
     expect(find.text('我的'), findsOneWidget);
 
     await tester.tap(find.text('资源库'));

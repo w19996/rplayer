@@ -11,14 +11,14 @@ class PlayerShell extends StatefulWidget {
 
 class _PlayerShellState extends State<PlayerShell> {
   int index = 0;
+  bool tvboxOpened = false;
 
   @override
   Widget build(BuildContext context) {
-    final showTvbox = Platform.isAndroid;
     final pages = [
       MediaLibraryPage(store: widget.store),
       SourceLibraryPage(store: widget.store),
-      if (showTvbox) TvboxPage(store: widget.store),
+      tvboxOpened ? TvboxPage(store: widget.store) : const SizedBox.shrink(),
       ProfilePage(store: widget.store),
     ];
     return Scaffold(
@@ -29,22 +29,24 @@ class _PlayerShellState extends State<PlayerShell> {
         backgroundColor: Colors.white,
         surfaceTintColor: Colors.white,
         indicatorColor: Colors.transparent,
-        onDestinationSelected: (value) => setState(() => index = value),
-        destinations: [
-          const NavigationDestination(
+        onDestinationSelected: (value) => setState(() {
+          index = value;
+          if (value == 2) tvboxOpened = true;
+        }),
+        destinations: const [
+          NavigationDestination(
               icon: Icon(Icons.play_circle_outline),
               selectedIcon: Icon(Icons.play_circle),
               label: '媒体库'),
-          const NavigationDestination(
+          NavigationDestination(
               icon: Icon(Icons.folder_outlined),
               selectedIcon: Icon(Icons.folder),
               label: '资源库'),
-          if (showTvbox)
-            const NavigationDestination(
-                icon: Icon(Icons.live_tv_outlined),
-                selectedIcon: Icon(Icons.live_tv),
-                label: 'TVBox'),
-          const NavigationDestination(
+          NavigationDestination(
+              icon: Icon(Icons.live_tv_outlined),
+              selectedIcon: Icon(Icons.live_tv),
+              label: 'TVBox'),
+          NavigationDestination(
               icon: Icon(Icons.person_outline),
               selectedIcon: Icon(Icons.person),
               label: '我的'),

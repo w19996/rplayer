@@ -245,7 +245,9 @@ Route<T> overlapSlideRoute<T>(WidgetBuilder builder) {
 void openPlayer(BuildContext context, AppStore store, MediaItem item,
     {RemotePlayback? playback,
     List<MediaItem>? episodes,
-    Future<RemotePlayback> Function(MediaItem)? playbackResolver}) {
+    Future<RemotePlayback> Function(MediaItem)? playbackResolver,
+    Player? adoptedPlayer,
+    bool startLandscape = false}) {
   Navigator.of(context).push(
     appSlideRoute((_) => VideoPlayerPage(
           store: store,
@@ -253,6 +255,8 @@ void openPlayer(BuildContext context, AppStore store, MediaItem item,
           playback: playback,
           episodes: episodes,
           playbackResolver: playbackResolver,
+          adoptedPlayer: adoptedPlayer,
+          startLandscape: startLandscape,
         )),
   );
 }

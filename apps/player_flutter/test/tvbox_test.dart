@@ -54,10 +54,15 @@ void main() {
           'https://github.com/qist/tvbox/blob/master/0821.json'),
       'https://raw.githubusercontent.com/qist/tvbox/master/0821.json',
     );
+    expect(
+      normalizeTvboxSourceUrl('https://盒子迷.top/禁止贩卖'),
+      startsWith('https://xn--'),
+    );
     final config = jsonEncode({
       'sites': [
         {'key': 'xml', 'name': 'XML', 'type': 0, 'api': './xml'},
         {'key': 'json', 'name': 'JSON', 'type': 1, 'api': './json'},
+        {'key': 'idn', 'name': 'IDN', 'type': 1, 'api': 'https://盒子迷.top/api'},
         {
           'key': 'remote',
           'name': 'Remote',
@@ -75,8 +80,9 @@ void main() {
     final sites = tvboxSitesFromConfig('https://example.com/config.json',
         jsonDecode(decodeTvboxConfigBytes(wrapped)));
 
-    expect(sites.map((site) => site.type), [0, 1, 4]);
+    expect(sites.map((site) => site.type), [0, 1, 1, 4]);
     expect(sites.first.apiUrl, 'https://example.com/xml');
+    expect(sites[2].apiUrl, startsWith('https://xn--'));
     expect(sites.last.apiUrl, 'https://example.com/remote');
     expect(sites.last.searchable, isFalse);
     expect(
@@ -98,14 +104,27 @@ void main() {
         'token': 'encrypted-data',
       },
     );
+    expect(tvboxIsScriptApi('https://example.com/cat.js'), isTrue);
+    expect(tvboxIsScriptApi('https://example.com/cat.py?token=1'), isTrue);
+    expect(tvboxIsScriptApi('csp_Test'), isFalse);
+    final warehouses =
+        tvboxWarehousesFromConfig('https://example.com/config/main.json', {
+      'urls': [
+        {'name': '盒子迷', 'url': 'https://盒子迷.top/禁止贩卖'},
+        {'name': '相对仓库', 'url': '../nested.json'},
+      ],
+    });
+    expect(warehouses.map((item) => item.name), ['盒子迷', '相对仓库']);
+    expect(warehouses.first.url, startsWith('https://xn--'));
+    expect(warehouses.last.url, 'https://example.com/nested.json');
     expect(
       () => tvboxSitesFromConfig('https://example.com/config', {
         'sites': [
           {'type': 3, 'api': 'csp_Test'},
         ],
       }),
-      throwsA(isA<FormatException>().having(
-          (error) => error.message, 'message', contains('Spider/JAR/JS'))),
+      throwsA(isA<FormatException>().having((error) => error.message, 'message',
+          contains('Spider/JAR/JS/Python'))),
     );
   });
 
@@ -169,6 +188,32 @@ void main() {
     }
   });
 
+  test('does not auto-select the first TVBox warehouse', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final subscription = server.listen((request) async {
+      request.response.headers.contentType = ContentType.json;
+      request.response.write(jsonEncode({
+        'urls': [
+          {'name': '仓库一', 'url': '/one.json'},
+          {'name': '仓库二', 'url': '/two.json'},
+        ],
+      }));
+      await request.response.close();
+    });
+
+    try {
+      await expectLater(
+        const TvboxResolver()
+            .resolveConfig('http://${server.address.address}:${server.port}/'),
+        throwsA(isA<FormatException>()
+            .having((error) => error.message, 'message', contains('多仓订阅'))),
+      );
+    } finally {
+      await server.close(force: true);
+      await subscription.cancel();
+    }
+  });
+
   test('marks TVBox getM3u8 playback as HLS without rewriting URL', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final subscription = server.listen((request) async {
@@ -195,6 +240,18 @@ void main() {
     }
   });
 
+  test('marks direct TVBox HLS playback for libmpv', () async {
+    final playback = await TvboxClient(const TvboxSite(
+      key: 'json',
+      name: 'JSON',
+      type: 1,
+      apiUrl: 'https://example.com/api',
+    )).playback('', 'https://example.com/live.m3u8');
+
+    expect(playback.uri, 'https://example.com/live.m3u8');
+    expect(playback.mimeType, 'application/x-mpegURL');
+  });
+
   test('parses TVBox live config, M3U and TXT channel lists', () {
     final lives = tvboxLivesFromConfig('https://example.com/config/main.json', {
       'lives': [
@@ -208,6 +265,14 @@ void main() {
     });
     expect(lives.single.url, 'https://example.com/live.m3u');
     expect(lives.single.headers['User-Agent'], 'TVBox');
+    expect(
+      tvboxLivesFromConfig('https://example.com/config/main.json', {
+        'lives': [
+          {'name': 'IDN', 'url': 'https://肥猫.com/live.txt'},
+        ],
+      }).single.url,
+      startsWith('https://xn--'),
+    );
 
     final m3u = parseTvboxLiveGroups('''#EXTM3U
 #EXTINF:-1 group-title="央视" tvg-logo="cctv.png",CCTV-1

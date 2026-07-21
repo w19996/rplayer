@@ -3,11 +3,13 @@ import java.util.Properties
 plugins {
     id("com.android.application")
     id("kotlin-android")
+    id("com.chaquo.python")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
 
 dependencies {
+    implementation("androidx.annotation:annotation:1.9.1")
     implementation("androidx.appcompat:appcompat:1.3.0")
     implementation("androidx.media3:media3-exoplayer:1.10.1")
     implementation("androidx.media3:media3-datasource-okhttp:1.10.1")
@@ -16,6 +18,9 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:3.12.11")
     implementation("com.google.code.gson:gson:2.10.1")
     implementation("org.nanohttpd:nanohttpd:2.3.1")
+    implementation("org.jsoup:jsoup:1.21.1")
+    implementation("wang.harlon.quickjs:wrapper-android:2.1.0")
+    implementation("wang.harlon.quickjs:wrapper-java:2.1.0")
     testImplementation("junit:junit:4.13.2")
 }
 
@@ -54,7 +59,7 @@ android {
         applicationId = "com.example.player_flutter"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        minSdk = maxOf(24, flutter.minSdkVersion)
         // TVBox Spider JARs can launch bundled helper binaries from app storage.
         // Android blocks that for targetSdk 29+, while TVBoxOS and 影视仓 target 28.
         targetSdk = 28
@@ -62,6 +67,12 @@ android {
         versionName = flutter.versionName
         ndk {
             abiFilters.addAll(targetAbis)
+        }
+    }
+
+    sourceSets {
+        getByName("main") {
+            java.srcDir("../quickjs/src/main/java")
         }
     }
 
@@ -101,6 +112,20 @@ android {
             androidAbis
                 .filterNot { targetAbis.contains(it) }
                 .forEach { excludes.add("lib/$it/**") }
+        }
+    }
+}
+
+chaquopy {
+    defaultConfig {
+        version = "3.13"
+        pip {
+            install("lxml")
+            install("pyquery")
+            install("requests")
+            install("cachetools")
+            install("pycryptodome")
+            install("beautifulsoup4")
         }
     }
 }

@@ -3,6 +3,7 @@ package com.example.player_flutter
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.Application
 import android.content.Context
 import android.graphics.Color
 import android.os.Handler
@@ -13,9 +14,12 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import com.github.catvod.crawler.JsLoader
 import com.github.catvod.crawler.ProtectedInitJar
 import com.github.catvod.crawler.Spider
 import com.github.catvod.crawler.SpiderApi
+import com.github.catvod.crawler.pyLoader
+import com.github.tvbox.osc.base.App
 import dalvik.system.DexClassLoader
 import fi.iki.elonen.NanoHTTPD
 import io.flutter.plugin.common.MethodCall
@@ -197,6 +201,7 @@ class TvboxBridge(private val activity: Activity) {
 
 private class TvboxJarEngine(private val context: Context) {
     init {
+        App.setInstance(context.applicationContext as Application)
         // Configuration-center Spider JARs share this TVBox host file.
         File(context.filesDir, "config.json").also {
             if (!it.exists() || it.length() == 0L) it.writeText("{}")
@@ -214,6 +219,8 @@ private class TvboxJarEngine(private val context: Context) {
     private val spiders = ConcurrentHashMap<String, Spider>()
     private val siteJars = ConcurrentHashMap<String, String>()
     private val playbackHeaders = ConcurrentHashMap<String, Map<String, String>>()
+    private val jsLoader = JsLoader()
+    private val pythonLoader = pyLoader()
     private val protectedInit = ProtectedInitJar(context)
     private val proxyServer = TvboxProxyServer(this).also { it.start() }
     // ponytail: one active proxy target matches rplayer's single active player;
@@ -225,7 +232,15 @@ private class TvboxJarEngine(private val context: Context) {
     fun call(arguments: Map<*, *>): String {
         val action = arguments["action"]?.toString().orEmpty()
         val siteKey = arguments["key"]?.toString().orEmpty()
-        val api = arguments["api"]?.toString().orEmpty().removePrefix("csp_")
+        val rawApi = arguments["api"]?.toString().orEmpty()
+        if (tvboxIsJsApi(rawApi) || tvboxIsPythonApi(rawApi)) {
+            val spider = loadScriptSpider(siteKey, rawApi, arguments)
+            val response = callSpider(spider, action, arguments)
+            if (action == "player") playbackSpider = spider
+            return if (action == "action") response.ifBlank { "{}" }
+            else response.ifBlank { throw IllegalStateException("Spider 未返回数据") }
+        }
+        val api = rawApi.removePrefix("csp_")
         val ext = arguments["ext"]?.toString().orEmpty()
         val jarUrl = arguments["jarUrl"]?.toString().orEmpty()
         val jarMd5 = arguments["jarMd5"]?.toString().orEmpty()
@@ -247,34 +262,54 @@ private class TvboxJarEngine(private val context: Context) {
             value.init(context, ext)
             value
         }
-        val response = when (action) {
-            "home" -> spider.homeContent(true)
-            "category" -> spider.categoryContent(
-                arguments["typeId"]?.toString().orEmpty(),
-                arguments["page"]?.toString() ?: "1",
-                true,
-                hashMapOf(),
-            )
-            "detail" -> spider.detailContent(listOf(arguments["id"]?.toString().orEmpty()))
-            "search" -> spider.searchContent(
-                arguments["keyword"]?.toString().orEmpty(),
-                false,
-                arguments["page"]?.toString() ?: "1",
-            )
-            "player" -> spider.playerContent(
-                arguments["flag"]?.toString().orEmpty(),
-                arguments["id"]?.toString().orEmpty(),
-                emptyList(),
-            )
-            "action" -> spider.action(arguments["value"]?.toString().orEmpty()).orEmpty()
-            else -> throw IllegalArgumentException("未知 Spider 操作：$action")
-        }
+        val response = callSpider(spider, action, arguments)
         if (action == "player") {
             playbackJar = jarUrl
             playbackSpider = spider
         }
         return if (action == "action") response.ifBlank { "{}" }
         else response.ifBlank { throw IllegalStateException("Spider 未返回数据") }
+    }
+
+    private fun loadScriptSpider(siteKey: String, api: String, arguments: Map<*, *>): Spider {
+        val ext = arguments["ext"]?.toString().orEmpty()
+        if (tvboxIsJsApi(api)) {
+            return jsLoader.getSpider(siteKey, api, ext, jarSpec(arguments))
+        }
+        pythonLoader.setRecentPyKey(siteKey)
+        val config = arguments["configJson"]?.toString().orEmpty()
+        if (config.isNotBlank()) pythonLoader.setConfig(config)
+        return pythonLoader.getSpider(siteKey, api, ext)
+    }
+
+    private fun callSpider(spider: Spider, action: String, arguments: Map<*, *>): String = when (action) {
+        "home" -> spider.homeContent(true)
+        "category" -> spider.categoryContent(
+            arguments["typeId"]?.toString().orEmpty(),
+            arguments["page"]?.toString() ?: "1",
+            true,
+            hashMapOf(),
+        )
+        "detail" -> spider.detailContent(listOf(arguments["id"]?.toString().orEmpty()))
+        "search" -> spider.searchContent(
+            arguments["keyword"]?.toString().orEmpty(),
+            false,
+            arguments["page"]?.toString() ?: "1",
+        )
+        "player" -> spider.playerContent(
+            arguments["flag"]?.toString().orEmpty(),
+            arguments["id"]?.toString().orEmpty(),
+            emptyList(),
+        )
+        "action" -> spider.action(arguments["value"]?.toString().orEmpty()).orEmpty()
+        else -> throw IllegalArgumentException("未知 Spider 操作：$action")
+    }
+
+    private fun jarSpec(arguments: Map<*, *>): String {
+        val url = arguments["jarUrl"]?.toString().orEmpty()
+        if (url.isBlank()) return ""
+        val md5 = arguments["jarMd5"]?.toString().orEmpty()
+        return if (md5.isBlank()) url else "$url;md5;$md5"
     }
 
     private fun loadJar(url: String, expectedMd5: String): LoadedJar = loaded.computeIfAbsent(url) {
@@ -349,6 +384,22 @@ private class TvboxJarEngine(private val context: Context) {
     }
 
     fun proxy(params: Map<String, String>): Array<Any?>? {
+        runCatching { playbackSpider?.proxy(params) }
+            .onFailure { Log.w(TAG, "spider proxy failed", it) }
+            .getOrNull()
+            ?.let { return it }
+        runCatching { jsLoader.proxyInvoke(params) }
+            .onFailure { Log.w(TAG, "js proxy failed", it) }
+            .getOrNull()
+            ?.let { return it }
+        runCatching {
+            params["siteKey"]
+                ?.takeIf { it.isNotBlank() }
+                ?.let { pythonLoader.proxyInvoke(params, it) }
+                ?: pythonLoader.proxyInvoke(params)
+        }.onFailure { Log.w(TAG, "python proxy failed", it) }
+            .getOrNull()
+            ?.let { return it }
         val candidates = linkedSetOf<String>()
         params["siteKey"]?.let(siteJars::get)?.let(candidates::add)
         candidates.add(recentJar)
@@ -362,8 +413,7 @@ private class TvboxJarEngine(private val context: Context) {
             }.onFailure { Log.w(TAG, "proxy failed jar=$jar", it) }.getOrNull()
             if (result != null) return result
         }
-        return runCatching { playbackSpider?.proxy(params) }
-            .onFailure { Log.w(TAG, "spider proxy failed", it) }.getOrNull()
+        return null
     }
 
     fun searchDanmu(name: String, episode: String, longClick: Boolean) {
@@ -405,10 +455,13 @@ private class TvboxJarEngine(private val context: Context) {
     fun deleteJars(urls: Collection<String>) {
         clearRuntime()
         tvboxDeleteJars(File(context.filesDir, "tvbox/jars"), urls)
+        tvboxDeleteJsJars(File(context.filesDir, "csp"), urls)
     }
 
     private fun clearRuntime() {
         spiders.values.forEach { runCatching { it.destroy() } }
+        runCatching { jsLoader.clear() }
+        runCatching { pythonLoader.clear() }
         spiders.clear()
         loaded.clear()
         siteJars.clear()
@@ -432,6 +485,11 @@ internal fun tvboxJarCacheName(url: String) =
         .digest(url.toByteArray())
         .joinToString("") { "%02x".format(it) } + ".jar"
 
+internal fun tvboxJsJarCacheName(url: String) =
+    MessageDigest.getInstance("MD5")
+        .digest(url.toByteArray())
+        .joinToString("") { "%02x".format(it) } + ".jar"
+
 internal fun tvboxDeleteJars(directory: File, urls: Collection<String>) {
     for (url in urls) {
         val jar = File(directory, tvboxJarCacheName(url))
@@ -439,6 +497,15 @@ internal fun tvboxDeleteJars(directory: File, urls: Collection<String>) {
             if (file.exists() && !file.delete()) {
                 throw IllegalStateException("无法删除 TVBox JAR：${file.absolutePath}")
             }
+        }
+    }
+}
+
+internal fun tvboxDeleteJsJars(directory: File, urls: Collection<String>) {
+    for (url in urls) {
+        val jar = File(directory, tvboxJsJarCacheName(url))
+        if (jar.exists() && !jar.delete()) {
+            throw IllegalStateException("无法删除 TVBox JS JAR：${jar.absolutePath}")
         }
     }
 }
@@ -557,6 +624,16 @@ internal fun tvboxIsM3u8Url(url: String) = runCatching {
     val lower = parsed.toString().lowercase()
     lower.contains("getm3u8") || parsed.path.lowercase().endsWith(".m3u8")
 }.getOrDefault(false)
+
+internal fun tvboxIsJsApi(api: String): Boolean {
+    val value = api.lowercase()
+    return value.endsWith(".js") || value.contains(".js?")
+}
+
+internal fun tvboxIsPythonApi(api: String): Boolean {
+    val value = api.lowercase()
+    return value.endsWith(".py") || value.contains(".py?")
+}
 
 internal fun tvboxMpegTsPayload(bytes: ByteArray): ByteArray {
     val limit = minOf(4096, bytes.size - 376)

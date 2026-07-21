@@ -68,7 +68,6 @@ class MainActivity : FlutterActivity() {
         media3Bridge = Media3VideoBridge(this) { method, arguments ->
             appChannel?.invokeMethod(method, arguments)
         }
-        tvboxBridge = TvboxBridge(this)
         flutterEngine.platformViewsController.registry.registerViewFactory(
             "rplayer/media3_texture",
             Media3TextureViewFactory(media3Bridge!!)
@@ -123,14 +122,15 @@ class MainActivity : FlutterActivity() {
                     media3Bridge?.release()
                     result.success(null)
                 }
-                "tvboxCall" -> tvboxBridge?.handle(call, result)
-                    ?: result.error("TVBOX_RUNTIME", "TVBox 运行时未初始化", null)
-                "tvboxDeleteJars" -> tvboxBridge?.deleteJars(call, result)
-                    ?: result.error("TVBOX_RUNTIME", "TVBox 运行时未初始化", null)
+                "tvboxCall" -> tvboxBridge().handle(call, result)
+                "tvboxDeleteJars" -> tvboxBridge().deleteJars(call, result)
                 else -> result.notImplemented()
             }
         }
     }
+
+    private fun tvboxBridge(): TvboxBridge =
+        tvboxBridge ?: TvboxBridge(this).also { tvboxBridge = it }
 
     private fun videoThumbnail(uri: String, remote: Boolean, headers: Map<String, String>): ByteArray? {
         if (uri.isBlank()) return null

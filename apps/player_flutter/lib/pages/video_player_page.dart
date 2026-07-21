@@ -9,7 +9,27 @@ bool isLibmpvDolbyVisionTrack(String? profile, String? level) =>
     (num.tryParse(level?.trim() ?? '') ?? 0) > 0;
 
 bool shouldUseMedia3OnAndroid(bool isTvboxPlayback, bool isDolbyVision) =>
-    isTvboxPlayback || isDolbyVision;
+    isDolbyVision;
+
+bool playbackMimeLooksHls(String? value) {
+  final text = value?.trim().toLowerCase() ?? '';
+  return text == 'hls' ||
+      text == 'm3u8' ||
+      text.contains('mpegurl') ||
+      text.contains('x-mpegurl');
+}
+
+Future<void> setMpvDemuxerFormat(Player player, RemotePlayback playback) async {
+  try {
+    final native = player.platform as dynamic;
+    await native.setProperty(
+      'demuxer-lavf-format',
+      playbackMimeLooksHls(playback.mimeType) ? 'hls' : '',
+    );
+  } catch (_) {
+    // Best-effort: media_kit web/older native backends may not expose mpv.
+  }
+}
 
 bool shouldRetryTvboxDanmu(String source, int count, int retries) {
   final uri = Uri.tryParse(source);
@@ -32,6 +52,11 @@ class VideoPlayerPage extends StatefulWidget {
       this.playback,
       this.episodes,
       this.playbackResolver,
+      this.adoptedPlayer,
+      this.startLandscape = false,
+      this.liveSourceNames,
+      this.liveSourceIndex = 0,
+      this.liveSourceResolver,
       super.key});
 
   final AppStore store;
@@ -39,6 +64,17 @@ class VideoPlayerPage extends StatefulWidget {
   final RemotePlayback? playback;
   final List<MediaItem>? episodes;
   final Future<RemotePlayback> Function(MediaItem)? playbackResolver;
+  final Player? adoptedPlayer;
+  final bool startLandscape;
+  final List<String>? liveSourceNames;
+  final int liveSourceIndex;
+  final Future<
+          ({
+            MediaItem item,
+            List<MediaItem> episodes,
+            RemotePlayback playback
+          })?>
+      Function(int index)? liveSourceResolver;
 
   @override
   State<VideoPlayerPage> createState() => _VideoPlayerPageState();
@@ -156,6 +192,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   List<DanmuSearchResult> danmuSearchResults = const [];
   late final TextEditingController danmuSearchController;
   late final TextEditingController danmuSearchEpisodeController;
+  List<MediaItem>? currentEpisodeItems;
+  late int currentLiveSourceIndex;
   Object? error;
 
   Player get player => _player ??= Player(
@@ -197,6 +235,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   @override
   void initState() {
     super.initState();
+    currentEpisodeItems = widget.episodes;
+    currentLiveSourceIndex = widget.liveSourceIndex;
+    if (widget.adoptedPlayer != null) _player = widget.adoptedPlayer;
     danmuTicker = AnimationController(
       vsync: this,
       duration: const Duration(hours: 24),
@@ -212,8 +253,42 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     startStatusTimer();
     unawaited(loadCurrentLibraryDetail());
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) init();
+      if (mounted) {
+        if (widget.startLandscape && Platform.isWindows) {
+          unawaited(setPlaybackWindowFullscreen(true));
+        }
+        widget.adoptedPlayer == null ? init() : adoptCurrentPlayback();
+      }
     });
+  }
+
+  Future<void> adoptCurrentPlayback() async {
+    final playback = widget.playback;
+    attachStreams();
+    await attachMpvLoadingProperties();
+    if (widget.startLandscape) {
+      await applyLandscapeVideoOrientation();
+    } else {
+      await applyRememberedOrientation();
+    }
+    if (!mounted) return;
+    currentResolvedPlayback = playback;
+    if (currentItem.sourceId == 'tvbox') unawaited(loadDanmuForCurrentItem());
+    setState(() {
+      usingMedia3 = false;
+      backendSelected = true;
+      openedOnce = true;
+      mediaOpenCompleted = true;
+      ready = true;
+      playing = player.state.playing;
+      buffering = player.state.buffering;
+      position = player.state.position;
+      duration = player.state.duration;
+      playbackPositionConfirmed = true;
+      loadingVisible = false;
+    });
+    syncDanmuClock(position);
+    scheduleControlsAutoHide();
   }
 
   void handleStoreChanged() {
@@ -678,8 +753,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   Future<void> init(
       {bool automaticRetry = true, bool resetCodecRetry = true}) async {
     final attempt = ++openAttempt;
-    final saved = rememberedPositionMsFor(currentItem);
-    final rememberedDuration = rememberedDurationMsFor(currentItem);
+    final livePlayback = isTvboxLivePlayback;
+    final saved = livePlayback ? 0 : rememberedPositionMsFor(currentItem);
+    final rememberedDuration =
+        livePlayback ? 0 : rememberedDurationMsFor(currentItem);
     if (resetCodecRetry) {
       transientCodecRetryCount = 0;
       softwareDecoderFallback = false;
@@ -711,9 +788,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         final savedPosition = Duration(milliseconds: saved);
         syncDanmuClock(savedPosition);
       }
-      final playback = !openedOnce && currentItem.id == widget.item.id
-          ? widget.playback ?? await resolvePlayback(currentItem)
-          : await resolvePlayback(currentItem);
+      final playback = currentResolvedPlayback ??
+          (!openedOnce && currentItem.id == widget.item.id
+              ? widget.playback ?? await resolvePlayback(currentItem)
+              : await resolvePlayback(currentItem));
       final uri = playback.uri;
       final previousUsingMedia3 = usingMedia3;
       final isTvboxPlayback = currentItem.sourceId == 'tvbox';
@@ -758,6 +836,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       attachStreams();
       await attachMpvLoadingProperties();
       await configureDecoder();
+      await setMpvDemuxerFormat(player, playback);
       if (openedOnce) {
         await player.stop();
         await Future<void>.delayed(const Duration(milliseconds: 120));
@@ -766,7 +845,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         Media(
           uri,
           httpHeaders: playback.headers.isEmpty ? null : playback.headers,
-          start: saved > 0 ? Duration(milliseconds: saved) : null,
+          start:
+              livePlayback || saved <= 0 ? null : Duration(milliseconds: saved),
         ),
         play: !needsDolbyVisionDetection,
       );
@@ -997,6 +1077,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   }
 
   Future<void> saveCurrentProgress() async {
+    if (isTvboxLivePlayback) return;
     if (!shouldPersistPlaybackProgress(
       ready: ready,
       positionConfirmed: playbackPositionConfirmed,
@@ -1040,7 +1121,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       subscription.cancel();
     }
     unawaited(unobserveMpvLoadingProperties());
-    _player?.dispose();
+    if (widget.adoptedPlayer == null) _player?.dispose();
     super.dispose();
   }
 
@@ -1300,6 +1381,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     widget.store.addDiagnosticLog(message, category: 'player');
   }
 
+  bool get isTvboxLivePlayback => currentItem.id.startsWith('tvbox-live:');
+
   void showLoadingOverlay() {
     loadingHideTimer?.cancel();
     if (!loadingVisible) {
@@ -1410,12 +1493,24 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         text.contains('operation timed out');
   }
 
+  bool isRecoverableLiveAudioDecodeError(Object value) =>
+      isTvboxLivePlayback &&
+      hasRenderableVideo &&
+      value.toString().toLowerCase().contains('error decoding audio');
+
   bool get playbackLooksAlive {
     final state = usingMedia3 ? null : player.state;
     final hasPosition = position > Duration.zero ||
         (state != null && state.position > Duration.zero);
     return hasRenderableVideo &&
         (ready || playing || (state?.playing ?? false) || hasPosition);
+  }
+
+  bool get shouldShowErrorOverlay {
+    final current = error;
+    return current != null &&
+        !isRecoverableLiveAudioDecodeError(current) &&
+        !(isRecoverableNetworkReadError(current) && playbackLooksAlive);
   }
 
   Future<void> retryTransientCodec(int attempt) async {
@@ -1431,12 +1526,21 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
 
   Future<void> handlePlayerError(Object value) async {
     final attempt = openAttempt;
+    if (isRecoverableLiveAudioDecodeError(value)) {
+      logVideoLoading(
+          'player stream live audio decode ignored attempt=$attempt: $value');
+      if (attempt == openAttempt && error != null) {
+        setStateIfMounted(() => error = null);
+      }
+      return;
+    }
     if (canRetryTransientCodec(value)) {
       logVideoLoading('player stream error retryable attempt=$attempt: $value');
       await retryTransientCodec(attempt);
       return;
     }
-    if (isRecoverableNetworkReadError(value) && playbackLooksAlive) {
+    if (isRecoverableNetworkReadError(value) &&
+        (currentItem.sourceId == 'tvbox' || playbackLooksAlive)) {
       logVideoLoading(
           'player stream recoverable during active playback attempt=$attempt: $value');
       if (attempt == openAttempt && error != null) {
@@ -1705,8 +1809,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   }
 
   Future<void> handleEscapePressed() async {
-    if (Platform.isWindows && playbackWindowFullscreen) {
-      await setPlaybackWindowFullscreen(false);
+    if (Platform.isWindows) {
+      if (mounted) Navigator.of(context).maybePop();
       return;
     }
     if (fullscreen) {
@@ -2356,7 +2460,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   }
 
   List<MediaItem> get episodeItems {
-    if (widget.episodes != null) return widget.episodes!;
+    if (currentEpisodeItems != null) return currentEpisodeItems!;
     final folderKey = mediaFolderKey(currentItem);
     final items = widget.store.items
         .where((item) =>
@@ -2469,13 +2573,14 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     }
   }
 
-  Future<void> playEpisode(MediaItem item, {bool resume = true}) async {
+  Future<void> playEpisode(MediaItem item,
+      {bool resume = true, RemotePlayback? resolvedPlayback}) async {
     if (item.id == currentItem.id) {
       closeEpisodePanel();
       return;
     }
     controlsHideTimer?.cancel();
-    await saveCurrentProgress();
+    unawaited(saveCurrentProgress());
     final saved = resume ? rememberedPositionMsFor(item) : 0;
     final rememberedDuration = resume ? rememberedDurationMsFor(item) : 0;
     syncDanmuClock(saved > 0 ? Duration(milliseconds: saved) : Duration.zero);
@@ -2484,7 +2589,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     landscapeSensorTimer?.cancel();
     setStateIfMounted(() {
       currentItem = item;
-      currentResolvedPlayback = null;
+      currentResolvedPlayback = resolvedPlayback;
       position = saved > 0 ? Duration(milliseconds: saved) : Duration.zero;
       duration = rememberedDuration > 0
           ? Duration(milliseconds: rememberedDuration)
@@ -2516,6 +2621,17 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     });
     unawaited(loadCurrentLibraryDetail());
     await init();
+  }
+
+  Future<void> switchLiveSource(int index) async {
+    final resolver = widget.liveSourceResolver;
+    if (resolver == null || index == currentLiveSourceIndex) return;
+    final selection = await resolver(index);
+    if (!mounted || selection == null) return;
+    currentEpisodeItems = selection.episodes;
+    currentLiveSourceIndex = index;
+    await playEpisode(selection.item,
+        resume: false, resolvedPlayback: selection.playback);
   }
 
   List<Shadow> get controlShadows => const [];
@@ -2752,6 +2868,39 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        if (widget.liveSourceNames case final names?)
+                          if (names.length > 1) ...[
+                            DropdownButtonFormField<int>(
+                              initialValue: currentLiveSourceIndex,
+                              dropdownColor: const Color(0xEE4A4A4A),
+                              style: const TextStyle(color: Colors.white),
+                              decoration: const InputDecoration(
+                                labelText: '直播源',
+                                labelStyle: TextStyle(color: Colors.white70),
+                                enabledBorder: OutlineInputBorder(
+                                  borderSide: BorderSide(color: Colors.white38),
+                                ),
+                                focusedBorder: OutlineInputBorder(
+                                  borderSide: BorderSide(color: Colors.white),
+                                ),
+                              ),
+                              items: [
+                                for (final entry in names.indexed)
+                                  DropdownMenuItem(
+                                    value: entry.$1,
+                                    child: Text(entry.$2,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis),
+                                  ),
+                              ],
+                              onChanged: (value) {
+                                if (value != null) {
+                                  unawaited(switchLiveSource(value));
+                                }
+                              },
+                            ),
+                            SizedBox(height: isLandscape ? 14 : 12),
+                          ],
                         Text('$episodePanelSeasonLabel（共 ${items.length} 集）',
                             style: TextStyle(
                                 color: Colors.white70,
@@ -3751,9 +3900,11 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
                     buildVideoOutput(),
                     buildMedia3SubtitleOverlay(),
                     buildDanmuOverlay(),
-                    if (!inPictureInPicture && error == null && loadingVisible)
+                    if (!inPictureInPicture &&
+                        !shouldShowErrorOverlay &&
+                        loadingVisible)
                       buildLoadingOverlay(),
-                    if (!inPictureInPicture && error != null)
+                    if (!inPictureInPicture && shouldShowErrorOverlay)
                       ErrorView(message: '$error', onRetry: init, dark: true),
                     if (!inPictureInPicture) buildVerticalControlOverlay(),
                     if (!inPictureInPicture)
