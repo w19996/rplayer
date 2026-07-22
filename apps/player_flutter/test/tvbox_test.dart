@@ -83,14 +83,20 @@ void main() {
     final sites = tvboxSitesFromConfig('https://example.com/config.json',
         jsonDecode(decodeTvboxConfigBytes(wrapped)));
 
-    expect(sites.map((site) => site.key),
-        ['xml', 'json', 'idn', 'remote', 'js', 'py']);
+    expect(
+      sites.map((site) => site.key),
+      Platform.isWindows
+          ? ['xml', 'json', 'idn', 'remote', 'js', 'py']
+          : ['xml', 'json', 'idn', 'remote'],
+    );
     expect(sites.first.apiUrl, 'https://example.com/xml');
     expect(sites[2].apiUrl, startsWith('https://xn--'));
     expect(sites[3].apiUrl, 'https://example.com/remote');
     expect(sites[3].searchable, isFalse);
-    expect(sites[4].apiUrl, 'https://example.com/cat.js');
-    expect(sites[5].apiUrl, 'https://example.com/cat.py');
+    if (Platform.isWindows) {
+      expect(sites[4].apiUrl, 'https://example.com/cat.js');
+      expect(sites[5].apiUrl, 'https://example.com/cat.py');
+    }
     expect(
       parseTvboxJarSpec(
           'https://example.com/config/main.json', './jar/fan.jar;md5;abc123'),
