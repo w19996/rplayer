@@ -235,7 +235,7 @@ jobs:
           $pythonHome = python -c "import pathlib, sys; print(pathlib.Path(sys.executable).parent)"
           $runtime = "build\windows\x64\runner\Release\tvbox_runtime\python"
           New-Item -ItemType Directory -Force $runtime | Out-Null
-          Copy-Item -LiteralPath "$pythonHome\*" -Destination $runtime -Recurse -Force
+          Copy-Item -Path (Join-Path $pythonHome "*") -Destination $runtime -Recurse -Force
           python -m pip install --upgrade --target "$runtime\Lib\site-packages" `
             requests lxml pyquery cachetools pycryptodome beautifulsoup4
 
