@@ -113,7 +113,8 @@ void main() {
     expect(tvboxIsScriptApi('https://example.com/cat.js'), isTrue);
     expect(tvboxIsScriptApi('https://example.com/cat.py?token=1'), isTrue);
     expect(tvboxIsScriptApi('csp_Test'), isFalse);
-    expect(TvboxScriptRuntime.canHandle('https://example.com/cat.js'), isTrue);
+    expect(TvboxScriptRuntime.canHandle('https://example.com/cat.js'),
+        Platform.isWindows);
     expect(TvboxScriptRuntime.canHandle('https://example.com/cat.py'),
         Platform.isWindows);
     expect(TvboxScriptRuntime.canHandle('csp_Test'), isFalse);
