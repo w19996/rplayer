@@ -66,6 +66,7 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
         ndk {
+            abiFilters.clear()
             abiFilters.addAll(targetAbis)
         }
     }

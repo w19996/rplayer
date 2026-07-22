@@ -34,6 +34,9 @@ on:
 permissions:
   contents: read
 
+env:
+  FLUTTER_VERSION: "3.41.7"
+
 concurrency:
   group: flutter-build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -108,6 +111,7 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
 
@@ -289,6 +293,7 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
 
@@ -309,10 +314,6 @@ jobs:
 
       - name: Get dependencies
         run: flutter pub get
-
-      - name: Build Rust/C++ core for Windows x64
-        working-directory: .
-        run: cargo build -p player_core --release
 
       - name: Build Windows x64
         env:
@@ -345,7 +346,13 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force build\ci | Out-Null
-          Copy-Item ..\..\target\release\player_core.dll build\windows\x64\runner\Release\player_core.dll -Force
+          $builtCore = Resolve-Path ..\..\target\release\player_core.dll
+          $packagedCore = Resolve-Path build\windows\x64\runner\Release\player_core.dll
+          $builtHash = (Get-FileHash $builtCore).Hash
+          $packagedHash = (Get-FileHash $packagedCore).Hash
+          if ($builtHash -ne $packagedHash) {
+            throw "Packaged player_core.dll does not match target\release\player_core.dll."
+          }
           Remove-Item build\windows\x64\runner\Release\rplayer_data -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item build\windows\x64\runner\Release\player_diagnostic_logs_*.txt -Force -ErrorAction SilentlyContinue
           Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath build\ci\rplayer-windows-x64.zip -Force
