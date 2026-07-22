@@ -68,6 +68,11 @@ jobs:
         with:
           targets: aarch64-linux-android
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
       - name: Set up Android NDK
         id: setup-ndk
         uses: nttld/setup-ndk@v1
