@@ -30,15 +30,15 @@ permissions:
   contents: read
 
 env:
-  FLUTTER_VERSION: "3.41.7"
   APP_DIR: apps/player_flutter
+  FLUTTER_VERSION: "3.41.7"
 
 concurrency:
   group: flutter-build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  android-arm64:
+  android:
     name: Android arm64 APK
     runs-on: ubuntu-latest
 
@@ -105,8 +105,16 @@ jobs:
         working-directory: .
         run: cargo build -p player_core --release
 
-      - name: Test
+      - name: Flutter tests
         run: flutter test --no-pub
+
+      - name: Android TVBox bridge tests
+        working-directory: ${{ env.APP_DIR }}/android
+        run: ./gradlew :app:testDebugUnitTest --tests com.example.player_flutter.TvboxBridgeTest --no-daemon
+
+      - name: Check Android Python requirements
+        working-directory: ${{ env.APP_DIR }}/android
+        run: ./gradlew :app:installDebugPythonRequirements --rerun-tasks --no-daemon
 
       - name: Build Rust core for Android
         working-directory: .
@@ -129,7 +137,7 @@ jobs:
           mkdir -p build/ci
           cp build/app/outputs/flutter-apk/app-release.apk build/ci/rplayer-android-arm64-v8a.apk
 
-      - name: Check APK native libraries
+      - name: Check APK contents
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -137,23 +145,28 @@ jobs:
 
           apk = Path("build/ci/rplayer-android-arm64-v8a.apk")
           with ZipFile(apk) as archive:
-              libraries = {name for name in archive.namelist() if name.startswith("lib/")}
+              names = set(archive.namelist())
+              libraries = {name for name in names if name.startswith("lib/")}
 
           abis = {name.split("/", 2)[1] for name in libraries}
           if abis != {"arm64-v8a"}:
               raise SystemExit(f"Unexpected APK ABIs: {sorted(abis)}")
 
           required = {
+              "assets/flutter_assets/android/app/src/main/assets/js/lib/net.js",
+              "assets/chaquopy/app.imy",
               "lib/arm64-v8a/libapp.so",
               "lib/arm64-v8a/libc++_shared.so",
               "lib/arm64-v8a/libflutter.so",
               "lib/arm64-v8a/libmediakitandroidhelper.so",
               "lib/arm64-v8a/libmpv.so",
               "lib/arm64-v8a/libplayer_core.so",
+              "lib/arm64-v8a/libpython3.13.so",
+              "lib/arm64-v8a/libquickjs-android-wrapper.so",
           }
-          missing = required - libraries
+          missing = required - names
           if missing:
-              raise SystemExit(f"Missing APK native libraries: {sorted(missing)}")
+              raise SystemExit(f"Missing APK entries: {sorted(missing)}")
 
           print("\n".join(sorted(libraries)))
           PY
@@ -165,7 +178,7 @@ jobs:
           path: apps/player_flutter/build/ci/rplayer-android-arm64-v8a.apk
           if-no-files-found: error
 
-  windows-x64:
+  windows:
     name: Windows x64
     runs-on: windows-latest
 
@@ -187,6 +200,11 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
       - name: Cache Cargo
         uses: actions/cache@v4
         with:
@@ -202,8 +220,24 @@ jobs:
       - name: Get Flutter dependencies
         run: flutter pub get
 
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos
+
+      - name: TVBox tests
+        run: flutter test test/tvbox_test.dart --no-pub
+
       - name: Build Windows app
         run: flutter build windows --release --no-pub
+
+      - name: Bundle Windows Python runtime
+        shell: pwsh
+        run: |
+          $pythonHome = python -c "import pathlib, sys; print(pathlib.Path(sys.executable).parent)"
+          $runtime = "build\windows\x64\runner\Release\tvbox_runtime\python"
+          New-Item -ItemType Directory -Force $runtime | Out-Null
+          Copy-Item -LiteralPath "$pythonHome\*" -Destination $runtime -Recurse -Force
+          python -m pip install --upgrade --target "$runtime\Lib\site-packages" `
+            requests lxml pyquery cachetools pycryptodome beautifulsoup4
 
       - name: Set up Inno Setup
         shell: pwsh
@@ -215,7 +249,7 @@ jobs:
           New-Item -ItemType Directory -Force $languageDir | Out-Null
           curl.exe --fail -L -o (Join-Path $languageDir "ChineseSimplified.isl") "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl"
 
-      - name: Package Windows app
+      - name: Package Windows portable zip
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force build\ci | Out-Null

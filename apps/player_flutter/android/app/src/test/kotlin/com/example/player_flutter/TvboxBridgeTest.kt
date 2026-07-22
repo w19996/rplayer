@@ -40,6 +40,16 @@ class TvboxBridgeTest {
     }
 
     @Test
+    fun detectsScriptSpiderApisForNativeLoaders() {
+        assertTrue(tvboxIsJsApi("https://example.com/cat.js"))
+        assertTrue(tvboxIsJsApi("https://example.com/cat.js?token=1"))
+        assertTrue(tvboxIsPythonApi("https://example.com/cat.py"))
+        assertTrue(tvboxIsPythonApi("https://example.com/cat.py?token=1"))
+        assertFalse(tvboxIsJsApi("csp_Test"))
+        assertFalse(tvboxIsPythonApi("csp_Test"))
+    }
+
+    @Test
     fun stripsImageWrapperBeforeMpegTsPayload() {
         val bytes = ByteArray(68 + 188 * 3)
         bytes[0] = 0x89.toByte()

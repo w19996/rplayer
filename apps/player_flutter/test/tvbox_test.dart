@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as p;
 import 'package:player_flutter/main.dart';
 
 void main() {
@@ -71,6 +72,8 @@ void main() {
           'searchable': 0,
         },
         {'key': 'spider', 'name': 'Spider', 'type': 3, 'api': 'csp_Test'},
+        {'key': 'js', 'name': 'JS', 'type': 3, 'api': './cat.js'},
+        {'key': 'py', 'name': 'Python', 'type': 3, 'api': './cat.py'},
       ],
     });
     final wrapped = [
@@ -80,11 +83,14 @@ void main() {
     final sites = tvboxSitesFromConfig('https://example.com/config.json',
         jsonDecode(decodeTvboxConfigBytes(wrapped)));
 
-    expect(sites.map((site) => site.type), [0, 1, 1, 4]);
+    expect(sites.map((site) => site.key),
+        ['xml', 'json', 'idn', 'remote', 'js', 'py']);
     expect(sites.first.apiUrl, 'https://example.com/xml');
     expect(sites[2].apiUrl, startsWith('https://xn--'));
-    expect(sites.last.apiUrl, 'https://example.com/remote');
-    expect(sites.last.searchable, isFalse);
+    expect(sites[3].apiUrl, 'https://example.com/remote');
+    expect(sites[3].searchable, isFalse);
+    expect(sites[4].apiUrl, 'https://example.com/cat.js');
+    expect(sites[5].apiUrl, 'https://example.com/cat.py');
     expect(
       parseTvboxJarSpec(
           'https://example.com/config/main.json', './jar/fan.jar;md5;abc123'),
@@ -107,6 +113,10 @@ void main() {
     expect(tvboxIsScriptApi('https://example.com/cat.js'), isTrue);
     expect(tvboxIsScriptApi('https://example.com/cat.py?token=1'), isTrue);
     expect(tvboxIsScriptApi('csp_Test'), isFalse);
+    expect(TvboxScriptRuntime.canHandle('https://example.com/cat.js'), isTrue);
+    expect(TvboxScriptRuntime.canHandle('https://example.com/cat.py'),
+        Platform.isWindows);
+    expect(TvboxScriptRuntime.canHandle('csp_Test'), isFalse);
     final warehouses =
         tvboxWarehousesFromConfig('https://example.com/config/main.json', {
       'urls': [
@@ -126,6 +136,65 @@ void main() {
       throwsA(isA<FormatException>().having((error) => error.message, 'message',
           contains('Spider/JAR/JS/Python'))),
     );
+  });
+
+  test('runs Windows JS Spider with module imports', () async {
+    if (!Platform.isWindows) return;
+    final quickjsDll =
+        File('${p.dirname(Platform.resolvedExecutable)}\\quickjs_c_bridge.dll');
+    if (!await quickjsDll.exists()) return;
+    final dir = await Directory.systemTemp.createTemp('tvbox-js-test-');
+    try {
+      final helper = File('${dir.path}${Platform.pathSeparator}helper.js');
+      await helper.writeAsString("export const title = '首页';");
+      final script = File('${dir.path}${Platform.pathSeparator}cat.js');
+      await script.writeAsString('''
+import { title } from './helper.js';
+export default {
+  init(cfg) { this.cfg = cfg; },
+  home(filter) { return JSON.stringify({ class: [{ type_id: '1', type_name: title }], ext: this.cfg.ext }); },
+  detail(id) { return JSON.stringify({ list: [{ vod_id: id }] }); }
+};
+''');
+      final site = TvboxSite(
+        key: 'js-test',
+        name: 'JS Test',
+        type: 3,
+        apiUrl: script.path,
+        ext: '{"token":"ok"}',
+      );
+
+      expect(jsonDecode(await TvboxScriptRuntime.call(site, 'home'))['ext'],
+          {'token': 'ok'});
+      expect(
+        jsonDecode(await TvboxScriptRuntime.call(site, 'detail', {
+          'id': 'vod-1',
+        }))['list'][0]['vod_id'],
+        'vod-1',
+      );
+    } finally {
+      await dir.delete(recursive: true);
+    }
+  });
+
+  test('Windows script playback resolves proxy urls', () async {
+    if (!Platform.isWindows) return;
+    final playback = await TvboxScriptRuntime.finishPlayback(
+      const TvboxSite(
+        key: 'proxy-test',
+        name: 'Proxy Test',
+        type: 3,
+        apiUrl: 'https://example.com/cat.js',
+      ),
+      {
+        'url': 'proxy://do=js&siteKey=proxy-test&url=/media',
+        'header': {'User-Agent': 'TVBox'},
+      },
+    );
+
+    expect(playback.uri,
+        'http://127.0.0.1:9978/proxy?do=js&siteKey=proxy-test&url=/media');
+    expect(playback.headers['User-Agent'], 'TVBox');
   });
 
   test('uses FongMi JSON and remote site protocols', () async {

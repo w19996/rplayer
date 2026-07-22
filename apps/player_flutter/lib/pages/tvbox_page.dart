@@ -794,10 +794,12 @@ List<TvboxSite> tvboxSitesFromConfig(
     );
   }).where((site) {
     if (site.type == 3) {
-      return Platform.isAndroid &&
-          ((site.apiUrl.startsWith('csp_') &&
-                  Uri.tryParse(site.jarUrl)?.hasAuthority == true) ||
-              tvboxIsScriptApi(site.apiUrl));
+      if (Platform.isAndroid) {
+        return (site.apiUrl.startsWith('csp_') &&
+                Uri.tryParse(site.jarUrl)?.hasAuthority == true) ||
+            tvboxIsScriptApi(site.apiUrl);
+      }
+      return Platform.isWindows && tvboxIsScriptApi(site.apiUrl);
     }
     if (site.type != 0 && site.type != 1 && site.type != 4) return false;
     final uri = Uri.tryParse(site.apiUrl);
@@ -1106,8 +1108,11 @@ class TvboxClient {
 
   Future<String> _spider(String action,
       [Map<String, Object?> arguments = const {}]) async {
+    if (TvboxScriptRuntime.canHandle(site.apiUrl)) {
+      return TvboxScriptRuntime.call(site, action, arguments);
+    }
     if (!Platform.isAndroid) {
-      throw UnsupportedError('Spider/JAR 仅支持 Android');
+      throw UnsupportedError('Spider/JAR/JS/Python 仅支持 Android 和 Windows');
     }
     final value = await appChannel.invokeMethod<String>('tvboxCall', {
       'action': action,
@@ -1229,6 +1234,9 @@ class TvboxClient {
     final value = jsonDecode(body);
     if (value is! Map<String, dynamic>) {
       throw const FormatException('播放接口不是 JSON 对象');
+    }
+    if (TvboxScriptRuntime.canHandle(site.apiUrl)) {
+      return TvboxScriptRuntime.finishPlayback(site, value);
     }
     final url = value['url'];
     final resolved =
@@ -1668,6 +1676,7 @@ class _TvboxPageState extends State<TvboxPage> {
               ),
             )
           : Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 if (categories.isNotEmpty)
                   SizedBox(

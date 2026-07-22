@@ -23,6 +23,7 @@ dependencies:
     path: ../../third_party/media_kit_libs_android_video
   permission_handler: ^12.0.3
   media_kit_libs_windows_video: ^1.0.11
+  flutter_js: ^0.8.7
 
 dev_dependencies:
   flutter_test:
@@ -34,3 +35,4 @@ flutter:
   assets:
     - assets/donate.png
     - assets/licenses/tvboxos_agpl_3.txt
+    - android/app/src/main/assets/js/lib/
