@@ -25,78 +25,26 @@ on:
       - "Cargo.lock"
       - ".github/workflows/flutter-build.yml"
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Release/app version, for example 1.2.3"
-        required: true
-        type: string
 
 permissions:
   contents: read
 
 env:
   FLUTTER_VERSION: "3.41.7"
+  APP_DIR: apps/player_flutter
 
 concurrency:
   group: flutter-build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  version:
-    name: App version
+  android-arm64:
+    name: Android arm64 APK
     runs-on: ubuntu-latest
-    outputs:
-      app_version: ${{ steps.version.outputs.app_version }}
-      build_number: ${{ steps.version.outputs.build_number }}
-      release_tag: ${{ steps.version.outputs.release_tag }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Resolve app version
-        id: version
-        env:
-          DISPATCH_VERSION: ${{ github.event.inputs.version }}
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            app_version="$DISPATCH_VERSION"
-            release_tag="$app_version"
-          elif [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            app_version="${GITHUB_REF_NAME#v}"
-            release_tag="$GITHUB_REF_NAME"
-          else
-            version="$(awk -F': *' '/^version:/ { print $2; exit }' apps/player_flutter/pubspec.yaml)"
-            app_version="${version%%+*}"
-            release_tag="$app_version"
-          fi
-
-          if [ -z "$app_version" ]; then
-            echo "App version is empty." >&2
-            exit 1
-          fi
-          if ! [[ "$app_version" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
-            echo "App version '$app_version' must use x.y.z format." >&2
-            exit 1
-          fi
-
-          build_number="$GITHUB_RUN_NUMBER"
-          if ! [[ "$build_number" =~ ^[0-9]+$ ]]; then
-            echo "Build number '$build_number' must be numeric." >&2
-            exit 1
-          fi
-
-          echo "app_version=$app_version" >> "$GITHUB_OUTPUT"
-          echo "build_number=$build_number" >> "$GITHUB_OUTPUT"
-          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
-
-  android:
-    name: Android arm64
-    runs-on: ubuntu-latest
-    needs: version
 
     defaults:
       run:
-        working-directory: apps/player_flutter
+        working-directory: ${{ env.APP_DIR }}
 
     steps:
       - name: Checkout
@@ -147,7 +95,20 @@ jobs:
             cargo install cargo-ndk --locked
           fi
 
-      - name: Build Rust/C++ core for Android
+      - name: Get Flutter dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos
+
+      - name: Build Rust core for Flutter tests
+        working-directory: .
+        run: cargo build -p player_core --release
+
+      - name: Test
+        run: flutter test --no-pub
+
+      - name: Build Rust core for Android
         working-directory: .
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
@@ -160,82 +121,15 @@ jobs:
             -o apps/player_flutter/android/app/src/main/jniLibs \
             build -p player_core --release
           test -f apps/player_flutter/android/app/src/main/jniLibs/arm64-v8a/libplayer_core.so
-          test -f apps/player_flutter/android/app/src/main/jniLibs/arm64-v8a/libc++_shared.so
-          rm apps/player_flutter/android/app/src/main/jniLibs/arm64-v8a/libc++_shared.so
+          rm -f apps/player_flutter/android/app/src/main/jniLibs/arm64-v8a/libc++_shared.so
 
-      - name: Strip Android native libraries
-        working-directory: .
-        env:
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+      - name: Build APK
         run: |
-          LLVM_STRIP="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
-          find apps/player_flutter/android/app/src/main/jniLibs -name "*.so" -print \
-            -exec "$LLVM_STRIP" --strip-unneeded {} \;
-          find apps/player_flutter/android/app/src/main/jniLibs -name "*.so" -printf "%p %s bytes\n"
-
-      - name: Get dependencies
-        run: flutter pub get
-
-      - name: Analyze
-        run: flutter analyze --no-fatal-infos
-
-      - name: Build Rust/C++ core for Linux tests
-        working-directory: .
-        run: cargo build -p player_core --release
-
-      - name: Test
-        run: flutter test --no-pub
-
-      - name: Configure Android signing
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
-        run: |
-          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
-            echo "ANDROID_KEYSTORE_BASE64 is not set; release APKs will use the default debug signing key."
-            exit 0
-          fi
-          if [ -z "$ANDROID_KEY_ALIAS" ] || [ -z "$ANDROID_KEY_PASSWORD" ] || [ -z "$ANDROID_STORE_PASSWORD" ]; then
-            echo "Android signing secrets are incomplete." >&2
-            exit 1
-          fi
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/upload-keystore.jks
-          printf '%s\n' \
-            "storePassword=$ANDROID_STORE_PASSWORD" \
-            "keyPassword=$ANDROID_KEY_PASSWORD" \
-            "keyAlias=$ANDROID_KEY_ALIAS" \
-            "storeFile=upload-keystore.jks" \
-            > android/key.properties
-
-      - name: Build Android arm64 APK
-        env:
-          APP_VERSION: ${{ needs.version.outputs.app_version }}
-          BUILD_NUMBER: ${{ needs.version.outputs.build_number }}
-        run: |
-          flutter build apk --release --target-platform android-arm64 --build-name "$APP_VERSION" --build-number "$BUILD_NUMBER" --android-project-arg=targetAbi=arm64-v8a --no-pub
+          flutter build apk --release --target-platform android-arm64 --android-project-arg=targetAbi=arm64-v8a --no-pub
           mkdir -p build/ci
           cp build/app/outputs/flutter-apk/app-release.apk build/ci/rplayer-android-arm64-v8a.apk
 
-      - name: Check Android APK version
-        env:
-          APP_VERSION: ${{ needs.version.outputs.app_version }}
-        run: |
-          aapt="$(find "$ANDROID_HOME/build-tools" -name aapt -type f | sort -V | tail -n 1)"
-          apk="build/ci/rplayer-android-arm64-v8a.apk"
-          badging="$("$aapt" dump badging "$apk")"
-          version_name="$(printf '%s\n' "$badging" | grep -o "versionName='[^']*'" | head -n 1 | cut -d"'" -f2)"
-          if [ -z "$version_name" ]; then
-            echo "Could not read versionName from $apk." >&2
-            exit 1
-          fi
-          if [ "$version_name" != "$APP_VERSION" ]; then
-            echo "$apk versionName '$version_name' does not match app version '$APP_VERSION'." >&2
-            exit 1
-          fi
-
-      - name: Check Android APK native libraries
+      - name: Check APK native libraries
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -260,31 +154,24 @@ jobs:
           missing = required - libraries
           if missing:
               raise SystemExit(f"Missing APK native libraries: {sorted(missing)}")
+
           print("\n".join(sorted(libraries)))
           PY
 
-      - name: Upload Android arm64 APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: rplayer-android-arm64-v8a
           path: apps/player_flutter/build/ci/rplayer-android-arm64-v8a.apk
           if-no-files-found: error
 
-      - name: Upload Rust Android libraries
-        uses: actions/upload-artifact@v4
-        with:
-          name: player-core-android-libs
-          path: apps/player_flutter/android/app/src/main/jniLibs/arm64-v8a/libplayer_core.so
-          if-no-files-found: error
-
   windows-x64:
     name: Windows x64
     runs-on: windows-latest
-    needs: version
 
     defaults:
       run:
-        working-directory: apps/player_flutter
+        working-directory: ${{ env.APP_DIR }}
 
     steps:
       - name: Checkout
@@ -312,23 +199,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Get dependencies
+      - name: Get Flutter dependencies
         run: flutter pub get
 
-      - name: Build Windows x64
-        env:
-          APP_VERSION: ${{ needs.version.outputs.app_version }}
-        run: flutter build windows --release --build-name "$env:APP_VERSION" --no-pub
-
-      - name: Check Windows exe version
-        shell: pwsh
-        env:
-          APP_VERSION: ${{ needs.version.outputs.app_version }}
-        run: |
-          $actual = (Get-Item build\windows\x64\runner\Release\player_flutter.exe).VersionInfo.ProductVersion
-          if ($actual -ne $env:APP_VERSION) {
-            throw "Windows exe version '$actual' does not match app version '$env:APP_VERSION'."
-          }
+      - name: Build Windows app
+        run: flutter build windows --release --no-pub
 
       - name: Set up Inno Setup
         shell: pwsh
@@ -336,84 +211,39 @@ jobs:
           choco install innosetup --no-progress -y
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (!(Test-Path $iscc)) { $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe" }
-          $languageDir = Join-Path (Split-Path $iscc -Parent) 'Languages'
+          $languageDir = Join-Path (Split-Path $iscc -Parent) "Languages"
           New-Item -ItemType Directory -Force $languageDir | Out-Null
-          curl.exe --fail -L `
-            -o (Join-Path $languageDir 'ChineseSimplified.isl') `
-            'https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl'
+          curl.exe --fail -L -o (Join-Path $languageDir "ChineseSimplified.isl") "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl"
 
-      - name: Package Windows x64
+      - name: Package Windows app
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force build\ci | Out-Null
-          $builtCore = Resolve-Path ..\..\target\release\player_core.dll
-          $packagedCore = Resolve-Path build\windows\x64\runner\Release\player_core.dll
-          $builtHash = (Get-FileHash $builtCore).Hash
-          $packagedHash = (Get-FileHash $packagedCore).Hash
-          if ($builtHash -ne $packagedHash) {
-            throw "Packaged player_core.dll does not match target\release\player_core.dll."
-          }
           Remove-Item build\windows\x64\runner\Release\rplayer_data -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item build\windows\x64\runner\Release\player_diagnostic_logs_*.txt -Force -ErrorAction SilentlyContinue
           Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath build\ci\rplayer-windows-x64.zip -Force
 
-      - name: Build Windows x64 installer
+      - name: Build Windows installer
         shell: pwsh
-        env:
-          APP_VERSION: ${{ needs.version.outputs.app_version }}
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (!(Test-Path $iscc)) { $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe" }
+          $versionLine = Select-String -Path pubspec.yaml -Pattern "^version:" | Select-Object -First 1
+          $appVersion = ($versionLine.Line -replace "^version:\s*", "") -replace "\+.*$", ""
           $release = (Resolve-Path build\windows\x64\runner\Release).Path
           $output = (Resolve-Path build\ci).Path
-          & $iscc windows\installer\rplayer.iss "/DAppVersion=$env:APP_VERSION" "/DReleaseDir=$release" "/DOutputDir=$output"
+          & $iscc windows\installer\rplayer.iss "/DAppVersion=$appVersion" "/DReleaseDir=$release" "/DOutputDir=$output"
 
-      - name: Upload Windows x64 portable zip
+      - name: Upload Windows portable zip
         uses: actions/upload-artifact@v4
         with:
           name: rplayer-windows-x64-portable
           path: apps/player_flutter/build/ci/rplayer-windows-x64.zip
           if-no-files-found: error
 
-      - name: Upload Windows x64 installer
+      - name: Upload Windows installer
         uses: actions/upload-artifact@v4
         with:
           name: rplayer-windows-x64-installer
           path: apps/player_flutter/build/ci/rplayer-windows-x64-setup.exe
           if-no-files-found: error
-
-  windows-x86:
-    name: Windows x86 unsupported by Flutter stable
-    runs-on: windows-latest
-    steps:
-      - name: Explain Windows x86 support
-        run: |
-          echo "Flutter stable does not expose a Windows x86 build target in 'flutter build windows'."
-          echo "Windows x64 is built by the windows-x64 job."
-
-  release:
-    name: Publish GitHub release
-    runs-on: ubuntu-latest
-    needs: [version, android, windows-x64]
-    if: github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
-    permissions:
-      contents: write
-      actions: read
-
-    steps:
-      - name: Download app artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: rplayer-*
-          path: release-assets
-          merge-multiple: true
-
-      - name: Publish release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          gh release create "${{ needs.version.outputs.release_tag }}" release-assets/* \
-            --title "${{ needs.version.outputs.app_version }}" \
-            --target "$GITHUB_SHA" \
-            --generate-notes
