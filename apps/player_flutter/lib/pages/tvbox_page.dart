@@ -996,6 +996,73 @@ Map<String, String> _liveHeaders(Map channel) => {
         'Origin': '${channel['origin']}'.trim(),
     };
 
+Map<String, String> tvboxLivePlaybackHeaders(
+    TvboxLiveSource source, TvboxLiveChannel channel, Map<String, String> url) {
+  final headers = {...source.headers, ...channel.headers, ...url};
+  headers.putIfAbsent('User-Agent', () => 'TVBox');
+  return headers;
+}
+
+Future<RemotePlayback> resolveTvboxLivePlayback(
+    TvboxLiveSource source, TvboxLiveChannel channel, String raw) async {
+  final parsed = _splitTvboxLiveUrl(raw);
+  final headers = tvboxLivePlaybackHeaders(source, channel, parsed.$2);
+  final resolved = await _resolveTvboxLiveRedirect(parsed.$1, headers);
+  final playbackUrl =
+      await tvboxLivePlaybackUrl(resolved, headers, Platform.isAndroid);
+  return RemotePlayback(
+    playbackUrl,
+    headers,
+    mimeType: _tvboxLiveMimeType(resolved),
+  );
+}
+
+Future<String> tvboxLivePlaybackUrl(
+        String resolved, Map<String, String> headers, bool android) =>
+    android
+        ? TvboxScriptRuntime.localLivePlaybackUrl(resolved, headers)
+        : Future.value(resolved);
+
+String? _tvboxLiveMimeType(String value) {
+  final path = Uri.tryParse(value)?.path.toLowerCase() ?? value.toLowerCase();
+  if (_tvboxLooksHls(value)) return 'application/x-mpegURL';
+  if (path.endsWith('.flv')) return 'video/x-flv';
+  return null;
+}
+
+Future<String> _resolveTvboxLiveRedirect(
+    String value, Map<String, String> headers) async {
+  final parsedUri = Uri.tryParse(value);
+  if (parsedUri == null || !parsedUri.hasScheme || !parsedUri.hasAuthority) {
+    return value;
+  }
+  var uri = parsedUri;
+  if (uri.scheme != 'http' && uri.scheme != 'https') return value;
+
+  final client = HttpClient()..connectionTimeout = const Duration(seconds: 5);
+  try {
+    for (var i = 0; i < 4; i++) {
+      final request =
+          await client.getUrl(uri).timeout(const Duration(seconds: 5));
+      request.followRedirects = false;
+      headers.forEach(request.headers.set);
+      final response =
+          await request.close().timeout(const Duration(seconds: 6));
+      final location = response.headers.value(HttpHeaders.locationHeader);
+      if (!response.isRedirect || location == null || location.trim().isEmpty) {
+        return uri.toString();
+      }
+      uri = uri.resolve(location.trim());
+    }
+    return uri.toString();
+  } catch (_) {
+    // Best-effort: keep the original URL if probing is blocked or times out.
+  } finally {
+    client.close(force: true);
+  }
+  return value;
+}
+
 (String, Map<String, String>) _splitTvboxLiveUrl(String value) {
   final parts = value.split('|');
   if (parts.length < 2) return (value.trim(), const {});
@@ -2122,6 +2189,7 @@ class _TvboxLivePageState extends State<TvboxLivePage> {
         if ((value ?? 0) > 0 && mounted) setState(() => previewLoading = false);
       }))
       ..add(previewPlayer.stream.error.listen((value) {
+        if (isRecoverableLiveSeekWarning(true, value)) return;
         if (mounted) {
           setState(() {
             previewError = value.toString();
@@ -2194,12 +2262,7 @@ class _TvboxLivePageState extends State<TvboxLivePage> {
     final selected =
         group.channels.where((value) => value.name == item.title).first;
     final raw = selectedUrls[selected.name] ?? selected.urls.first;
-    final parsed = _splitTvboxLiveUrl(raw);
-    return RemotePlayback(
-      parsed.$1,
-      {...source.headers, ...selected.headers, ...parsed.$2},
-      mimeType: _tvboxLooksHls(parsed.$1) ? 'application/x-mpegURL' : null,
-    );
+    return resolveTvboxLivePlayback(source, selected, raw);
   }
 
   Future<void> _preview(TvboxLiveChannel selected,
@@ -2207,32 +2270,48 @@ class _TvboxLivePageState extends State<TvboxLivePage> {
     final raw =
         askLine ? await _chooseUrl(selected) : selected.urls.firstOrNull;
     if (raw == null) return;
-    selectedUrls[selected.name] = raw;
     setState(() {
       channel = selected;
       previewError = null;
       previewLoading = true;
     });
+    final candidates = [
+      raw,
+      for (final url in selected.urls)
+        if (url != raw) url,
+    ];
+    Object? lastError;
     try {
-      final parsed = _splitTvboxLiveUrl(raw);
-      final playback = RemotePlayback(
-        parsed.$1,
-        {...source.headers, ...selected.headers, ...parsed.$2},
-        mimeType: _tvboxLooksHls(parsed.$1) ? 'application/x-mpegURL' : null,
-      );
-      previewController;
-      _attachPreviewStreams();
-      await setMpvDemuxerFormat(previewPlayer, playback);
-      await previewPlayer.open(
-        Media(playback.uri,
-            httpHeaders: playback.headers.isEmpty ? null : playback.headers),
-        play: true,
-      );
-      _showPreviewControls();
+      for (final candidate in candidates) {
+        selectedUrls[selected.name] = candidate;
+        final playback =
+            await resolveTvboxLivePlayback(source, selected, candidate);
+        previewController;
+        _attachPreviewStreams();
+        await setMpvDemuxerFormat(previewPlayer, playback);
+        await previewPlayer.open(
+          Media(playback.uri,
+              httpHeaders: playback.headers.isEmpty ? null : playback.headers),
+          play: true,
+        );
+        try {
+          await previewPlayer.stream.width
+              .firstWhere((value) => (value ?? 0) > 0)
+              .timeout(const Duration(seconds: 10));
+          if (mounted) setState(() => previewLoading = false);
+          _showPreviewControls();
+          return;
+        } catch (error) {
+          lastError = error;
+          await previewPlayer.stop();
+        }
+      }
+      throw lastError ?? TimeoutException('直播预览超时');
     } catch (value) {
       if (mounted) {
         setState(() {
-          previewError = '$value';
+          previewError =
+              isRecoverableLiveSeekWarning(true, value) ? null : '$value';
           previewLoading = false;
         });
       }
@@ -2481,9 +2560,11 @@ class _TvboxLivePageState extends State<TvboxLivePage> {
                             ? Text('${channel.urls.length} 条线路')
                             : null,
                         selected: channel == this.channel,
-                        trailing: channel == this.channel
-                            ? const Icon(Icons.play_arrow)
-                            : null,
+                        trailing: IconButton(
+                          tooltip: '播放',
+                          icon: const Icon(Icons.play_arrow),
+                          onPressed: () => _openPlayer(channel),
+                        ),
                         onTap: () => previewEnabled
                             ? _preview(channel)
                             : _openPlayer(channel),

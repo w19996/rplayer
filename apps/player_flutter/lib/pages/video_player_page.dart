@@ -19,13 +19,62 @@ bool playbackMimeLooksHls(String? value) {
       text.contains('x-mpegurl');
 }
 
+String playbackMpvDemuxerFormat(String? mimeType) {
+  final text = mimeType?.trim().toLowerCase() ?? '';
+  if (playbackMimeLooksHls(text)) return 'hls';
+  if (text == 'flv' || text.contains('x-flv')) return 'flv';
+  return '';
+}
+
+bool playbackCanSeek(bool livePlayback, Duration duration) =>
+    !livePlayback && duration > Duration.zero;
+
+bool shouldAutoAdvancePlayback(bool livePlayback, MediaItem? next) =>
+    !livePlayback && next != null;
+
+Map<String, String> playbackMpvOptions({
+  required Map<String, String> base,
+  required bool androidTvboxLive,
+}) {
+  final options = {...base};
+  if (androidTvboxLive) {
+    options['hwdec'] = 'no';
+    options['vd-lavc-threads'] = '2';
+  }
+  return options;
+}
+
+bool isRecoverableLiveSeekWarning(bool livePlayback, Object value) {
+  final text = value.toString().toLowerCase();
+  return livePlayback &&
+      (text.contains('force-seekable') ||
+          text.contains('not seekable') ||
+          text.contains('cannot seek'));
+}
+
+String? playbackHeaderValue(Map<String, String> headers, String name) {
+  final target = name.toLowerCase();
+  for (final entry in headers.entries) {
+    if (entry.key.toLowerCase() == target) return entry.value;
+  }
+  return null;
+}
+
 Future<void> setMpvDemuxerFormat(Player player, RemotePlayback playback) async {
   try {
     final native = player.platform as dynamic;
     await native.setProperty(
       'demuxer-lavf-format',
-      playbackMimeLooksHls(playback.mimeType) ? 'hls' : '',
+      playbackMpvDemuxerFormat(playback.mimeType),
     );
+    final userAgent = playbackHeaderValue(playback.headers, 'User-Agent');
+    if (userAgent != null && userAgent.isNotEmpty) {
+      await native.setProperty('user-agent', userAgent);
+    }
+    final referer = playbackHeaderValue(playback.headers, 'Referer');
+    if (referer != null && referer.isNotEmpty) {
+      await native.setProperty('referrer', referer);
+    }
   } catch (_) {
     // Best-effort: media_kit web/older native backends may not expose mpv.
   }
@@ -685,6 +734,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         notifyControlsChanged(throttle: true);
       }))
       ..add(player.stream.duration.listen((value) {
+        if (isTvboxLivePlayback) {
+          if (duration != Duration.zero) duration = Duration.zero;
+          return;
+        }
         if (!ready) {
           if (value > Duration.zero && value != duration) {
             setStateIfMounted(() => duration = value);
@@ -969,12 +1022,16 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     if (usingMedia3) return;
     try {
       final native = player.platform as dynamic;
-      for (final entry in mpvAdvancedOptions(
-        preset: widget.store.mpvAdvancedPreset,
-        deviceClass: currentDeviceClass,
-        softwareDecoderFallback: softwareDecoderFallback,
-        customOptions: widget.store.effectiveMpvAdvancedOptions(),
-      ).entries) {
+      final options = playbackMpvOptions(
+        base: mpvAdvancedOptions(
+          preset: widget.store.mpvAdvancedPreset,
+          deviceClass: currentDeviceClass,
+          softwareDecoderFallback: softwareDecoderFallback,
+          customOptions: widget.store.effectiveMpvAdvancedOptions(),
+        ),
+        androidTvboxLive: Platform.isAndroid && isTvboxLivePlayback,
+      );
+      for (final entry in options.entries) {
         await native.setProperty(entry.key, entry.value);
       }
       await applyPlaybackLoadMode(reduced: competingWindowActive);
@@ -1224,8 +1281,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         nextHeight > 0 &&
         (videoWidth != nextWidth || videoHeight != nextHeight);
     final subtitleChanged = media3Subtitle != nextSubtitle;
-    final durationChanged =
-        nextDuration > Duration.zero && duration != nextDuration;
+    final durationChanged = !isTvboxLivePlayback &&
+        nextDuration > Duration.zero &&
+        duration != nextDuration;
 
     position = nextPosition;
     if (durationChanged) {
@@ -1510,6 +1568,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     final current = error;
     return current != null &&
         !isRecoverableLiveAudioDecodeError(current) &&
+        !isRecoverableLiveSeekWarning(isTvboxLivePlayback, current) &&
         !(isRecoverableNetworkReadError(current) && playbackLooksAlive);
   }
 
@@ -1529,6 +1588,14 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     if (isRecoverableLiveAudioDecodeError(value)) {
       logVideoLoading(
           'player stream live audio decode ignored attempt=$attempt: $value');
+      if (attempt == openAttempt && error != null) {
+        setStateIfMounted(() => error = null);
+      }
+      return;
+    }
+    if (isRecoverableLiveSeekWarning(isTvboxLivePlayback, value)) {
+      logVideoLoading(
+          'player stream live seek warning ignored attempt=$attempt: $value');
       if (attempt == openAttempt && error != null) {
         setStateIfMounted(() => error = null);
       }
@@ -1604,7 +1671,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
 
   void updateSeekDrag(DragUpdateDetails details, double width) {
     if (controlsLocked) return;
-    if (duration == Duration.zero || width <= 0) return;
+    if (!playbackCanSeek(isTvboxLivePlayback, duration) || width <= 0) return;
     dragDistance += details.delta.dx;
     if (!seekingByDrag && dragDistance.abs() < 18) return;
     seekingByDrag = true;
@@ -1624,7 +1691,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     seekingByDrag = false;
     dragPreviewPosition = null;
     notifyControlsChanged();
-    if (target != null && duration > Duration.zero) {
+    if (target != null && playbackCanSeek(isTvboxLivePlayback, duration)) {
       syncDanmuClock(target);
       clearDanmuOverlay();
       await seekPlayback(target);
@@ -1634,7 +1701,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   }
 
   void beginSliderSeek(double value) {
-    if (controlsLocked || duration == Duration.zero) return;
+    if (controlsLocked || !playbackCanSeek(isTvboxLivePlayback, duration)) {
+      return;
+    }
     markControlsInteraction();
     syncDanmuClock(currentDanmuPosition);
     setStateIfMounted(() {
@@ -1646,7 +1715,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   }
 
   void updateSliderSeek(double value) {
-    if (controlsLocked || duration == Duration.zero) return;
+    if (controlsLocked || !playbackCanSeek(isTvboxLivePlayback, duration)) {
+      return;
+    }
     markControlsInteraction();
     setStateIfMounted(() {
       seekingByDrag = true;
@@ -1656,7 +1727,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   }
 
   Future<void> endSliderSeek(double value) async {
-    if (controlsLocked || duration == Duration.zero) return;
+    if (controlsLocked || !playbackCanSeek(isTvboxLivePlayback, duration)) {
+      return;
+    }
     final target = Duration(milliseconds: value.round());
     setStateIfMounted(() {
       seekingByDrag = false;
@@ -1960,7 +2033,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
 
   Future<void> seekRelative(int seconds) async {
     if (controlsLocked) return;
-    if (duration == Duration.zero) return;
+    if (!playbackCanSeek(isTvboxLivePlayback, duration)) return;
     markControlsInteraction();
     final nextMs = (position.inMilliseconds + seconds * 1000)
         .clamp(0, duration.inMilliseconds);
@@ -2543,6 +2616,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
 
   Future<void> handlePlaybackCompleted(bool completed) async {
     if (!completed || autoAdvancingEpisode || !mediaOpenCompleted) return;
+    if (isTvboxLivePlayback) {
+      logVideoLoading('live playback completed ignored');
+      return;
+    }
     if (!ready || !playbackPositionConfirmed) {
       logVideoLoading(
           'playback completed ignored before ready: ready=$ready confirmed=$playbackPositionConfirmed position=${position.inMilliseconds}ms duration=${duration.inMilliseconds}ms');
@@ -2554,7 +2631,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       position = completedPosition;
       playing = false;
     });
-    if (next == null) {
+    if (next == null || !shouldAutoAdvancePlayback(isTvboxLivePlayback, next)) {
       logVideoLoading('playback completed: no next episode');
       await widget.store
           .updateProgress(currentItem.id, completedPosition, duration);
@@ -3544,6 +3621,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     final rightTimeWidth = compact ? 50.0 : (denseLandscape ? 56.0 : 64.0);
     final playButtonSize = compact ? 52.0 : (denseLandscape ? 50.0 : 56.0);
     final displayedPosition = dragPreviewPosition ?? position;
+    final canSeek = playbackCanSeek(isTvboxLivePlayback, duration);
     final iconSize = compact || denseLandscape ? 24.0 : 27.0;
     final smallIconSize = compact || denseLandscape ? 22.0 : 24.0;
     final episodeIconSize = compact || denseLandscape ? 25.0 : 28.0;
@@ -3615,11 +3693,15 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     final centerControls = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        buildSeekButton(-10),
-        SizedBox(width: compact ? 18 : (denseLandscape ? 6 : 8)),
+        if (canSeek) ...[
+          buildSeekButton(-10),
+          SizedBox(width: compact ? 18 : (denseLandscape ? 6 : 8)),
+        ],
         playButton,
-        SizedBox(width: compact ? 18 : (denseLandscape ? 6 : 8)),
-        buildSeekButton(10),
+        if (canSeek) ...[
+          SizedBox(width: compact ? 18 : (denseLandscape ? 6 : 8)),
+          buildSeekButton(10),
+        ],
       ],
     );
     final leftControls = Row(
@@ -3665,43 +3747,52 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Row(
-              children: [
-                SizedBox(
-                    width: leftTimeWidth,
-                    child: statusText(formatDuration(displayedPosition),
-                        size: compact ? 12 : (denseLandscape ? 13 : 15))),
-                Expanded(
-                  child: SliderTheme(
-                    data: SliderTheme.of(context).copyWith(
-                      trackHeight: 2.5,
-                      activeTrackColor: Colors.white,
-                      inactiveTrackColor: Colors.white54,
-                      thumbColor: Colors.white,
-                      overlayColor: const Color(0x33FFFFFF),
-                    ),
-                    child: Slider(
-                      value: displayedPosition.inMilliseconds
-                          .clamp(0, duration.inMilliseconds)
-                          .toDouble(),
-                      max: duration.inMilliseconds
-                          .toDouble()
-                          .clamp(1, double.infinity),
-                      onChangeStart: beginSliderSeek,
-                      onChanged: updateSliderSeek,
-                      onChangeEnd: (value) => unawaited(endSliderSeek(value)),
+            if (canSeek)
+              Row(
+                children: [
+                  SizedBox(
+                      width: leftTimeWidth,
+                      child: statusText(formatDuration(displayedPosition),
+                          size: compact ? 12 : (denseLandscape ? 13 : 15))),
+                  Expanded(
+                    child: SliderTheme(
+                      data: SliderTheme.of(context).copyWith(
+                        trackHeight: 2.5,
+                        activeTrackColor: Colors.white,
+                        inactiveTrackColor: Colors.white54,
+                        thumbColor: Colors.white,
+                        overlayColor: const Color(0x33FFFFFF),
+                      ),
+                      child: Slider(
+                        value: displayedPosition.inMilliseconds
+                            .clamp(0, duration.inMilliseconds)
+                            .toDouble(),
+                        max: duration.inMilliseconds
+                            .toDouble()
+                            .clamp(1, double.infinity),
+                        onChangeStart: beginSliderSeek,
+                        onChanged: updateSliderSeek,
+                        onChangeEnd: (value) => unawaited(endSliderSeek(value)),
+                      ),
                     ),
                   ),
+                  SizedBox(
+                    width: rightTimeWidth,
+                    child: Align(
+                        alignment: Alignment.centerRight,
+                        child: statusText(formatDuration(duration),
+                            size: compact ? 12 : (denseLandscape ? 13 : 15))),
+                  ),
+                ],
+              )
+            else
+              Align(
+                alignment: Alignment.centerLeft,
+                child: statusText(
+                  '直播',
+                  size: compact ? 12 : (denseLandscape ? 13 : 15),
                 ),
-                SizedBox(
-                  width: rightTimeWidth,
-                  child: Align(
-                      alignment: Alignment.centerRight,
-                      child: statusText(formatDuration(duration),
-                          size: compact ? 12 : (denseLandscape ? 13 : 15))),
-                ),
-              ],
-            ),
+              ),
             SizedBox(height: compact ? 10 : (denseLandscape ? 8 : 12)),
             if (compact) ...[
               SizedBox(height: 52, child: Center(child: centerControls)),

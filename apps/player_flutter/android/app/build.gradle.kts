@@ -134,3 +134,15 @@ chaquopy {
 flutter {
     source = "../.."
 }
+
+tasks.register("removeGeneratedLibcxx") {
+    doLast {
+        fileTree("src/main/jniLibs") {
+            include("**/libc++_shared.so")
+        }.forEach { it.delete() }
+    }
+}
+
+tasks.named("preBuild") {
+    dependsOn("removeGeneratedLibcxx")
+}

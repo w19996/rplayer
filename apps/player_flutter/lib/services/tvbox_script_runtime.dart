@@ -40,11 +40,14 @@ class TvboxScriptRuntime {
       'home' => "__tvboxCall('home', [true])",
       'category' =>
         "__tvboxCall('category', [${jsonEncode(arguments['typeId'] ?? '')}, ${jsonEncode(arguments['page'] ?? '1')}, true, {}])",
-      'detail' => "__tvboxCall('detail', [${jsonEncode(arguments['id'] ?? '')}])",
-      'search' => "__tvboxCall('search', [${jsonEncode(arguments['keyword'] ?? '')}, false])",
+      'detail' =>
+        "__tvboxCall('detail', [${jsonEncode(arguments['id'] ?? '')}])",
+      'search' =>
+        "__tvboxCall('search', [${jsonEncode(arguments['keyword'] ?? '')}, false])",
       'player' =>
         "__tvboxCall('play', [${jsonEncode(arguments['flag'] ?? '')}, ${jsonEncode(arguments['id'] ?? '')}, []])",
-      'action' => "__tvboxCall('action', [${jsonEncode(arguments['value'] ?? '')}])",
+      'action' =>
+        "__tvboxCall('action', [${jsonEncode(arguments['value'] ?? '')}])",
       _ => throw ArgumentError('未知 Spider 操作：$action'),
     };
     final result = await runtime.handlePromise(
@@ -110,7 +113,7 @@ class TvboxScriptRuntime {
     var value = code.trimLeft();
     if (value.contains('__JS_SPIDER__')) {
       value = value.replaceAll(
-      RegExp(r'\b__JS_SPIDER__\s*='),
+        RegExp(r'\b__JS_SPIDER__\s*='),
         'export default ',
       );
     }
@@ -278,7 +281,8 @@ class TvboxScriptRuntime {
   ) async {
     await _proxy.ensureStarted();
     final raw = value['url'];
-    var resolved = raw is List ? (raw.length > 1 ? raw[1] : raw.firstOrNull) : raw;
+    var resolved =
+        raw is List ? (raw.length > 1 ? raw[1] : raw.firstOrNull) : raw;
     if (resolved == null || '$resolved'.isEmpty) {
       throw const FormatException('播放接口未返回地址');
     }
@@ -290,7 +294,7 @@ class TvboxScriptRuntime {
       url = url.substring('tvbox-drive://'.length);
       value['parse'] = 0;
     } else if (url.startsWith('proxy://')) {
-      url = 'http://127.0.0.1:${_TvboxLocalProxyServer.port}/proxy?${url.substring('proxy://'.length)}';
+      url = _proxy.localProxyUrl(url);
       value['parse'] = 0;
     }
     final headers = {
@@ -299,10 +303,12 @@ class TvboxScriptRuntime {
       ..._tvboxHeaders(value['headers']),
     };
     final playUrl = '${value['playUrl'] ?? ''}$url';
-    final parse = '${value['parse'] ?? '1'}' == '1' || '${value['jx'] ?? '0'}' == '1';
+    final parse =
+        '${value['parse'] ?? '1'}' == '1' || '${value['jx'] ?? '0'}' == '1';
     final format = '${value['format'] ?? ''}'.trim();
     final danmaku = '${value['danmaku'] ?? ''}'.trim();
-    final playbackUrl = !parse ? _proxy.localPlaybackUrl(playUrl, headers) : playUrl;
+    final playbackUrl =
+        !parse ? _proxy.localPlaybackUrl(playUrl, headers) : playUrl;
     final inferredMimeType = format.isEmpty && _tvboxLooksHls(playbackUrl)
         ? 'application/x-mpegURL'
         : null;
@@ -312,6 +318,12 @@ class TvboxScriptRuntime {
       mimeType: format.isEmpty ? inferredMimeType : format,
       danmaku: danmaku.isEmpty ? null : danmaku,
     );
+  }
+
+  static Future<String> localLivePlaybackUrl(
+      String url, Map<String, String> headers) async {
+    await _proxy.ensureStarted();
+    return _proxy.localStreamUrl(url, headers);
   }
 
   static Future<File> _pythonExecutable(Directory runtimeRoot) async {
@@ -368,7 +380,8 @@ class TvboxScriptRuntime {
     return value.endsWith('.py') || value.contains('.py?');
   }
 
-  static Future<List<Object?>> _callPythonProxy(Map<String, String> params) async {
+  static Future<List<Object?>> _callPythonProxy(
+      Map<String, String> params) async {
     final site = _recentPythonSite;
     if (site == null) return const [];
     final text = await _callPython(site, 'proxy', params);
@@ -404,22 +417,32 @@ extension on String {
 }
 
 class _TvboxLocalProxyServer {
-  static const port = 9978;
+  static const defaultPort = 9978;
 
   HttpServer? _server;
   Future<void>? _starting;
+  int _port = defaultPort;
   String? recentJsKey;
   final _cache = <String, String>{};
   final _playbackHeaders = <String, Map<String, String>>{};
 
+  int get port => _server?.port ?? _port;
+
   Future<void> ensureStarted() {
-    if (!Platform.isWindows) return Future.value();
     if (_server != null) return Future.value();
-    return _starting ??= HttpServer.bind(InternetAddress.loopbackIPv4, port)
-        .then((server) {
+    return _starting ??= _bind().then((server) {
+      _port = server.port;
       _server = server;
       server.listen(_handle, onError: (_) {});
     }).whenComplete(() => _starting = null);
+  }
+
+  Future<HttpServer> _bind() async {
+    try {
+      return await HttpServer.bind(InternetAddress.loopbackIPv4, defaultPort);
+    } on SocketException {
+      return HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    }
   }
 
   String localPlaybackUrl(String url, Map<String, String> headers) {
@@ -428,11 +451,20 @@ class _TvboxLocalProxyServer {
         resolved.startsWith('http://127.0.0.1:$port/')) {
       return resolved;
     }
-    final key = _sha256(resolved + jsonEncode(Map.fromEntries(
-      headers.entries.toList()..sort((a, b) => a.key.compareTo(b.key)),
-    )));
+    final key = _sha256(resolved +
+        jsonEncode(Map.fromEntries(
+          headers.entries.toList()..sort((a, b) => a.key.compareTo(b.key)),
+        )));
     _playbackHeaders[key] = headers;
     return 'http://127.0.0.1:$port/playlist.m3u8?key=$key&url=${Uri.encodeComponent(resolved)}';
+  }
+
+  String localStreamUrl(String url, Map<String, String> headers) {
+    final resolved = localProxyUrl(url);
+    if (resolved.startsWith('http://127.0.0.1:$port/')) return resolved;
+    final key = _playbackKey(resolved, headers);
+    _playbackHeaders[key] = headers;
+    return 'http://127.0.0.1:$port/stream?key=$key&url=${Uri.encodeComponent(resolved)}';
   }
 
   String localProxyUrl(String url) => url.startsWith('proxy://')
@@ -448,9 +480,15 @@ class _TvboxLocalProxyServer {
     headers.forEach((key, value) => args.addAll(['-H', '$key: $value']));
     if (body != null) args.addAll(['--data-binary', '$body']);
     args.add(url);
-    final result = Process.runSync('curl.exe', args, stdoutEncoding: utf8, stderrEncoding: utf8);
+    final result = Process.runSync('curl.exe', args,
+        stdoutEncoding: utf8, stderrEncoding: utf8);
     if (result.exitCode != 0) {
-      return {'ok': false, 'status': 500, 'url': url, 'content': '${result.stderr}'};
+      return {
+        'ok': false,
+        'status': 500,
+        'url': url,
+        'content': '${result.stderr}'
+      };
     }
     final parsed = _splitHttpResponse('${result.stdout}');
     return {
@@ -467,6 +505,7 @@ class _TvboxLocalProxyServer {
       if (request.uri.path == '/cache') return _handleCache(request);
       if (request.uri.path == '/playlist.m3u8') return _serveM3u8(request);
       if (request.uri.path == '/segment.ts') return _serveSegment(request);
+      if (request.uri.path == '/stream') return _serveStream(request);
       if (request.uri.path == '/proxy' || request.uri.path == '/') {
         return _handleProxy(request);
       }
@@ -519,7 +558,8 @@ class _TvboxLocalProxyServer {
     }
     request.response.headers.contentType =
         ContentType('application', 'vnd.apple.mpegurl');
-    request.response.write(_rewriteM3u8(url, utf8.decode(download.bodyBytes, allowMalformed: true), key));
+    request.response.write(_rewriteM3u8(
+        url, utf8.decode(download.bodyBytes, allowMalformed: true), key));
     await request.response.close();
   }
 
@@ -529,12 +569,46 @@ class _TvboxLocalProxyServer {
     final download = await _download(url, _playbackHeaders[key] ?? const {});
     request.response.statusCode = download.statusCode;
     final type = download.headers['content-type'];
-    if (type != null) request.response.headers.set(HttpHeaders.contentTypeHeader, type);
+    if (type != null) {
+      request.response.headers.set(HttpHeaders.contentTypeHeader, type);
+    }
     request.response.add(download.bodyBytes);
     await request.response.close();
   }
 
-  Future<void> _writeProxyResult(HttpRequest request, List<Object?> result) async {
+  Future<void> _serveStream(HttpRequest request) async {
+    final url = request.uri.queryParameters['url'] ?? '';
+    final key = request.uri.queryParameters['key'] ?? '';
+    final source = Uri.parse(url);
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
+    try {
+      final upstream = await client.getUrl(source);
+      (_playbackHeaders[key] ?? const {}).forEach(upstream.headers.set);
+      final range = request.headers.value(HttpHeaders.rangeHeader);
+      if (range != null) upstream.headers.set(HttpHeaders.rangeHeader, range);
+      final response = await upstream.close();
+      request.response.statusCode = response.statusCode;
+      for (final header in [
+        HttpHeaders.contentTypeHeader,
+        HttpHeaders.contentLengthHeader,
+        HttpHeaders.acceptRangesHeader,
+        HttpHeaders.contentRangeHeader,
+      ]) {
+        final value = response.headers.value(header);
+        if (value != null) request.response.headers.set(header, value);
+      }
+      await response.pipe(request.response);
+    } catch (error) {
+      request.response.statusCode = HttpStatus.badGateway;
+      request.response.write(error.toString());
+      await request.response.close();
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  Future<void> _writeProxyResult(
+      HttpRequest request, List<Object?> result) async {
     if (result.length < 3) {
       request.response.statusCode = HttpStatus.internalServerError;
       request.response.write('proxy failed');
@@ -548,10 +622,15 @@ class _TvboxLocalProxyServer {
     }
     final body = result[2];
     if (body is List) {
-      request.response.add(body.map((value) => (value as num).toInt()).toList());
-    } else if (result.length > 4 && '${result[4]}' == '1' && '$body'.contains('base64,')) {
+      request.response
+          .add(body.map((value) => (value as num).toInt()).toList());
+    } else if (result.length > 4 &&
+        '${result[4]}' == '1' &&
+        '$body'.contains('base64,')) {
       request.response.add(base64Decode('$body'.split('base64,').last));
-    } else if (result.length > 3 && result[3] is Map && '${(result[3] as Map)['buffer']}' == '2') {
+    } else if (result.length > 3 &&
+        result[3] is Map &&
+        '${(result[3] as Map)['buffer']}' == '2') {
       request.response.add(base64Decode('$body'));
     } else {
       request.response.write(body ?? '');
@@ -560,7 +639,14 @@ class _TvboxLocalProxyServer {
   }
 
   Future<http.Response> _download(String url, Map<String, String> headers) =>
-      http.get(Uri.parse(url), headers: headers).timeout(const Duration(seconds: 30));
+      http
+          .get(Uri.parse(url), headers: headers)
+          .timeout(const Duration(seconds: 30));
+
+  String _playbackKey(String url, Map<String, String> headers) => _sha256(url +
+      jsonEncode(Map.fromEntries(
+        headers.entries.toList()..sort((a, b) => a.key.compareTo(b.key)),
+      )));
 
   String _rewriteM3u8(String sourceUrl, String content, String key) {
     final base = Uri.parse(sourceUrl);
@@ -571,11 +657,13 @@ class _TvboxLocalProxyServer {
           ? 'http://127.0.0.1:$port/playlist.m3u8?key=$key&url=${Uri.encodeComponent(absolute)}'
           : 'http://127.0.0.1:$port/segment.ts?key=$key&url=${Uri.encodeComponent(absolute)}';
     }
+
     final uriPattern = RegExp('URI="([^"]+)"');
     return const LineSplitter().convert(content).map((line) {
       if (line.isEmpty) return line;
       if (line.startsWith('#')) {
-        return line.replaceAllMapped(uriPattern, (match) => 'URI="${rewrite(match.group(1)!)}"');
+        return line.replaceAllMapped(
+            uriPattern, (match) => 'URI="${rewrite(match.group(1)!)}"');
       }
       return rewrite(line.trim());
     }).join('\n');
@@ -602,11 +690,15 @@ class _TvboxLocalProxyServer {
     final header = parts.length > 1 ? parts[parts.length - 2] : '';
     final body = parts.length > 1 ? parts.last : text;
     final lines = header.split(RegExp(r'\r?\n'));
-    final status = int.tryParse(lines.first.split(' ').elementAtOrNull(1) ?? '') ?? 200;
+    final status =
+        int.tryParse(lines.first.split(' ').elementAtOrNull(1) ?? '') ?? 200;
     final headers = <String, String>{};
     for (final line in lines.skip(1)) {
       final index = line.indexOf(':');
-      if (index > 0) headers[line.substring(0, index).trim()] = line.substring(index + 1).trim();
+      if (index > 0) {
+        headers[line.substring(0, index).trim()] =
+            line.substring(index + 1).trim();
+      }
     }
     return (status, headers, body);
   }
@@ -698,6 +790,6 @@ class _TvboxJsModuleResolver {
     return p.normalize(p.join(p.dirname(base), name));
   }
 
-  static String _basename(String name) => Uri.tryParse(name)?.pathSegments.lastOrNull ??
-      p.basename(name);
+  static String _basename(String name) =>
+      Uri.tryParse(name)?.pathSegments.lastOrNull ?? p.basename(name);
 }

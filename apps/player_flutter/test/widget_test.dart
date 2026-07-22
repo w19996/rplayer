@@ -381,6 +381,17 @@ void main() {
       )['framedrop'],
       'vo',
     );
+    expect(
+      playbackMpvOptions(
+        base: mpvAdvancedOptions(
+          preset: mpvAdvancedPresetAuto,
+          deviceClass: AppDeviceClass.mobile,
+          softwareDecoderFallback: false,
+        ),
+        androidTvboxLive: true,
+      )['hwdec'],
+      'no',
+    );
   });
 
   test('documents every mpv advanced option', () {
@@ -406,6 +417,34 @@ void main() {
     expect(playbackMimeLooksHls('application/x-mpegURL'), isTrue);
     expect(playbackMimeLooksHls('hls'), isTrue);
     expect(playbackMimeLooksHls(null), isFalse);
+    expect(playbackMpvDemuxerFormat('application/x-mpegURL'), 'hls');
+    expect(playbackMpvDemuxerFormat('video/x-flv'), 'flv');
+    expect(playbackMpvDemuxerFormat('video/mp4'), isEmpty);
+  });
+
+  test('live playback is not seekable and never auto advances', () {
+    const next = MediaItem(
+      id: 'next',
+      sourceId: 'local',
+      sourceName: '本地',
+      type: SourceType.local,
+      title: '下一集',
+      uri: 'file:///next.mp4',
+    );
+    expect(playbackCanSeek(true, const Duration(hours: 1)), isFalse);
+    expect(playbackCanSeek(false, const Duration(hours: 1)), isTrue);
+    expect(shouldAutoAdvancePlayback(true, next), isFalse);
+    expect(shouldAutoAdvancePlayback(false, next), isTrue);
+    expect(
+      isRecoverableLiveSeekWarning(
+          true, "You can force it with '--force-seekable=yes'."),
+      isTrue,
+    );
+    expect(
+      isRecoverableLiveSeekWarning(
+          false, "You can force it with '--force-seekable=yes'."),
+      isFalse,
+    );
   });
 
   test('retries only placeholder TVBox file danmu', () {

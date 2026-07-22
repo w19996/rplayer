@@ -365,6 +365,65 @@ https://backup.example/cctv1.m3u8
 ''');
     expect(txt.single.name, '地方台');
     expect(txt.single.channels.single.urls, hasLength(2));
+
+    final plain = parseTvboxLiveGroups('''轮播频道,#genre#
+亮剑,http://8.155.43.98:35455/huya/30080238
+''');
+    expect(
+      tvboxLivePlaybackHeaders(
+        const TvboxLiveSource(name: '直播', url: 'https://example.com/live.txt'),
+        plain.single.channels.single,
+        const {},
+      )['User-Agent'],
+      'TVBox',
+    );
+  });
+
+  test('resolves TVBox live redirect with playback headers', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final subscription = server.listen((request) async {
+      expect(request.method, 'GET');
+      expect(request.headers.value(HttpHeaders.userAgentHeader), 'TVBox');
+      if (request.uri.path == '/huya/1') {
+        request.response.statusCode = HttpStatus.movedPermanently;
+        request.response.headers
+            .set(HttpHeaders.locationHeader, '/al/stream.flv?token=1');
+      } else if (request.uri.path == '/al/stream.flv') {
+        request.response.statusCode = HttpStatus.movedTemporarily;
+        request.response.headers
+            .set(HttpHeaders.locationHeader, '/real/stream.flv?token=2');
+      } else {
+        request.response.statusCode = HttpStatus.ok;
+      }
+      await request.response.close();
+    });
+    final source = TvboxLiveSource(
+      name: '直播',
+      url: 'http://${server.address.host}:${server.port}/live.txt',
+    );
+    final channel = TvboxLiveChannel(
+      name: '轮播',
+      urls: ['http://${server.address.host}:${server.port}/huya/1'],
+    );
+
+    try {
+      final playback =
+          await resolveTvboxLivePlayback(source, channel, channel.urls.single);
+      expect(playback.uri,
+          'http://${server.address.host}:${server.port}/real/stream.flv?token=2');
+      expect(playback.headers['User-Agent'], 'TVBox');
+      expect(playback.mimeType, 'video/x-flv');
+      expect(
+          await tvboxLivePlaybackUrl(
+            playback.uri,
+            playback.headers,
+            true,
+          ),
+          startsWith('http://127.0.0.1:'));
+    } finally {
+      await subscription.cancel();
+      await server.close(force: true);
+    }
   });
 
   test('parses type 0 XML and skips failed sites', () async {
