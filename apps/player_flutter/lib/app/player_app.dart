@@ -79,8 +79,8 @@ class _AppScrollBehavior extends MaterialScrollBehavior {
   const _AppScrollBehavior();
 
   @override
-  Set<PointerDeviceKind> get dragDevices => {
+  Set<ui.PointerDeviceKind> get dragDevices => {
         ...super.dragDevices,
-        PointerDeviceKind.mouse,
+        ui.PointerDeviceKind.mouse,
       };
 }

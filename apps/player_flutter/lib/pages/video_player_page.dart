@@ -132,7 +132,9 @@ class VideoPlayerPage extends StatefulWidget {
 class _VideoPlayerPageState extends State<VideoPlayerPage>
     with SingleTickerProviderStateMixin {
   static const Duration _danmuPositionSyncThreshold =
-      Duration(milliseconds: 120);
+      Duration(milliseconds: 600);
+  static const Duration _danmuBackwardSyncThreshold =
+      Duration(milliseconds: 2000);
   static const double _verticalControlSensitivity = 1.35;
   static const double _verticalControlEdgeDeadZoneRatio = 0.14;
   static const List<double> _playbackRates = [
@@ -170,8 +172,9 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   int lastThrottledControlsNotifyMs = 0;
   Duration position = Duration.zero;
   Duration duration = Duration.zero;
+  final Stopwatch danmuClock = Stopwatch()..start();
   Duration danmuClockPosition = Duration.zero;
-  DateTime danmuClockStamp = DateTime.now();
+  Duration danmuClockStamp = Duration.zero;
   Duration? dragPreviewPosition;
   double dragDistance = 0;
   Duration dragStartPosition = Duration.zero;
@@ -607,7 +610,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
 
   void syncDanmuClock(Duration value) {
     danmuClockPosition = value;
-    danmuClockStamp = DateTime.now();
+    danmuClockStamp = danmuClock.elapsed;
   }
 
   void syncDanmuClockFromPlayer(Duration value) {
@@ -616,7 +619,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       return;
     }
     final driftMs = value.inMilliseconds - currentDanmuPosition.inMilliseconds;
-    if (driftMs.abs() > _danmuPositionSyncThreshold.inMilliseconds) {
+    if (driftMs > _danmuPositionSyncThreshold.inMilliseconds ||
+        driftMs < -_danmuBackwardSyncThreshold.inMilliseconds) {
       syncDanmuClock(value);
     }
   }
@@ -625,15 +629,15 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     if (!ready || !playing || buffering || seekingByDrag) {
       return danmuClockPosition;
     }
-    final elapsed = DateTime.now().difference(danmuClockStamp);
-    final milliseconds = danmuClockPosition.inMilliseconds +
-        (elapsed.inMilliseconds * playbackRate).round();
-    final maxMilliseconds = duration.inMilliseconds;
-    if (maxMilliseconds > 0) {
+    final elapsed = danmuClock.elapsed - danmuClockStamp;
+    final microseconds = danmuClockPosition.inMicroseconds +
+        (elapsed.inMicroseconds * playbackRate).round();
+    final maxMicroseconds = duration.inMicroseconds;
+    if (maxMicroseconds > 0) {
       return Duration(
-          milliseconds: milliseconds.clamp(0, maxMilliseconds).toInt());
+          microseconds: microseconds.clamp(0, maxMicroseconds).toInt());
     }
-    return Duration(milliseconds: math.max(0, milliseconds).toInt());
+    return Duration(microseconds: math.max(0, microseconds).toInt());
   }
 
   void refreshVisibleDanmu({bool force = false}) {
@@ -4072,7 +4076,6 @@ class _DanmuBitmap {
     final fill = TextStyle(
       color: Color(0xFF000000 | value.color).withValues(alpha: opacity),
       fontSize: config.fontSize,
-      fontWeight: FontWeight.w500,
     );
     final fillPainter = _textPainter(value.text, fill, value.textWidth);
     const padding = 1.0;
@@ -4138,11 +4141,14 @@ class _DanmuOverlayPainter extends CustomPainter {
   final Duration Function() positionProvider;
   final Map<int, _DanmuBitmap> bitmaps;
   final double pixelRatio;
-  final bitmapPaint = Paint()..filterQuality = FilterQuality.low;
+  final bitmapPaint = Paint()
+    ..filterQuality = FilterQuality.none
+    ..isAntiAlias = false;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final effectiveMs = positionProvider().inMilliseconds + config.offsetMs;
+    final effectiveMs =
+        positionProvider().inMicroseconds / 1000.0 + config.offsetMs;
     for (final value in items) {
       final left = itemLeft(value, effectiveMs);
       final bitmap = bitmaps[value.id];
@@ -4166,7 +4172,7 @@ class _DanmuOverlayPainter extends CustomPainter {
     }
   }
 
-  double? itemLeft(RustDanmuRenderItem value, int effectiveMs) {
+  double? itemLeft(RustDanmuRenderItem value, double effectiveMs) {
     if (effectiveMs < value.startMs || effectiveMs > value.endMs) return null;
     return value.left + (effectiveMs - value.sampleMs) * value.velocityX;
   }
