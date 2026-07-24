@@ -14,6 +14,9 @@ class LocalBrowserPage extends StatefulWidget {
 class _LocalBrowserPageState extends State<LocalBrowserPage> {
   late String path = widget.source.directory;
   late Future<List<LocalEntry>> future = load();
+  final scrollController = ScrollController();
+  final scrollOffsets = <String, double>{};
+  String? restoredScrollPath;
   bool adding = false;
 
   MediaSourceConfig get source => widget.store.sources.firstWhere(
@@ -55,9 +58,29 @@ class _LocalBrowserPageState extends State<LocalBrowserPage> {
   }
 
   void refresh([String? next]) {
+    saveScrollOffset();
     setState(() {
       path = next ?? path;
       future = load();
+      restoredScrollPath = null;
+    });
+  }
+
+  void saveScrollOffset() {
+    if (scrollController.hasClients) {
+      scrollOffsets[path] = scrollController.offset;
+    }
+  }
+
+  void restoreScrollOffset() {
+    if (restoredScrollPath == path) return;
+    restoredScrollPath = path;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !scrollController.hasClients) return;
+      final offset = scrollOffsets[path] ?? 0;
+      scrollController.jumpTo(
+        offset.clamp(0.0, scrollController.position.maxScrollExtent),
+      );
     });
   }
 
@@ -125,6 +148,12 @@ class _LocalBrowserPageState extends State<LocalBrowserPage> {
   }
 
   @override
+  void dispose() {
+    scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return PopScope<void>(
       canPop: path == widget.source.directory,
@@ -167,7 +196,9 @@ class _LocalBrowserPageState extends State<LocalBrowserPage> {
                     onPressed: refresh, child: const Text('重新加载')),
               );
             }
+            restoreScrollOffset();
             return ListView(
+              controller: scrollController,
               children: [
                 if (path != widget.source.directory)
                   ListTile(

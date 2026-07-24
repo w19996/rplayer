@@ -74,7 +74,7 @@ class MainActivity : FlutterActivity() {
         )
         appChannel?.setMethodCallHandler { call, result ->
             when (call.method) {
-                "appFilesDir" -> result.success(filesDir.absolutePath)
+                "appFilesDir" -> result.success(requireExternalFilesDir().absolutePath)
                 "playerStatus" -> result.success(playerStatus())
                 "videoThumbnail" -> {
                     val uri = call.argument<String>("uri") ?: ""
@@ -128,6 +128,9 @@ class MainActivity : FlutterActivity() {
             }
         }
     }
+
+    private fun requireExternalFilesDir() =
+        getExternalFilesDir(null) ?: throw IllegalStateException("外部私有目录不可用")
 
     private fun tvboxBridge(): TvboxBridge =
         tvboxBridge ?: TvboxBridge(this).also { tvboxBridge = it }

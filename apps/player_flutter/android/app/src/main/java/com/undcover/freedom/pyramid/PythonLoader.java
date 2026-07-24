@@ -107,7 +107,9 @@ public class PythonLoader {
                 throw new RuntimeException(th);
             }
         }
-        File pyCache = new File(app.getCacheDir(), "py");
+        File appFiles = app.getExternalFilesDir(null);
+        if (appFiles == null) throw new IllegalStateException("外部私有目录不可用");
+        File pyCache = new File(appFiles, "py");
         if (!pyCache.exists()) pyCache.mkdirs();
         setPluginConfig(pyCache.getAbsolutePath());
         return this;

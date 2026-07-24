@@ -203,7 +203,7 @@ private class TvboxJarEngine(private val context: Context) {
     init {
         App.setInstance(context.applicationContext as Application)
         // Configuration-center Spider JARs share this TVBox host file.
-        File(context.filesDir, "config.json").also {
+        File(tvboxFilesDir(), "config.json").also {
             if (!it.exists() || it.length() == 0L) it.writeText("{}")
         }
     }
@@ -313,7 +313,7 @@ private class TvboxJarEngine(private val context: Context) {
     }
 
     private fun loadJar(url: String, expectedMd5: String): LoadedJar = loaded.computeIfAbsent(url) {
-        val directory = File(context.filesDir, "tvbox/jars").also { it.mkdirs() }
+        val directory = File(tvboxFilesDir(), "tvbox/jars").also { it.mkdirs() }
         val file = File(directory, tvboxJarCacheName(url))
         if (!file.exists() || (expectedMd5.isNotBlank() && md5(file) != expectedMd5.lowercase())) {
             val temporary = File(directory, file.name + ".download")
@@ -454,9 +454,12 @@ private class TvboxJarEngine(private val context: Context) {
 
     fun deleteJars(urls: Collection<String>) {
         clearRuntime()
-        tvboxDeleteJars(File(context.filesDir, "tvbox/jars"), urls)
-        tvboxDeleteJsJars(File(context.filesDir, "csp"), urls)
+        tvboxDeleteJars(File(tvboxFilesDir(), "tvbox/jars"), urls)
+        tvboxDeleteJsJars(File(tvboxFilesDir(), "csp"), urls)
     }
+
+    private fun tvboxFilesDir(): File =
+        context.getExternalFilesDir(null) ?: throw IllegalStateException("外部私有目录不可用")
 
     private fun clearRuntime() {
         spiders.values.forEach { runCatching { it.destroy() } }

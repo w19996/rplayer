@@ -135,8 +135,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       Duration(milliseconds: 600);
   static const Duration _danmuBackwardSyncThreshold =
       Duration(milliseconds: 2000);
+  static const double _longPressPlaybackRate = 3.0;
   static const double _verticalControlSensitivity = 1.35;
   static const double _verticalControlEdgeDeadZoneRatio = 0.14;
+  static const double _episodePanelItemExtent = 55.0;
   static const List<double> _playbackRates = [
     0.25,
     0.5,
@@ -166,9 +168,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   Timer? landscapeSensorTimer;
   late final AnimationController danmuTicker;
   final danmuOverlayItems = ValueNotifier<List<RustDanmuRenderItem>>(const []);
-  final danmuBitmaps = <int, _DanmuBitmap>{};
+  final danmuBitmaps = <String, _DanmuBitmap>{};
   final controlsVisible = ValueNotifier<bool>(true);
   final controlsRevision = ValueNotifier<int>(0);
+  ScrollController? episodePanelController;
   int lastThrottledControlsNotifyMs = 0;
   Duration position = Duration.zero;
   Duration duration = Duration.zero;
@@ -181,6 +184,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   VerticalControlKind? verticalControlKind;
   double playbackVolume = 100;
   double playbackRate = 1.0;
+  double? longPressRestoreRate;
   String? verticalControlLabel;
   double verticalControlLevel = 0;
   int? videoWidth;
@@ -666,9 +670,10 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       });
       final items = frame.items;
       if (!sameDanmuItems(danmuOverlayItems.value, items)) {
-        final visibleIds = items.map((item) => item.id).toSet();
-        danmuBitmaps.removeWhere((id, bitmap) {
-          if (visibleIds.contains(id)) return false;
+        final visibleKeys =
+            items.map((item) => _DanmuBitmap.cacheKey(item, config)).toSet();
+        danmuBitmaps.removeWhere((key, bitmap) {
+          if (visibleKeys.contains(key)) return false;
           bitmap.dispose();
           return true;
         });
@@ -1181,6 +1186,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     for (final subscription in subscriptions) {
       subscription.cancel();
     }
+    episodePanelController?.dispose();
     unawaited(unobserveMpvLoadingProperties());
     if (widget.adoptedPlayer == null) _player?.dispose();
     super.dispose();
@@ -1767,8 +1773,8 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   void beginVerticalControlDrag(DragStartDetails details, Size size) {
     if (!verticalControlPointAllowed(details.localPosition, size)) return;
     verticalControlKind = details.localPosition.dx < size.width / 2
-        ? VerticalControlKind.volume
-        : VerticalControlKind.brightness;
+        ? VerticalControlKind.brightness
+        : VerticalControlKind.volume;
     markControlsInteraction();
     unawaited(applyVerticalControlDelta(verticalControlKind!, 0));
   }
@@ -2022,6 +2028,20 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
     scheduleControlsAutoHide();
   }
 
+  void beginLongPressSpeed() {
+    if (!verticalControlAvailable || longPressRestoreRate != null) return;
+    longPressRestoreRate = playbackRate;
+    markControlsInteraction();
+    unawaited(setPlaybackRate(_longPressPlaybackRate));
+  }
+
+  void endLongPressSpeed() {
+    final restoreRate = longPressRestoreRate;
+    if (restoreRate == null) return;
+    longPressRestoreRate = null;
+    unawaited(setPlaybackRate(restoreRate));
+  }
+
   Future<void> showPlaybackRates(BuildContext anchorContext) async {
     final selected = await showControlMenu<double>(
       anchorContext: anchorContext,
@@ -2081,6 +2101,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
   void openEpisodePanel() {
     if (controlsLocked) return;
     controlsHideTimer?.cancel();
+    resetEpisodePanelController();
     setStateIfMounted(() {
       episodePanelOpen = true;
       episodePanelClosing = false;
@@ -2103,6 +2124,16 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
       });
       scheduleControlsAutoHide();
     });
+  }
+
+  void resetEpisodePanelController() {
+    episodePanelController?.dispose();
+    final items = episodeItems;
+    final index = items.indexWhere((item) => item.id == currentItem.id);
+    episodePanelController = ScrollController(
+      initialScrollOffset:
+          index <= 0 ? 0 : math.max(0, index - 2) * _episodePanelItemExtent,
+    );
   }
 
   void openDanmuPanel() {
@@ -2989,6 +3020,7 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
                         SizedBox(height: isLandscape ? 14 : 12),
                         Expanded(
                           child: ListView.separated(
+                            controller: episodePanelController,
                             itemCount: items.length,
                             separatorBuilder: (_, __) =>
                                 SizedBox(height: isLandscape ? 10 : 7),
@@ -3989,6 +4021,12 @@ class _VideoPlayerPageState extends State<VideoPlayerPage>
                 onDoubleTap: inPictureInPicture || controlsLocked
                     ? null
                     : togglePlayback,
+                onLongPressStart:
+                    inPictureInPicture ? null : (_) => beginLongPressSpeed(),
+                onLongPressEnd:
+                    inPictureInPicture ? null : (_) => endLongPressSpeed(),
+                onLongPressCancel:
+                    inPictureInPicture ? null : endLongPressSpeed,
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
@@ -4067,8 +4105,8 @@ class _DanmuPanelSlider extends StatelessWidget {
 }
 
 class _DanmuBitmap {
-  const _DanmuBitmap(
-      this.image, this.logicalSize, this.padding, this.pixelRatio);
+  const _DanmuBitmap(this.image, this.logicalSize, this.textSize, this.padding,
+      this.pixelRatio);
 
   factory _DanmuBitmap.create(
       RustDanmuRenderItem value, DanmuConfig config, double pixelRatio) {
@@ -4077,7 +4115,7 @@ class _DanmuBitmap {
       color: Color(0xFF000000 | value.color).withValues(alpha: opacity),
       fontSize: config.fontSize,
     );
-    final fillPainter = _textPainter(value.text, fill, value.textWidth);
+    final fillPainter = _textPainter(value.text, fill);
     const padding = 1.0;
     final ratio = pixelRatio.clamp(1.0, 4.0);
     final width =
@@ -4094,23 +4132,27 @@ class _DanmuBitmap {
     return _DanmuBitmap(
       image,
       Size(width / ratio, height / ratio),
+      Size(fillPainter.width, fillPainter.height),
       padding,
       ratio,
     );
   }
 
-  static TextPainter _textPainter(
-      String text, TextStyle style, double maxWidth) {
+  static String cacheKey(RustDanmuRenderItem value, DanmuConfig config) =>
+      '${config.fontSize}|${config.opacity}|${value.color}|${value.text}';
+
+  static TextPainter _textPainter(String text, TextStyle style) {
     return TextPainter(
       text: TextSpan(text: text, style: style),
       maxLines: 1,
       textDirection: TextDirection.ltr,
       textScaler: TextScaler.noScaling,
-    )..layout(maxWidth: math.max(1, maxWidth));
+    )..layout();
   }
 
   final ui.Image image;
   final Size logicalSize;
+  final Size textSize;
   final double padding;
   final double pixelRatio;
 
@@ -4128,10 +4170,11 @@ class _DanmuOverlayPainter extends CustomPainter {
   })  : pixelRatio = pixelRatio.clamp(1.0, 4.0),
         super(repaint: ticker) {
     for (final value in items) {
-      final bitmap = bitmaps[value.id];
+      final key = _DanmuBitmap.cacheKey(value, config);
+      final bitmap = bitmaps[key];
       if (bitmap != null && bitmap.pixelRatio == this.pixelRatio) continue;
       bitmap?.dispose();
-      bitmaps[value.id] = _DanmuBitmap.create(value, config, this.pixelRatio);
+      bitmaps[key] = _DanmuBitmap.create(value, config, this.pixelRatio);
     }
   }
 
@@ -4139,7 +4182,7 @@ class _DanmuOverlayPainter extends CustomPainter {
   final DanmuConfig config;
   final Listenable ticker;
   final Duration Function() positionProvider;
-  final Map<int, _DanmuBitmap> bitmaps;
+  final Map<String, _DanmuBitmap> bitmaps;
   final double pixelRatio;
   final bitmapPaint = Paint()
     ..filterQuality = FilterQuality.none
@@ -4150,8 +4193,8 @@ class _DanmuOverlayPainter extends CustomPainter {
     final effectiveMs =
         positionProvider().inMicroseconds / 1000.0 + config.offsetMs;
     for (final value in items) {
-      final left = itemLeft(value, effectiveMs);
-      final bitmap = bitmaps[value.id];
+      final bitmap = bitmaps[_DanmuBitmap.cacheKey(value, config)];
+      final left = itemLeft(value, bitmap, effectiveMs, size.width);
       if (left == null || bitmap == null) continue;
       canvas.drawImageRect(
         bitmap.image,
@@ -4172,9 +4215,16 @@ class _DanmuOverlayPainter extends CustomPainter {
     }
   }
 
-  double? itemLeft(RustDanmuRenderItem value, double effectiveMs) {
+  double? itemLeft(RustDanmuRenderItem value, _DanmuBitmap? bitmap,
+      double effectiveMs, double width) {
     if (effectiveMs < value.startMs || effectiveMs > value.endMs) return null;
-    return value.left + (effectiveMs - value.sampleMs) * value.velocityX;
+    if (bitmap == null) return null;
+    if (value.mode == 4 || value.mode == 5) {
+      return (width - bitmap.textSize.width) / 2.0;
+    }
+    final duration = math.max(1.0, value.endMs - value.startMs);
+    final progress = ((effectiveMs - value.startMs) / duration).clamp(0.0, 1.0);
+    return width - progress * (width + bitmap.textSize.width);
   }
 
   @override

@@ -29,6 +29,12 @@ public class JsLoader {
     //当前的Js爬虫key
     private volatile String recentKey = "";
 
+    private static File appFilesDir() {
+        File external = App.getInstance().getExternalFilesDir(null);
+        if (external == null) throw new IllegalStateException("外部私有目录不可用");
+        return external;
+    }
+
     public static void destroy() {
         for (Spider spider : spiders.values()){
             spider.cancelByTag();
@@ -56,7 +62,7 @@ public class JsLoader {
         boolean success = false;
         Class<?> classInit = null;
         try {
-            File cacheDir = new File(App.getInstance().getCacheDir().getAbsolutePath() + "/catvod_jsapi");
+            File cacheDir = new File(appFilesDir(), "catvod_jsapi");
             if (!cacheDir.exists())
                 cacheDir.mkdirs();
             DexClassLoader classLoader = new DexClassLoader(jar, cacheDir.getAbsolutePath(), null, App.getInstance().getClassLoader());
@@ -98,7 +104,7 @@ public class JsLoader {
             Log.i("JSLoader", "echo-loadJarInternal cached");
             return classes.get(key);
         }
-        File cache = new File(App.getInstance().getFilesDir().getAbsolutePath() + "/csp/" + key + ".jar");
+        File cache = new File(appFilesDir(), "csp/" + key + ".jar");
         if (cache.getParentFile() != null && !cache.getParentFile().exists()) cache.getParentFile().mkdirs();
         if (!md5.isEmpty()) {
             if (cache.exists() && MD5.getFileMd5(cache).equalsIgnoreCase(md5)) {
